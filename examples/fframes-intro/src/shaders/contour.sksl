@@ -10,31 +10,57 @@ uniform float4 uInk;       // line color
 uniform float4 uHot;       // color near the well
 
 float hash(float2 p) { return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }
-float noise(float2 p) {
-    float2 i = floor(p); float2 f = fract(p);
+// The value noise of `p` from the hashes of the corners of its lattice cell.
+float cellNoise(float2 p, float4 corners) {
+    float2 f = fract(p);
     float2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + float2(1, 0)), u.x), mix(hash(i + float2(0, 1)), hash(i + float2(1, 1)), u.x), u.y);
+    return mix(mix(corners.x, corners.y, u.x), mix(corners.z, corners.w, u.x), u.y);
 }
-float fbm(float2 p) {
-    float v = 0.0; float a = 0.5;
-    for (int i = 0; i < 4; i++) { v += a * noise(p); p = p * 2.02 + float2(11.0, 7.0); a *= 0.5; }
+float4 cornerHashes(float2 i) {
+    return float4(hash(i), hash(i + float2(1, 0)), hash(i + float2(0, 1)), hash(i + float2(1, 1)));
+}
+// fbm of a point and of its neighbours one pixel to the right and below, for the
+// gradient. The three are almost always in the same lattice cell, so the corner hashes
+// (the expensive part) are shared unless a cell boundary runs between them.
+float3 fbm3(float2 p, float2 px, float2 py) {
+    float3 v = float3(0.0); float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+        float2 cell = floor(p); float2 cellX = floor(px); float2 cellY = floor(py);
+        float4 corners = cornerHashes(cell);
+        float4 cornersX = corners;
+        if (cellX != cell) { cornersX = cornerHashes(cellX); }
+        float4 cornersY = corners;
+        if (cellY != cell) { cornersY = cornerHashes(cellY); }
+        v += a * float3(cellNoise(p, corners), cellNoise(px, cornersX), cellNoise(py, cornersY));
+        p = p * 2.02 + float2(11.0, 7.0);
+        px = px * 2.02 + float2(11.0, 7.0);
+        py = py * 2.02 + float2(11.0, 7.0);
+        a *= 0.5;
+    }
     return v;
 }
-float height(float2 p, float t) {
+// The terms of the height besides the noise, which `fbm3` computes for three points at
+// once: the well and the swirl around it.
+float2 shape(float2 p, float t) {
     float2 w = uWell * float2(iResolution.x / iResolution.y, 1.0);
     float2 d = p - w;
     float r2 = dot(d, d);
     float well = -uDepth / (1.0 + r2 * 18.0);
     float swirl = atan(d.y, d.x);
-    return fbm(p * 1.4 + float2(t * 0.02, -t * 0.015)) * 0.55 + well + 0.02 * sin(swirl * 3.0 + r2 * 20.0 - t);
+    return float2(well, 0.02 * sin(swirl * 3.0 + r2 * 20.0 - t));
 }
+float2 noiseCoord(float2 p, float t) { return p * 1.4 + float2(t * 0.02, -t * 0.015); }
 half4 main(float2 coord) {
     float2 p = coord / iResolution.y;
     float t = iTime;
     float e = 1.0 / iResolution.y;
-    float h = height(p, t);
-    float hx = height(p + float2(e, 0.0), t);
-    float hy = height(p + float2(0.0, e), t);
+    float2 px = p + float2(e, 0.0);
+    float2 py = p + float2(0.0, e);
+    float3 n = fbm3(noiseCoord(p, t), noiseCoord(px, t), noiseCoord(py, t));
+    float2 s = shape(p, t); float2 sx = shape(px, t); float2 sy = shape(py, t);
+    float h = n.x * 0.55 + s.x + s.y;
+    float hx = n.y * 0.55 + sx.x + sx.y;
+    float hy = n.z * 0.55 + sy.x + sy.y;
     float grad = length(float2(hx - h, hy - h)) * uDensity + 1e-5;
     float f = abs(fract(h * uDensity) - 0.5);
     float line = 1.0 - smoothstep(0.6, 1.6, f / grad);
