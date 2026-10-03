@@ -379,6 +379,12 @@ impl PlaneExporter {
             );
         }
 
+        // The planes read `source` itself as long as nothing else holds the snapshot
+        // when the work is flushed; otherwise Skia also copies the whole frame for it.
+        // The surface keeps its last snapshot until it is drawn to again, let it go now.
+        drop((full_resolution, subsampled, image));
+        source.notify_content_will_change(skia_safe::surface::ContentChangeMode::Retain);
+
         Ok(())
     }
 

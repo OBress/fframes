@@ -5,7 +5,7 @@ use ash::{Entry, Instance};
 use fframes::{FFramesRendererError, FFramesRendererResult};
 use skia_safe::ColorType;
 use skia_safe::gpu::ganesh::context_options::{Enable, ShaderCacheStrategy};
-use skia_safe::gpu::ganesh::vk::backend_render_targets;
+use skia_safe::gpu::ganesh::vk::backend_textures;
 use skia_safe::gpu::{self, DirectContext};
 use skia_safe::{Surface, gpu::SurfaceOrigin};
 use std::ffi::{CString, c_void};
@@ -500,21 +500,26 @@ impl SkiaBackend for SkiaVulkanCtx {
                 None,
             );
 
-            let backend_render_target = backend_render_targets::make_vk(
+            // Wrapped as a texture, not as a render target: the frame is sampled when it is
+            // converted to YUV planes on the GPU, and a snapshot of a surface Skia can not
+            // sample is a copy of the whole frame.
+            let backend_texture = backend_textures::make_vk(
                 (self.width as i32, self.height as i32),
                 &image_info,
+                "fframes frame",
             );
 
-            let surface = gpu::surfaces::wrap_backend_render_target(
+            let surface = gpu::surfaces::wrap_backend_texture(
                 &mut gpu_context,
-                &backend_render_target,
+                &backend_texture,
                 SurfaceOrigin::TopLeft,
+                None,
                 ColorType::RGBA8888,
                 None,
                 None,
             )
             .ok_or_else(|| {
-                FFramesRendererError::Skia("Failed to wrap backend render target".to_string())
+                FFramesRendererError::Skia("Failed to wrap backend texture".to_string())
             })?;
 
             Ok(super::SkiaContext {
