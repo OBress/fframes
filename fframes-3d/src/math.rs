@@ -51,16 +51,40 @@ pub fn hash(n: u32) -> f32 {
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// Smooth 1D value noise in `-1..1`. Use it for camera shake and flicker:
+/// Smooth 1D noise in about `-1..1`. Use it for flicker and slow drift:
 /// `noise1(seed, t * frequency)`. A different `seed` gives a different curve.
+///
+/// The curve goes through a random value at each integer `x` (a Catmull-Rom spline), and
+/// its slope there comes from the neighbour values. So it does not stop at each integer, as
+/// value noise with smoothstep weights does. For camera motion use [`gradient_noise1`].
 pub fn noise1(seed: u32, x: f32) -> f32 {
+    let i = x.floor();
+    let t = x - i;
+    let cell = (i as i32 as u32).wrapping_add(seed.wrapping_mul(1013));
+    let key = |k: i32| hash(cell.wrapping_add(k as u32)) * 2.0 - 1.0;
+    let (p0, p1, p2, p3) = (key(-1), key(0), key(1), key(2));
+    let (m1, m2) = ((p2 - p0) * 0.5, (p3 - p1) * 0.5);
+    let (t2, t3) = (t * t, t * t * t);
+    (2.0 * t3 - 3.0 * t2 + 1.0) * p1
+        + (t3 - 2.0 * t2 + t) * m1
+        + (-2.0 * t3 + 3.0 * t2) * p2
+        + (t3 - t2) * m2
+}
+
+/// Smooth 1D gradient noise in `-1..1` (Perlin noise). Each integer `x` has a random slope
+/// and the value 0, and a quintic curve blends the slopes of the two neighbours. The speed
+/// of the curve changes smoothly and seldom gets to zero, so a camera that it moves does
+/// not stop and start again. Its mean amplitude is about half of [`noise1`].
+pub fn gradient_noise1(seed: u32, x: f32) -> f32 {
     let i = x.floor();
     let f = x - i;
     let cell = (i as i32 as u32).wrapping_add(seed.wrapping_mul(1013));
-    let a = hash(cell);
-    let b = hash(cell.wrapping_add(1));
-    let u = f * f * (3.0 - 2.0 * f);
-    (a + (b - a) * u) * 2.0 - 1.0
+    let g0 = hash(cell) * 2.0 - 1.0;
+    let g1 = hash(cell.wrapping_add(1)) * 2.0 - 1.0;
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let (a, b) = (g0 * f, g1 * (f - 1.0));
+    // the largest value is 0.5
+    2.0 * (a + (b - a) * u)
 }
 
 /// A pseudo-random unit vector. The same `seed` always gives the same vector.
