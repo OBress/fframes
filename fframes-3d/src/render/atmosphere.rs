@@ -121,7 +121,7 @@ impl Air<'_> {
             let t = end * u * u;
             let dt = end * (2.0 * i + 1.0) / (n * n);
             let p = self.camera + ray * t;
-            let density = self.density(p);
+            let density = self.density(p, dt);
             if density <= 0.0 {
                 continue;
             }
@@ -147,13 +147,17 @@ impl Air<'_> {
         (scatter * a.color.0).extend(through)
     }
 
-    /// The density of the air at `p`.
-    fn density(&self, p: Vec3) -> f32 {
+    /// The density of the air at `p`, for a step of length `dt`. A step longer than the
+    /// noise crosses many of its cells, and one sample of the noise does not tell their mean.
+    /// When the camera moves, such samples change at random and the haze shimmers. So the
+    /// noise fades out on long steps, to its mean.
+    fn density(&self, p: Vec3, dt: f32) -> f32 {
         let a = self.atmosphere;
         let mut density = a.density * (-a.falloff * (p.y - a.base).max(0.0)).exp();
-        if a.noise > 0.0 {
-            let scale = 1.0 / a.noise_size.max(1e-3);
-            density *= 1.0 + a.noise * (2.0 * fractal_noise(p * scale + a.offset * scale) - 1.0);
+        let scale = 1.0 / a.noise_size.max(1e-3);
+        let amount = a.noise * (1.0 - smoothstep(0.5, 2.0, dt * scale));
+        if amount > 0.0 {
+            density *= 1.0 + amount * (2.0 * fractal_noise(p * scale + a.offset * scale) - 1.0);
         }
         density
     }

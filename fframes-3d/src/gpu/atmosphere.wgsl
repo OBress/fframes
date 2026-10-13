@@ -77,7 +77,7 @@ fn march(ray: vec3f, key: f32, jitter: f32) -> vec4f {
         let t = end * u * u;
         let dt = end * (2.0 * i + 1.0) / (n * n);
         let p = frame.camera.xyz + ray * t;
-        let density = haze_density(p);
+        let density = haze_density(p, dt);
         if (density <= 0.0) {
             continue;
         }
@@ -98,12 +98,14 @@ fn march(ray: vec3f, key: f32, jitter: f32) -> vec4f {
     return vec4f(scatter * frame.haze.rgb, through);
 }
 
-fn haze_density(p: vec3f) -> f32 {
+// The density of the air at `p`, for a step of length `dt` (`density` in `atmosphere.rs`).
+fn haze_density(p: vec3f, dt: f32) -> f32 {
     let shape = frame.haze_shape;
     var density = frame.haze.w * exp(-shape.y * max(p.y - shape.x, 0.0));
-    if (shape.z > 0.0) {
-        let noise = frame.haze_noise;
-        density *= 1.0 + shape.z * (2.0 * fractal_noise(p * noise.w + noise.xyz) - 1.0);
+    let noise = frame.haze_noise;
+    let amount = shape.z * (1.0 - smooth_step(0.5, 2.0, dt * noise.w));
+    if (amount > 0.0) {
+        density *= 1.0 + amount * (2.0 * fractal_noise(p * noise.w + noise.xyz) - 1.0);
     }
     return density;
 }

@@ -20,39 +20,46 @@ pub(crate) struct ShadowFit {
 
 /// An orthographic light camera around `bounds` that looks along `direction`. The map has
 /// `size` x `size` texels.
+///
+/// The map stays still in the world while the box moves, so that shadow edges and light
+/// shafts do not crawl when the box follows the camera: the light view turns about the world
+/// origin and does not move with the box, the extent grows in steps of 1/64 of a power of
+/// two, and the edges of the map are on whole texels of the world grid.
 pub(crate) fn fit(direction: Vec3, bounds: &Aabb, size: usize) -> ShadowFit {
-    let center = bounds.center();
     let radius = (bounds.size().length() * 0.5).max(1e-3);
     let up = if direction.y.abs() > 0.99 {
         Vec3::Z
     } else {
         Vec3::Y
     };
-    let view = Mat4::look_at_rh(center - direction * radius * 2.0, center, up);
+    // Only a turn: light space has the world origin at its origin, so its X and Y keep the
+    // precision of the world positions.
+    let view = Mat4::look_at_rh(Vec3::ZERO, direction, up);
     let light_bounds = bounds.transformed(&view);
     let pad = light_bounds.size().truncate().max_element() * 0.02 + 1e-3;
     let (min, max) = (light_bounds.min, light_bounds.max);
-    // casters outside explicit bounds can be between the light and the box
-    let near = (-max.z - radius * 4.0).max(0.0);
-    let far = -min.z + pad;
-    let width = (max.x - min.x) + pad * 2.0;
-    let height = (max.y - min.y) + pad * 2.0;
-    let extent = width.max(height);
-    let (cx, cy) = (f32::midpoint(min.x, max.x), f32::midpoint(min.y, max.y));
-    let projection = Mat4::orthographic_rh(
-        cx - extent * 0.5,
-        cx + extent * 0.5,
-        cy - extent * 0.5,
-        cy + extent * 0.5,
-        near,
-        far,
-    );
+    let extent = quantize_up((max.x - min.x).max(max.y - min.y) + pad * 2.0);
     let texel_world = extent / size as f32;
+    let snap = |v: f32| (v / texel_world).floor() * texel_world;
+    let left = snap(f32::midpoint(min.x, max.x) - extent * 0.5);
+    let bottom = snap(f32::midpoint(min.y, max.y) - extent * 0.5);
+    // Casters outside explicit bounds can be between the light and the box. The depth
+    // range moves in steps too, so that the depth of a still caster does not change.
+    let depth_step = extent / 16.0;
+    let near = ((-max.z - radius * 4.0) / depth_step).floor() * depth_step;
+    let far = ((-min.z + pad) / depth_step).ceil() * depth_step;
+    let projection = Mat4::orthographic_rh(left, left + extent, bottom, bottom + extent, near, far);
     ShadowFit {
         view_proj: projection * view,
         texel_world,
         depth_per_texel: texel_world / (far - near).max(1e-6),
     }
+}
+
+/// Rounds `v` up to a multiple of 1/64 of the power of two below it.
+fn quantize_up(v: f32) -> f32 {
+    let step = v.max(1e-6).log2().floor().exp2() / 64.0;
+    (v / step).ceil() * step
 }
 
 /// The shadow of a directional light.

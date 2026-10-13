@@ -1,6 +1,6 @@
 use glam::{Mat4, Quat, Vec2, Vec3};
 
-use crate::math::{deg, noise1};
+use crate::math::{deg, gradient_noise1};
 
 /// A perspective or orthographic camera, three.js `PerspectiveCamera` with `lookAt`.
 ///
@@ -145,7 +145,8 @@ impl Camera {
         self
     }
 
-    /// Adds hand-held shake: smooth noise turns the camera.
+    /// Adds hand-held shake: smooth gradient noise turns the camera. Its speed changes
+    /// smoothly, so the camera does not stop and start again.
     ///
     /// `amount` is about the angle in radians. Cameras with a different `seed` shake
     /// differently. For an impact, give an amount that decays over time.
@@ -153,14 +154,19 @@ impl Camera {
         if amount == 0.0 {
             return self;
         }
+        // Gradient noise has about half the amplitude of value noise, and it turns about
+        // twice as often. At half the frequency and with this gain, the shake has the
+        // amplitude, the speed and the acceleration of the value noise of earlier versions.
+        let amount = amount * 1.77;
         let distance = self.position.distance(self.target);
         let (right, up) = (self.right(), self.up_vector());
-        let frequency = 9.0;
-        let dx = noise1(seed, time * frequency) + 0.5 * noise1(seed + 17, time * frequency * 2.3);
-        let dy =
-            noise1(seed + 31, time * frequency) + 0.5 * noise1(seed + 47, time * frequency * 2.1);
+        let frequency = 4.5;
+        let dx = gradient_noise1(seed, time * frequency)
+            + 0.5 * gradient_noise1(seed + 17, time * frequency * 2.3);
+        let dy = gradient_noise1(seed + 31, time * frequency)
+            + 0.5 * gradient_noise1(seed + 47, time * frequency * 2.1);
         self.target += (right * dx + up * dy) * amount * distance;
-        self.roll += noise1(seed + 59, time * frequency * 0.7) * amount * 0.5;
+        self.roll += gradient_noise1(seed + 59, time * frequency * 0.7) * amount * 0.5;
         self
     }
 
