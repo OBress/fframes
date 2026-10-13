@@ -76,6 +76,7 @@
 //! | `vector.project(camera)` | [`Camera::project`] |
 //! | `GLTFLoader` + `AnimationMixer` | [`Model::from_gltf`] + [`ModelInstance::play`] |
 //! | `STLLoader`, `toCreasedNormals` | [`Geometry::from_stl`], [`Geometry::smooth`] |
+//! | `VideoTexture` | [`Texture::from_image`] of a decoded video frame, for each frame |
 //! | `UnrealBloomPass`, `ACESFilmicToneMapping` | [`Bloom`], [`ToneMapping`] |
 //! | `Points` | [`Node::particles`] |
 //! | `InstancedMesh`, `instanceColor` | [`Node::instanced`] with [`Instances`] |

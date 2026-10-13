@@ -68,6 +68,30 @@ impl Texture {
         ))
     }
 
+    /// A color texture from an fframes image: a media file, a decoded video frame, or a
+    /// rendered frame of another video. Use a new texture for each frame of a video, so a
+    /// screen in the scene plays it. Resize large frames first (`into_resized_image`), because
+    /// the texture makes its mipmap levels on the CPU.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_image(image: &fframes::media::ImageData<'_>) -> Self {
+        let source = &image.image;
+        // fframes keeps premultiplied alpha; the texture keeps straight alpha
+        let rgba: Vec<u8> = source
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b, a]| match a {
+                0 | 255 => [r, g, b, a],
+                _ => {
+                    let straight = |c: u8| (u32::from(c) * 255 / u32::from(a)).min(255) as u8;
+                    [straight(r), straight(g), straight(b), a]
+                }
+            })
+            .collect();
+        Self::from_rgba8(source.width, source.height, &rgba, true)
+    }
+
     /// Decodes a PNG, JPEG or WebP image of linear data: a normal, roughness, metalness or
     /// ambient occlusion map.
     pub fn decode_linear(bytes: &[u8]) -> Result<Self, image::ImageError> {
