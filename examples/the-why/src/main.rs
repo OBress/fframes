@@ -30,7 +30,8 @@ fn main() -> ExitCode {
     let play = play.process_media_source().expect("dynamic_media/play");
     let media = CombinedMediaProvider::from([&media as &dyn MediaProvider, &play]);
     let scale = args.scale.unwrap_or(1.0);
-    let video = TheWhy::new(Arc::new(assets), scale);
+    // The 3D pictures render at the size of the output: a strip cell or a draft needs no 4K.
+    let video = TheWhy::new(Arc::new(assets), args.output_scale::<TheWhy>());
 
     let options = RenderOptions {
         media: Some(&media),
