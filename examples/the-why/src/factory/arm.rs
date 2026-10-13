@@ -1051,7 +1051,7 @@ impl Arm {
                         0.0,
                         0.215,
                     ),
-                    p.white.clone(),
+                    p.graphite.clone(),
                 ),
             );
             scene.add_to(

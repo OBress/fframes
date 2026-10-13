@@ -67,16 +67,6 @@ pub fn picture_size(scale: f64) -> (u32, u32) {
     (size(WIDTH), size(PICTURE_HEIGHT))
 }
 
-/// A white flash that fades out over the first `length` seconds of a shot. It carries the
-/// light of the cut in shot 1 into the welding arc of shot 2.
-pub fn flash_in(t: f32, length: f32) -> Svgr<'static> {
-    let opacity = 1.0 - smoothstep(0.0, length, t);
-    if opacity <= 0.0 {
-        return Svgr::empty();
-    }
-    svgr!(<rect x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} fill="#fff" opacity={opacity} />)
-}
-
 /// The iris of a camera that opens over the first `length` seconds of a shot.
 pub fn iris(t: f32, length: f32) -> Svgr<'static> {
     let open = smoothstep(0.0, length, t);

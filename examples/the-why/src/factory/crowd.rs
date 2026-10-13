@@ -1,6 +1,7 @@
 //! The crowd of arms on the production lines. All arms draw as instances: one draw for each
 //! part. Arms near the camera use the parts of the hero arm in [`super::arm`]. Arms farther
-//! away use coarse copies of its links with about 1/50 of the triangles.
+//! away use coarse copies of its links with about 1/50 of the triangles, and arms far away
+//! use boxes. Arms out of the view do not draw.
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -18,6 +19,8 @@ use super::arm::{
 pub struct Model {
     shells: [Geometry; 7],
     metals: [Geometry; 7],
+    /// Boxes and cylinders of about 150 triangles for each arm, for arms far away.
+    far: [Geometry; 7],
     /// The lens of the eye in the J6 frame. It glows in the color of each instance.
     eye: Geometry,
 }
@@ -123,6 +126,19 @@ impl Model {
             .rotate_x(deg(90.0))
             .translate(EYE.x, EYE.y, EYE.z + 0.006);
 
+        let block = |w: f32, h: f32, d: f32, at: Vec3| {
+            Geometry::cuboid(w, h, d).translate(at.x, at.y, at.z)
+        };
+        let far = [
+            Geometry::cylinder(0.33, 0.35, 0.4, 8).translate(0.0, 0.25, 0.0),
+            block(0.6, 0.5, 0.5, vec3(0.0, 0.25, 0.04)),
+            block(0.3, L2 + 0.25, 0.34, vec3(0.0, L2 * 0.5, 0.0)),
+            block(0.28, 0.28, 0.95, vec3(0.0, A3, 0.05)),
+            block(0.2, 0.2, 0.42, vec3(0.0, 0.0, 0.19)),
+            block(0.15, 0.13, 0.15, Vec3::ZERO),
+            block(0.26, 0.09, 0.32, vec3(0.0, 0.0, 0.14)),
+        ];
+
         Self {
             shells: [
                 base_shell, j1_shell, j2_shell, j3_shell, j4_shell, j5_shell, j6_shell,
@@ -130,6 +146,7 @@ impl Model {
             metals: [
                 base_metal, j1_metal, j2_metal, j3_metal, j4_metal, j5_metal, j6_metal,
             ],
+            far,
             eye,
         }
     }
@@ -213,6 +230,7 @@ impl Detail {
 pub struct Crowd {
     shells: [NodeId; 7],
     metals: [NodeId; 7],
+    far: [NodeId; 7],
     /// The parts of the near arms, with their joint frames.
     detail: Vec<(usize, NodeId)>,
     eyes: NodeId,
@@ -227,12 +245,34 @@ pub struct Station {
     pub phase: f32,
 }
 
-/// A posed arm: its base, its joints and the color of its eye.
+/// A posed arm: its base, its joints, the color of its eye and a tint of its paint (wear).
 #[derive(Debug, Clone, Copy)]
 pub struct Posed {
     pub base: Mat4,
     pub joints: Joints,
     pub eye: Rgb,
+    pub tint: Rgb,
+}
+
+/// How an arm of the crowd draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lod {
+    /// Out of the view.
+    Hidden,
+    /// Boxes, for arms far away.
+    Far,
+    /// The coarse copies of the links.
+    Coarse,
+    /// The parts of the hero arm.
+    Detail,
+}
+
+/// The paint of the arm at station `index`: some arms are older and their paint is less
+/// white.
+pub fn tint(index: usize) -> Rgb {
+    let age = hash(index as u32 * 13 + 5);
+    let grey = 1.0 - 0.16 * age * age;
+    Rgb::linear(grey, grey * (1.0 - 0.02 * age), grey * (1.0 - 0.06 * age))
 }
 
 impl Crowd {
@@ -244,6 +284,7 @@ impl Crowd {
         };
         let shells = std::array::from_fn(|i| add(scene, &model.shells[i], &palette.white));
         let metals = std::array::from_fn(|i| add(scene, &model.metals[i], &palette.graphite));
+        let far = std::array::from_fn(|i| add(scene, &model.far[i], &palette.white));
         let detail = detail
             .0
             .iter()
@@ -256,40 +297,52 @@ impl Crowd {
         Self {
             shells,
             metals,
+            far,
             detail,
             eyes,
         }
     }
 
-    /// Sets the instances of all arms in `scene`. The `near` arms show the detailed parts.
-    pub fn pose(&self, scene: &mut Scene, arms: &[Posed], near: impl Fn(&Posed) -> bool) {
-        let frames: Vec<([Mat4; 7], bool)> = arms
+    /// Gives all parts of the crowd a rim of `color`: light from behind at their edges.
+    pub fn rim(&self, scene: &mut Scene, color: Rgb) {
+        let nodes = self.shells.iter().chain(&self.metals).chain(&self.far);
+        for node in nodes.chain(self.detail.iter().map(|(_, n)| n)) {
+            if let Some(m) = scene[*node].material_mut() {
+                m.rim = color;
+                m.rim_power = 4.0;
+            }
+        }
+    }
+
+    /// Sets the instances of all arms in `scene`. `lod(arm)` chooses how each arm draws.
+    pub fn pose(&self, scene: &mut Scene, arms: &[Posed], lod: impl Fn(&Posed) -> Lod) {
+        let drawn: Vec<([Mat4; 7], Lod, &Posed)> = arms
             .iter()
-            .map(|a| (frames(a.base, &a.joints), near(a)))
+            .map(|a| (a, lod(a)))
+            .filter(|(_, lod)| *lod != Lod::Hidden)
+            .map(|(a, lod)| (frames(a.base, &a.joints), lod, a))
             .collect();
         let set = |scene: &mut Scene, node: NodeId, instances: Instances| {
             if let Object::Mesh(mesh) = &mut scene[node].object {
                 mesh.instances = Some(Arc::new(instances));
             }
         };
-        let link = |i: usize, near: bool| -> Vec<Mat4> {
-            frames
-                .iter()
-                .filter(|f| f.1 == near)
-                .map(|f| f.0[i])
-                .collect()
+        let link = |i: usize, lod: Lod| -> Instances {
+            let arms = drawn.iter().filter(|f| f.1 == lod);
+            Instances::new(arms.clone().map(|f| f.0[i])).colors(arms.map(|f| f.2.tint))
         };
         for i in 0..7 {
-            set(scene, self.shells[i], Instances::new(link(i, false)));
-            set(scene, self.metals[i], Instances::new(link(i, false)));
+            set(scene, self.shells[i], link(i, Lod::Coarse));
+            set(scene, self.metals[i], link(i, Lod::Coarse));
+            set(scene, self.far[i], link(i, Lod::Far));
         }
         for (frame, node) in &self.detail {
-            set(scene, *node, Instances::new(link(*frame, true)));
+            set(scene, *node, link(*frame, Lod::Detail));
         }
         set(
             scene,
             self.eyes,
-            Instances::new(frames.iter().map(|f| f.0[6])).colors(arms.iter().map(|a| a.eye)),
+            Instances::new(drawn.iter().map(|f| f.0[6])).colors(drawn.iter().map(|f| f.2.eye)),
         );
     }
 }
@@ -339,17 +392,13 @@ pub fn joints(work: &Work, hint: &Joints) -> Joints {
     arm::solve(work.tip, arm::frame(side, work.tool), hint)
 }
 
-/// The joints of an arm whose tool points down with its grip point at `tip` (in the frame
-/// of its base).
-pub fn tool_down_at(tip: Vec3, hint: &Joints) -> Joints {
-    arm::solve(tip, arm::tool_down(Vec3::Z), hint)
-}
-
-/// A rest pose: the joints of an arm that looks along `look` (in the frame of its base) with
-/// its eye at `eye`.
-pub fn looking(eye: Vec3, look: Vec3, hint: &Joints) -> Joints {
+/// The joints of an arm that turns to `look` (in the frame of its base) and looks along it.
+/// Its eye is `height` meters over the floor, 0.55 m out from its base in the direction of
+/// the look.
+pub fn looking(look: Vec3, height: f32, hint: &Joints) -> Joints {
+    let out = look.with_y(0.0).normalize_or(Vec3::Z) * 0.55;
     let tool = arm::looking(look, 0.0);
-    arm::solve(eye + look.normalize() * 0.1, tool, hint)
+    arm::solve(out + Vec3::Y * height + look.normalize() * 0.1, tool, hint)
 }
 
 /// The stations of `lines` production lines at `x` positions, each with arms on both sides

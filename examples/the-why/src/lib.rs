@@ -61,7 +61,8 @@ impl TheWhy {
         let factory_shot = Shot::new("Factory", 12.0, renderer(), move |r, t| {
             look::picture(r, set.shutter_factory(t), t, |t| set.moment_factory(t))
         })
-        .overlay(|t| look::flash_in(t, 0.45));
+        // the shot opens on the white light of the arc
+        .vignette(|t| fframes_3d::math::smoothstep(0.0, 0.45, t));
         let (set, hud) = (factory.clone(), factory.clone());
         let engineer = Shot::new("Engineer", 10.0, renderer(), move |r, t| {
             look::picture(r, set.shutter_engineer(t), t, |t| set.moment_engineer(t))
@@ -213,7 +214,8 @@ impl Video for TheWhy {
             sound("sfx_servo.mp3", 16.9, -9.0),
             sound("sfx_hud.mp3", 19.0, -12.0),
             sound("sfx_hud_type.mp3", 21.4, -14.0),
-            sound("sfx_dive.mp3", 26.2, -8.0),
+            sound("sfx_chip.mp3", 26.25, -12.0),
+            sound("sfx_dive.mp3", 27.0, -8.0),
             // the city, the desert, the line
             sound("sfx_city.mp3", 29.0, -17.0)
                 .fade_in(1.0)
@@ -225,7 +227,8 @@ impl Video for TheWhy {
             sound("sfx_hum.mp3", 54.8, -9.0).fade_in(0.8),
             sound("sfx_streak.mp3", 56.6, -7.0),
             // the wave, the builds, the sunrise
-            sound("sfx_wave.mp3", 59.6, -9.0),
+            sound("sfx_swell.mp3", 59.25, -11.0).fade_out(1.0),
+            sound("sfx_wave.mp3", 60.3, -9.0),
             // the Golden Gate: the bay at dusk, the spinning wheels, the cables, the deck
             sound("sfx_foghorn.mp3", 67.5, -19.0).fade_out(1.5),
             sound("sfx_spin.mp3", 68.85, -16.0).fade_out(0.5),
