@@ -203,9 +203,10 @@ impl Geometry {
     /// A box with rounded edges and corners, like three.js `RoundedBoxGeometry`. `radius` is
     /// the radius of the edges. `segments` is the number of steps on each rounded edge; 3
     /// or 4 look smooth. Rounded edges catch highlights, so use them for machined parts.
+    /// A negative size gives the same box as its absolute value.
     pub fn rounded_box(width: f32, height: f32, depth: f32, radius: f32, segments: u32) -> Self {
-        let half = Vec3::new(width, height, depth) * 0.5;
-        let radius = radius.clamp(0.0, half.min_element());
+        let half = Vec3::new(width, height, depth).abs() * 0.5;
+        let radius = radius.min(half.min_element()).max(0.0);
         let inner = half - Vec3::splat(radius);
         let segments = segments.max(1);
         // Grid lines along a face axis with the half size `h`. A line at `radius * tan(a)`
@@ -564,8 +565,8 @@ impl Geometry {
             }
             contours.push(c);
         }
-        let half = depth * 0.5;
-        let bevel = bevel.clamp(0.0, half);
+        let half = depth.abs() * 0.5;
+        let bevel = bevel.min(half).max(0.0);
         let bevel_segments = if bevel > 0.0 {
             bevel_segments.max(1)
         } else {
@@ -767,8 +768,8 @@ impl Geometry {
     /// A rectangle for [`Geometry::extrude`]. A `chamfer` above 0 cuts the corners by that
     /// length.
     pub fn rect_shape(width: f32, height: f32, chamfer: f32) -> Vec<Vec2> {
-        let (w, h) = (width * 0.5, height * 0.5);
-        let c = chamfer.clamp(0.0, w.min(h));
+        let (w, h) = (width.abs() * 0.5, height.abs() * 0.5);
+        let c = chamfer.min(w.min(h)).max(0.0);
         if c <= 0.0 {
             return vec![
                 Vec2::new(-w, -h),
@@ -1609,6 +1610,14 @@ mod tests {
     fn rounded_box_keeps_its_size() {
         let b = Geometry::rounded_box(2.0, 1.0, 0.5, 0.1, 4).bounds();
         assert!((b.size() - Vec3::new(2.0, 1.0, 0.5)).abs().max_element() < 1e-4);
+    }
+
+    /// A size that an animation drives below zero must not panic in a frame.
+    #[test]
+    fn negative_sizes_do_not_panic() {
+        let b = Geometry::cuboid(-1.0, 0.5, 0.25).bounds();
+        assert!((b.size() - Vec3::new(1.0, 0.5, 0.25)).abs().max_element() < 1e-4);
+        let _ = Geometry::extrude(&Geometry::rect_shape(-1.0, 0.5, 0.1), -0.2, 0.05);
     }
 
     #[test]
