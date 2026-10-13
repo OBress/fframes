@@ -35,13 +35,18 @@ pub struct Layout {
     pub bays: f32,
     pub floors: f32,
     pub cell: u32,
+    /// Far away: small lit windows that each light on their own, on a dark facade. Seen
+    /// from far, the texture keeps the same mean light at every size, so it does not
+    /// shimmer, and no floor is a bright band.
+    pub sparse: bool,
 }
 
-/// The facades of most of the city.
+/// The facades of the buildings near the flight.
 pub const FAR: Layout = Layout {
     bays: BAYS,
     floors: FLOORS,
     cell: CELL,
+    sparse: false,
 };
 /// The facades along the flight through Times Square, which the camera passes at 20 m:
 /// two times the texels in each direction, on a texture of the same size.
@@ -49,6 +54,15 @@ pub const NEAR: Layout = Layout {
     bays: 16.0,
     floors: 24.0,
     cell: 64,
+    sparse: false,
+};
+/// The facades of the buildings that the flight sees only from far away, and of the
+/// other boroughs and New Jersey.
+pub const DISTANT: Layout = Layout {
+    bays: BAYS,
+    floors: FLOORS,
+    cell: 16,
+    sparse: true,
 };
 /// The emitted light of the brightest texel of a window. The texels keep half of the
 /// light, so the ceiling lights can be two times brighter than a lit room.
@@ -63,12 +77,26 @@ pub struct Facade {
     pub metal_rough: Arc<Texture>,
 }
 
-/// The colors of office light, sRGB: cold LED panels most of all, neutral white, the green
-/// white of old fluorescent tubes, and a few warm lamps.
-const TONES: [u32; 12] = [
-    0xe4eeff, 0xcfe0ff, 0xb8d0ff, 0xf2f5ff, 0xd8e8f8, 0xc4d8f4, 0xe4eeff, 0xcfe0ff, 0xfff4e8,
-    0xe6fff0, 0xe8f6ff, 0xffe0b8,
+/// The colors of light in offices, sRGB: cold LED panels (5000 K), neutral white
+/// (4000 K), and the green white of old fluorescent tubes.
+const OFFICE: [u32; 8] = [
+    0xeef3ff, 0xdce8ff, 0xcfe0ff, 0xfff0dc, 0xfde9d2, 0xf0f4ff, 0xe4f0ff, 0xf2f9e4,
 ];
+/// The colors of light in homes and hotels, sRGB: warm lamps (2700 K to 3500 K).
+const HOME: [u32; 4] = [0xffb46b, 0xffc485, 0xffd8a8, 0xffbf7a];
+/// A television in a dark room.
+const TV: u32 = 0x5a86ff;
+
+/// A tone of light for the hash value `h`: a home light with the chance `warm`, else an
+/// office light.
+fn tone(h: f32, warm: f32) -> Vec3 {
+    if h < warm {
+        Rgb::hex(HOME[((h / warm) * HOME.len() as f32) as usize % HOME.len()]).0
+    } else {
+        let k = (h - warm) / (1.0 - warm);
+        Rgb::hex(OFFICE[(k * OFFICE.len() as f32) as usize % OFFICE.len()]).0
+    }
+}
 
 /// How a style divides a cell of one bay and one floor.
 struct Cell {
@@ -83,6 +111,10 @@ struct Cell {
     /// The parts of the tenants that are dark and that are open floors lit from end to end.
     /// The rest have rooms.
     floors: [f32; 2],
+    /// The chance that a tenant is a home or a hotel with warm light.
+    warm: f32,
+    /// The color of the spandrel panels between the floors.
+    spandrel: u32,
 }
 
 fn cell(style: Style) -> Cell {
@@ -94,6 +126,8 @@ fn cell(style: Style) -> Cell {
             glass_finish: [0.14, 0.75],
             wall_finish: [0.35, 0.8],
             floors: [0.33, 0.17],
+            warm: 0.15,
+            spandrel: 0x1a2028,
         },
         Style::Fins => Cell {
             glass: [0.12, 0.88, 0.03, 0.9],
@@ -102,14 +136,18 @@ fn cell(style: Style) -> Cell {
             glass_finish: [0.05, 0.0],
             wall_finish: [0.3, 0.9],
             floors: [0.38, 0.14],
+            warm: 0.15,
+            spandrel: 0x2a3038,
         },
         Style::Office => Cell {
             glass: [0.2, 0.8, 0.16, 0.72],
             wall: 0x6c6f74,
             glass_color: 0x111720,
-            glass_finish: [0.05, 0.0],
+            glass_finish: [0.04, 0.0],
             wall_finish: [0.85, 0.0],
             floors: [0.3, 0.14],
+            warm: 0.25,
+            spandrel: 0x3a3d42,
         },
         Style::Prewar => Cell {
             glass: [0.26, 0.74, 0.18, 0.7],
@@ -118,6 +156,8 @@ fn cell(style: Style) -> Cell {
             glass_finish: [0.05, 0.0],
             wall_finish: [0.9, 0.0],
             floors: [0.35, 0.08],
+            warm: 0.55,
+            spandrel: 0x4a4038,
         },
         Style::Low => Cell {
             glass: [0.24, 0.76, 0.2, 0.68],
@@ -126,6 +166,8 @@ fn cell(style: Style) -> Cell {
             glass_finish: [0.05, 0.0],
             wall_finish: [0.9, 0.0],
             floors: [0.5, 0.05],
+            warm: 0.6,
+            spandrel: 0x353436,
         },
     }
 }
@@ -140,7 +182,13 @@ impl Facade {
             layout.bays as u32 * layout.cell,
             layout.floors as u32 * layout.cell,
         );
-        let c = cell(style);
+        let mut c = cell(style);
+        if layout.sparse {
+            // Far away the facades are dark, so the lit windows carry the picture.
+            c.wall = 0x16191e;
+            c.spandrel = 0x101318;
+            c.glass_color = 0x0a0d12;
+        }
         let [x0, x1, y0, y1] = c.glass;
         // The cell, the position in the cell, and whether it is glass.
         let at = |u: f32, v: f32| {
@@ -149,13 +197,31 @@ impl Facade {
             let glass = fx > x0 && fx < x1 && fy > y0 && fy < y1;
             (x as u32, y as u32, fx, fy, glass)
         };
+        // The spandrel panel: the band of the wall at the slab between two floors.
+        let spandrel = |fy: f32| fy > y1 + 0.03 || fy < y0 - 0.03;
         let color = Texture::from_fn_data(w, h, true, |u, v| {
-            let (_, _, _, _, glass) = at(u, v);
-            srgb(if glass { c.glass_color } else { c.wall })
+            let (cx, cy, _, fy, glass) = at(u, v);
+            if glass {
+                return srgb(c.glass_color);
+            }
+            if spandrel(fy) {
+                // The panels differ a little from bay to bay.
+                let k = 0.85 + 0.3 * hash(cx * 17 + cy * 131 + seed);
+                let p = (Rgb::hex(c.spandrel).0 * k).min(Vec3::ONE);
+                let out = Rgb::from(p).to_color();
+                return [out.r, out.g, out.b, 255];
+            }
+            srgb(c.wall)
         });
         let metal_rough = Texture::from_fn_data(w, h, false, |u, v| {
-            let (_, _, _, _, glass) = at(u, v);
-            let [rough, metal] = if glass { c.glass_finish } else { c.wall_finish };
+            let (_, _, _, fy, glass) = at(u, v);
+            let [rough, metal] = if glass {
+                c.glass_finish
+            } else if spandrel(fy) {
+                [0.3, 0.6]
+            } else {
+                c.wall_finish
+            };
             [255, (rough * 255.0) as u8, (metal * 255.0) as u8, 255]
         });
         let emissive = Texture::from_fn_data(w, h, true, |u, v| {
@@ -163,14 +229,12 @@ impl Facade {
             if !glass {
                 return [0, 0, 0, 255];
             }
-            let light = room_light(
-                seed,
-                &c,
-                cx,
-                cy,
-                (fx - x0) / (x1 - x0),
-                (fy - y0) / (y1 - y0),
-            );
+            let (px, py) = ((fx - x0) / (x1 - x0), (fy - y0) / (y1 - y0));
+            let light = if layout.sparse {
+                window_light(seed, &c, cx, cy, px, py)
+            } else {
+                room_light(seed, &c, cx, cy, px, py)
+            };
             let out = Rgb::from(light / WINDOW_LIGHT).to_color();
             [out.r, out.g, out.b, 255]
         });
@@ -184,7 +248,9 @@ impl Facade {
 
 /// The linear light of a window at `px`, `py` (`0..1` over the glass) in bay `cx` of floor
 /// `cy`. Tenants take runs of two to six floors with one kind of light. Their floors are
-/// dark, lit from end to end, or divided into rooms that are lit or dark.
+/// dark, lit from end to end, or divided into rooms that are lit or dark. Homes and
+/// hotels have warm light, curtains and televisions, offices cold or green white light,
+/// ceiling panels and blinds.
 fn room_light(seed: u32, c: &Cell, cx: u32, cy: u32, px: f32, py: f32) -> Vec3 {
     // The tenant of the floor: runs of floors that start where the hash is low.
     let mut first = cy;
@@ -194,69 +260,134 @@ fn room_light(seed: u32, c: &Cell, cx: u32, cy: u32, px: f32, py: f32) -> Vec3 {
     let tenant = seed.wrapping_mul(977).wrapping_add(first * 131);
     let floor = tenant.wrapping_add(cy * 7);
     let window = floor.wrapping_add(cx * 31);
-    let tone = Rgb::hex(TONES[(hash(tenant + 2) * TONES.len() as f32) as usize % TONES.len()]).0;
+    let home = hash(tenant + 4) < c.warm;
+    let light = tone(hash(tenant + 2), if home { 1.0 } else { 0.0 });
     let class = hash(tenant);
-    let dark = Rgb::hex(0x1a2a40).0 * 0.015;
+    let dark = Rgb::hex(0x1a2a40).0 * 0.012;
     if class < c.floors[0] {
-        // A dark tenant. A few rooms keep a desk lamp or a monitor on.
-        if hash(window + 21) < 0.04 {
-            return monitor(window, px, py);
-        }
-        return dark;
+        // A dark tenant. A few rooms keep a desk lamp, a monitor or a television on.
+        return match hash(window + 21) {
+            h if h < 0.03 => monitor(window, px, py),
+            h if h < 0.05 && home => television(window, px, py),
+            _ => dark,
+        };
     }
-    if class > 1.0 - c.floors[1] {
-        // An open floor, lit from end to end with the same ceiling lights.
-        let level = 0.2 + 0.25 * hash(tenant + 3) + 0.06 * hash(window + 8);
-        return tone * level * ceiling(window, px, py);
+    if !home && class > 1.0 - c.floors[1] {
+        // An open office floor, lit from end to end with the same ceiling panels.
+        let level = 0.16 + 0.2 * hash(tenant + 3) + 0.05 * hash(window + 8);
+        return light * level * ceiling(window, px, py);
     }
     // A floor of rooms: a room starts at a bay where the hash is low and runs to the right.
     let mut start = cx;
-    while start > 0 && hash(floor + start * 7) >= 0.2 {
+    while start > 0 && hash(floor + start * 7) >= if home { 0.4 } else { 0.2 } {
         start -= 1;
     }
     let room = floor.wrapping_add(start * 7919);
-    let lit = 0.25 + 0.6 * hash(tenant + 5);
+    let lit = 0.2 + 0.5 * hash(tenant + 5);
     if hash(room + 1) > lit {
-        if hash(window + 21) < 0.08 {
-            return monitor(window, px, py);
-        }
-        return dark;
+        return match hash(window + 21) {
+            h if h < 0.06 => monitor(window, px, py),
+            h if h < 0.12 && home => television(window, px, py),
+            _ => dark,
+        };
     }
-    let tone = if hash(room + 9) < 0.25 {
-        Rgb::hex(TONES[(hash(room + 2) * TONES.len() as f32) as usize % TONES.len()]).0
+    // Some rooms of a tenant have another light.
+    let light = if hash(room + 9) < 0.2 {
+        tone(hash(room + 2), c.warm)
     } else {
-        tone
+        light
     };
-    let level = 0.16 + 0.6 * hash(room + 3).powf(1.8) * (0.8 + 0.4 * hash(window + 8));
-    // Curtains: an even, soft light with folds.
-    if hash(window + 6) < 0.12 {
+    let level = 0.16 + 0.6 * hash(room + 3).powf(1.4) * (0.8 + 0.4 * hash(window + 8));
+    if home {
+        // Curtains or a lamp in the room: an even, warm light, darker at the sides.
         let fold = ((px * 9.0 + hash(window + 10) * 3.0).sin() * 0.5 + 0.5) * 0.25;
-        return tone * level * (0.5 + fold);
+        let lamp = 1.0 - 0.6 * (px - 0.2 - 0.6 * hash(room + 12)).abs();
+        // Curtains drawn to the sides of the window.
+        let open = 0.25 + 0.2 * hash(window + 17);
+        if (px - 0.5).abs() > open && hash(window + 18) < 0.6 {
+            return light * level * (0.35 + fold);
+        }
+        if hash(window + 6) < 0.35 {
+            return light * level * (0.45 + fold);
+        }
+        // A sofa or a shelf in front of the lamp.
+        let shade = if py > 0.7 && hash(window + 19 + (px * 3.0) as u32) < 0.5 {
+            0.3
+        } else {
+            1.0
+        };
+        return light * level * lamp * (1.15 - 0.5 * py) * shade;
     }
     let mut l = level * ceiling(window, px, py);
     // Blinds, part way down, with their slats.
-    if hash(window + 6) < 0.32 && py < 0.15 + 0.75 * hash(window + 7) {
+    let blind = 0.1 + 0.8 * hash(window + 7);
+    if hash(window + 6) < 0.35 && py < blind {
         let slat = ((py * 40.0).fract() - 0.5).abs() * 2.0;
-        l = level * (0.35 + 0.15 * slat);
+        l = level * (0.3 + 0.18 * slat) * (0.7 + 0.3 * py / blind);
     }
-    tone * l
+    // A column or a cabinet in front of part of the window.
+    if hash(window + 13) < 0.15 && (px - hash(window + 14)).abs() < 0.12 {
+        l *= 0.25;
+    }
+    // A screen on a desk, cold and brighter than the room.
+    let desk = 0.15 + 0.6 * hash(window + 15);
+    if hash(window + 16) < 0.45 && py > 0.56 && py < 0.66 && (px - desk).abs() < 0.07 {
+        return Rgb::hex(0xbcd4ff).0 * (level * 1.6 + 0.08);
+    }
+    light * l
+}
+
+/// The light of a far window at `px`, `py`: each window lights on its own, a little more
+/// often on some floors. The light fills the middle of the glass, so the texture stays the
+/// same at every mip level.
+fn window_light(seed: u32, c: &Cell, cx: u32, cy: u32, px: f32, py: f32) -> Vec3 {
+    let window = seed
+        .wrapping_mul(977)
+        .wrapping_add(cy * 131)
+        .wrapping_add(cx * 31);
+    let floor = 0.6 + 0.8 * hash(seed.wrapping_add(cy * 53));
+    if hash(window + 1) > 0.26 * floor || (px - 0.5).abs() > 0.38 || (py - 0.5).abs() > 0.4 {
+        return Vec3::ZERO;
+    }
+    let level = 0.15 + 0.45 * hash(window + 3).powf(1.5);
+    tone(hash(window + 2), c.warm) * level
+}
+
+/// A dark room with a television: a cold blue glow that fills the room.
+fn television(window: u32, px: f32, py: f32) -> Vec3 {
+    let x = 0.2 + 0.6 * hash(window + 23);
+    let glow = (1.0 - (px - x).abs() * 1.5).max(0.2) * (0.6 + 0.4 * py);
+    Rgb::hex(TV).0 * (0.12 * glow)
 }
 
 /// The light of a room from its ceiling: brightest at the top, where the lights hang, and
 /// darker behind the desks and the partitions at the bottom.
 fn ceiling(window: u32, px: f32, py: f32) -> f32 {
-    let mut l = 1.0 - 0.45 * py;
-    // Two rows of light fixtures under the ceiling in each bay.
-    if py < 0.09 {
-        l *= if ((px * 2.0).fract() - 0.5).abs() < 0.24 {
-            2.6
+    // The ceiling: two light panels in each bay, and the dark ceiling between them. Deeper
+    // in the room the ceiling is darker.
+    if py < 0.1 {
+        let panel = ((px * 2.0).fract() - 0.5).abs() < 0.3;
+        return if panel { 2.8 } else { 0.55 };
+    }
+    if py < 0.16 {
+        return 0.7;
+    }
+    // The back of the room, lit from above.
+    let mut l = 1.0 - 0.6 * (py - 0.16);
+    // Desks and their chairs at the bottom, and partitions.
+    if py > 0.64 {
+        let block = hash(window + 11 + (px * 4.0) as u32);
+        l *= if block < 0.35 {
+            0.12
+        } else if block < 0.7 {
+            0.35
         } else {
-            1.2
+            0.7
         };
     }
-    if py > 0.66 {
-        let block = hash(window + 11 + (px * 3.0) as u32);
-        l *= if block < 0.5 { 0.3 } else { 0.62 };
+    // A mullion between the two panes of the window.
+    if (px - 0.5).abs() < 0.015 {
+        l *= 0.2;
     }
     l
 }

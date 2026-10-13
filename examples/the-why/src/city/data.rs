@@ -47,6 +47,28 @@ pub struct Street {
     pub points: Vec<Vec2>,
 }
 
+/// A building outside the near box as a rectangle: in the other boroughs, in the north and
+/// the south of Manhattan, and in New Jersey.
+#[derive(Debug, Clone, Copy)]
+pub struct Block {
+    pub center: Vec2,
+    /// Half the length along `angle`, and half the width.
+    pub half: Vec2,
+    /// The direction of the length, in radians from +X toward +Z.
+    pub angle: f32,
+    pub height: f32,
+}
+
+/// The kind of a light line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    Street,
+    Highway,
+    Bridge,
+    Path,
+    Ramp,
+}
+
 pub struct Manhattan {
     pub buildings: Vec<Building>,
     /// The street segments of Manhattan, block by block.
@@ -59,6 +81,10 @@ pub struct Manhattan {
     pub land: Vec<[Vec2; 3]>,
     /// The parks of Manhattan, as triangles on the ground.
     pub parks: Vec<[Vec2; 3]>,
+    /// All other buildings within 20 km.
+    pub blocks: Vec<Block>,
+    /// The streets, highways, bridges, ramps and park paths of the five boroughs.
+    pub lines: Vec<(LineKind, Vec<Vec2>)>,
 }
 
 /// Turns around the walls that face into their building. A wall faces in when rays from
@@ -221,8 +247,8 @@ impl Manhattan {
     /// Reads the file made by `nyc.py`.
     pub fn load(bytes: &[u8]) -> Result<Self, String> {
         let mut r = Reader { bytes, at: 0 };
-        if &r.take::<4>()? != b"NYC1" {
-            return Err("manhattan.bin: not a NYC1 file".to_owned());
+        if &r.take::<4>()? != b"NYC2" {
+            return Err("manhattan.bin: not a NYC2 file, run fetch-nyc.sh".to_owned());
         }
         let n = r.count()?;
         let mut buildings = Vec::with_capacity(n);
@@ -252,6 +278,28 @@ impl Manhattan {
             .collect::<Result<_, _>>()?;
         let land = r.areas()?;
         let parks = r.areas()?;
+        let n = r.count()?;
+        let mut blocks = Vec::with_capacity(n);
+        for _ in 0..n {
+            blocks.push(Block {
+                center: r.vec2()?,
+                half: r.vec2()?,
+                angle: r.f32()?,
+                height: r.f32()?,
+            });
+        }
+        let n = r.count()?;
+        let mut lines = Vec::with_capacity(n);
+        for _ in 0..n {
+            let kind = match r.u8()? {
+                1 => LineKind::Highway,
+                2 => LineKind::Bridge,
+                3 => LineKind::Path,
+                4 => LineKind::Ramp,
+                _ => LineKind::Street,
+            };
+            lines.push((kind, r.polyline()?));
+        }
         Ok(Self {
             buildings,
             streets,
@@ -259,6 +307,8 @@ impl Manhattan {
             bridges,
             land,
             parks,
+            blocks,
+            lines,
         })
     }
 }

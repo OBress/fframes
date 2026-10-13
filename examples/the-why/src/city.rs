@@ -34,8 +34,10 @@ mod build;
 pub(crate) mod data;
 #[path = "city/flight.rs"]
 mod flight;
+#[path = "city/outer.rs"]
+mod outer;
 #[path = "city/textures.rs"]
-mod textures;
+pub(crate) mod textures;
 #[path = "city/traffic.rs"]
 mod traffic;
 
@@ -105,6 +107,10 @@ const COMPONENT: u32 = 0x9aa0a8;
 
 /// The cold light of the machines.
 const COLD: u32 = 0xcfe4ff;
+/// The height of the water of the rivers and the harbor.
+const WATER: f32 = -1.5;
+/// The glow of the city on the night sky and in the far haze, linear: warm grey.
+const SKY_GLOW: Rgb = Rgb::linear(0.055, 0.047, 0.042);
 /// The point lights that light the mist over Broadway ahead of the camera.
 const AVENUE_LIGHTS: usize = 2;
 
@@ -186,6 +192,12 @@ pub struct CitySet {
     screen_edges: Vec<(NodeId, f32)>,
     sites: Vec<SiteNodes>,
     stars: NodeId,
+    /// The glow of the city on the sky at the horizon. It moves with the camera.
+    sky: NodeId,
+    /// The light carpet of the far city.
+    carpet: NodeId,
+    /// The water of the rivers and the harbor.
+    water: NodeId,
     /// The steam of the street vents.
     steam: NodeId,
     /// The screens left on in dark rooms along Times Square, which flicker.
@@ -327,19 +339,33 @@ impl CitySet {
                 .env_intensity(0.2),
         };
 
-        // The water of the rivers, the land and the streets.
-        scene.add(
+        // The water of the rivers and the harbor mirrors the city.
+        scene.reflector = Some(Reflector::new(vec3(0.0, WATER, 0.0), Vec3::Y).scale(0.2));
+        let water = scene.add(
             Node::mesh(
-                Geometry::floor(40000.0, 40000.0).translate(0.0, -1.5, 0.0),
-                Material::standard(0x010306).roughness(0.06),
+                // So wide that it reaches the horizon: no edge between the water and the sky.
+                Geometry::floor_segments(330_000.0, 330_000.0, 33, 33).translate(0.0, WATER, 0.0),
+                Material::standard(0x020409)
+                    .roughness(0.18)
+                    .reflection(0.85)
+                    .env_intensity(0.6),
             )
             .shadows(false, false),
         );
         let ground = scene.add(
             Node::mesh(build::area(&city.land, 0.0), materials.die.clone()).shadows(false, false),
         );
-        let (jersey_land, jersey_walls) = build::new_jersey();
-        scene.add(Node::mesh(jersey_land, materials.ground.clone()).shadows(false, false));
+        scene.add(Node::mesh(build::new_jersey(), materials.ground.clone()).shadows(false, false));
+        // The far city: the light of its streets and windows on the land.
+        let land_map = outer::LandMap::new(&city);
+        let mut carpet_light = Material::unlit(Rgb::BLACK)
+            .map(outer::carpet(&city, &land_map))
+            .additive();
+        carpet_light.fog = false;
+        let carpet = scene.add(
+            Node::mesh(outer::carpet_ground(&city, 0.4).geometry(), carpet_light)
+                .shadows(false, false),
+        );
         let crossings = build::crossings(&city.streets);
         let streets = scene.add(
             Node::mesh(build::streets(&city), materials.street_die.clone()).shadows(false, false),
@@ -437,10 +463,28 @@ impl CitySet {
             )
             .shadows(false, false),
         );
+        // The bridges with the lights on their decks and cables, and the lamps of the park
+        // paths.
+        let (bridge_steel, bridge_lights) = outer::bridges(&city, &land_map);
+        scene.add(
+            Node::mesh(
+                bridge_steel.geometry(),
+                Material::standard(0x4a5058)
+                    .roughness(0.6)
+                    .env_intensity(0.6)
+                    .double_sided(),
+            )
+            .shadows(false, false),
+        );
         let small_lights = scene.add(Node::particles(
-            build::bridge_lights(&city)
+            bridge_lights
                 .iter()
-                .map(|&p| Particle::new(p, 0.9, Rgb::hex(COLD) * 6.0))
+                .map(|&p| Particle::new(p, 0.9, Rgb::hex(0xfff0d8) * 6.0))
+                .chain(
+                    outer::park_lamps(&city, 3500.0)
+                        .iter()
+                        .map(|&p| Particle::new(p, 0.35, Rgb::hex(0xffe6c0) * 4.0)),
+                )
                 .collect(),
             Blending::Additive,
         ));
@@ -452,7 +496,7 @@ impl CitySet {
         let screen_list = place_screens(&city);
         // The facades of the five styles, far and near.
         let facades: Vec<textures::Facade> = std::thread::scope(|s| {
-            let handles: Vec<_> = [textures::FAR, textures::NEAR]
+            let handles: Vec<_> = [textures::FAR, textures::NEAR, textures::DISTANT]
                 .into_iter()
                 .flat_map(|layout| {
                     STYLES
@@ -491,8 +535,17 @@ impl CitySet {
         let mut roof_light_list = Vec::new();
         let mut screens = Vec::new();
         let mut screen_edges = Vec::new();
-        let near_square = |b: &data::Building| {
-            (450.0..1300.0).contains(&b.center.y) && flight::track().project(b.center).0 < 110.0
+        // The facades: sharp along the glide through Times Square, sparse far from the
+        // flight.
+        let lod = |b: &data::Building| {
+            let off = flight::track().project(b.center).0;
+            if (450.0..1750.0).contains(&b.center.y) && off < 110.0 {
+                build::Lod::Near
+            } else if off > 380.0 {
+                build::Lod::Distant
+            } else {
+                build::Lod::Mid
+            }
         };
         // The walls that face the flight from near get steel mullions.
         let facing_flight = |center: Vec3, normal: Vec3| {
@@ -507,7 +560,7 @@ impl CitySet {
             CHIP_HALF,
             &skip,
             &screen_list,
-            near_square,
+            lod,
             facing_flight,
         ) {
             let root = scene.add(Node::group().scaled3(1.0, 0.002, 1.0));
@@ -517,8 +570,9 @@ impl CitySet {
                 .walls
                 .into_iter()
                 .chain(g.near_walls)
+                .chain(g.distant_walls)
                 .zip(&facades)
-                .zip(lights.iter().chain(&lights))
+                .zip(lights.iter().cycle())
             {
                 if mesh.len() > 0 {
                     let id =
@@ -597,11 +651,29 @@ impl CitySet {
                 start: g.start,
             });
         }
-        // New Jersey rises with the last group.
-        if let Some(last) = groups.last() {
+        // The buildings outside Midtown and in New Jersey rise with the last group.
+        if let Some(last) = groups.last_mut() {
+            let (walls, roofs) = outer::blocks(&city, &STYLES);
+            for (k, mesh) in walls.into_iter().enumerate() {
+                let id = scene.add_to(
+                    last.root,
+                    Node::mesh(mesh.geometry(), facade_material(&facades[10 + k]))
+                        .shadows(false, false)
+                        .named("outer"),
+                );
+                last.walls.push((id, 1.3));
+            }
             scene.add_to(
                 last.root,
-                Node::mesh(jersey_walls.geometry(), facade_material(&facades[4])),
+                Node::mesh(
+                    roofs.geometry(),
+                    Material::standard(0x1c1e22)
+                        .roughness(0.9)
+                        .env_intensity(0.3)
+                        .double_sided(),
+                )
+                .shadows(false, false)
+                .named("outer"),
             );
         }
         let screen_ids = screens.iter().map(|s| s.0).collect();
@@ -759,6 +831,11 @@ impl CitySet {
         scene.add(Node::light(Light::hemisphere(0x0a1424, 0x2a4470, 0.35)));
 
         let stars = scene.add(crate::stars::stars());
+        let mut glow = Material::unlit(Rgb::WHITE).additive().double_sided();
+        glow.fog = false;
+        glow.depth_write = false;
+        let sky =
+            scene.add(Node::mesh(outer::sky_dome(SKY_GLOW).geometry(), glow).shadows(false, false));
 
         // The steam stacks of the street vents: orange cones with white bands, as the
         // steam company puts them over the vents in the avenues.
@@ -823,6 +900,9 @@ impl CitySet {
             screen_edges,
             sites,
             stars,
+            sky,
+            carpet,
+            water,
             steam,
             monitors,
             materials,
@@ -1095,16 +1175,45 @@ impl CitySet {
             },
         );
 
+        // The far city: its light, the glow of the sky over it and the haze that hides its
+        // end. None of it on the chip.
+        scene[self.sky].position = camera.position;
+        // The mirror of the water costs a pass of the whole scene. In the canyon of Times
+        // Square and in the stars no water is in view, so it is off there.
+        let mirror = water_mirror(t);
+        if mirror <= 0.0 {
+            scene.reflector = None;
+        } else {
+            keep_out_of_mirror(&mut scene);
+        }
+        if let Some(mat) = scene[self.water].material_mut() {
+            mat.reflection = 0.85 * mirror;
+        }
+        let far = smoothstep(1.0, 2.6, t);
+        if let Some(mat) = scene[self.carpet].material_mut() {
+            mat.color = Rgb::WHITE * (0.9 * far);
+        }
+        if let Some(mat) = scene[self.sky].material_mut() {
+            mat.color = Rgb::WHITE * far;
+        }
+        // The far haze has the color of the sky at the horizon: the background there and the
+        // glow over it, so the land fades into the sky without an edge.
+        let horizon = Rgb::hex(0x081530).0 + SKY_GLOW.0;
+        scene.fog = (far > 0.0).then_some(Fog::Exp2 {
+            color: Rgb::from(horizon * far),
+            density: 1.0 / 9000.0,
+        });
         // Haze: none on the chip. In the city a dense mist lies between the towers, and the
         // tops stand clear.
         let air = smoothstep(0.6, 3.4, t);
         scene.atmosphere = Some(Atmosphere {
-            density: 0.0055 * air,
+            density: 0.003 * air,
             color: Rgb::WHITE,
             base: 10.0,
-            falloff: 0.02,
+            falloff: 0.016,
             anisotropy: 0.5,
-            ambient: Rgb::hex(0x4a6a9a) * 0.32,
+            // The mist takes the warm grey of the city light, like the glow of the sky.
+            ambient: Rgb::hex(0x5c6274) * 0.3,
             noise: 0.65,
             noise_size: 55.0,
             offset: vec3(t * 6.0, 0.0, t * 2.5),
@@ -1113,6 +1222,30 @@ impl CitySet {
         });
         (scene, camera)
     }
+}
+
+/// The mirror of the water shows only the lit facades, the bridges and the lights: roofs,
+/// streets and other small parts cost time and are not seen in it. The renderer leaves the
+/// materials that reflect out of the mirror pass, so these get a reflection too small to
+/// see.
+fn keep_out_of_mirror(scene: &mut Scene) {
+    let ids: Vec<NodeId> = scene.nodes().map(|(id, _)| id).collect();
+    for id in ids {
+        if let Some(m) = scene[id].material_mut()
+            && m.emissive_map.is_none()
+            && m.reflection == 0.0
+            && m.blending != Blending::Additive
+        {
+            m.reflection = 1e-4;
+        }
+    }
+}
+
+/// How much the water mirrors the city at `t`, `0..1`: from the end of the dive until the
+/// camera drops into Times Square, and in the climb out of it.
+fn water_mirror(t: f32) -> f32 {
+    smoothstep(0.9, 1.4, t) * (1.0 - smoothstep(6.6, 7.1, t))
+        + smoothstep(10.9, 11.4, t) * (1.0 - smoothstep(12.0, 12.4, t))
 }
 
 /// The steam of the vents at `t`: puffs that rise, grow, drift with the wind and fade.

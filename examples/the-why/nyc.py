@@ -8,15 +8,16 @@ Sources (all free, from the City of New York):
   construction years of the building footprints, from data.cityofnewyork.us.
 
 The script uses the Python standard library only. It downloads the small JSON files when
-they are missing, streams the GML out of the zip, keeps the buildings near Midtown (and the
-tall ones further away), triangulates their roofs and walls, and writes one binary file.
+they are missing, streams the GML out of the zip, keeps the buildings near Midtown with
+their roofs and walls as triangles, all other buildings of the five boroughs within 20 km
+as rectangles, and writes one binary file. New Jersey comes from OpenStreetMap.
 
 Frame: meters, Y up, origin at the Empire State Building. +Z runs uptown along the avenues
 (28.97 degrees east of north), +X runs to the west (toward the Hudson). Each building stands
 on Y = 0.
 
 File layout, little endian:
-  b"NYC1"
+  b"NYC2"
   u32 building count, then for each building:
     u32 BIN, u16 construction year (0 = unknown), u16 flags (1 = far ring)
     f32 height in m, f32 x, f32 z of the footprint center
@@ -32,6 +33,11 @@ File layout, little endian:
   u32 bridge count, then for each bridge: u32 point count, 2 f32 per point
   u32 land triangle count, 6 f32 (x, z of three corners) per triangle
   u32 park triangle count, 6 f32 per triangle
+  u32 outer building count, then for each building of the other boroughs, of Manhattan
+    outside the near box and of New Jersey, as a rectangle: 6 f32 (x, z of the center,
+    half length, half width, angle of the length from +X in radians, height)
+  u32 light line count, then for each: u8 kind (0 street, 1 highway, 2 bridge,
+    3 park path, 4 ramp), u32 point count, 2 f32 (x, z) per point
 
 Run: ./fetch-nyc.sh, or python3 nyc.py when the zip is there (about one minute)
 """
@@ -40,6 +46,7 @@ import json
 import math
 import struct
 import sys
+import urllib.parse
 import urllib.request
 import zipfile
 import xml.etree.ElementTree as ET
@@ -61,9 +68,8 @@ COS, SIN = math.cos(GRID), math.sin(GRID)
 
 # All buildings in the near box. In the far ring only the tall ones, as boxes.
 NEAR = (-1500.0, 2200.0, -1300.0, 3000.0)  # x min, x max, z min, z max
-FAR = 9000.0
-FAR_HEIGHT = 30.0
-BOX = 11000.0  # land and parks are clipped to this half size
+OUTER = 20000.0  # the outer buildings reach this far
+BOX = 20000.0  # land and parks are clipped to this half size
 
 # --- projection -------------------------------------------------------------------------
 
@@ -320,8 +326,6 @@ def building(el, years, seen):
     ny = sum(p[1] for p in pts) / len(pts)
     cx, cz = local(ex, ny)
     near = NEAR[0] < cx < NEAR[1] and NEAR[2] < cz < NEAR[3]
-    if not near and (height < FAR_HEIGHT or math.hypot(cx, cz) > FAR or cz < NEAR[2]):
-        return None
     if height < 2.0:
         return None
     # The same building can be in two district areas.
@@ -330,7 +334,7 @@ def building(el, years, seen):
         return None
     seen.add(key)
     if not near:
-        return far_box(bin_, height, polys, zmin)
+        return None
     roofs, walls = [], []
     for kind, rings in polys:
         if kind == "GroundSurface":
@@ -352,20 +356,203 @@ def building(el, years, seen):
     return bin_, years.get(bin_, 0), flags, height, cx, cz, roofs, walls
 
 
-def far_box(bin_, height, polys, zmin):
-    """A building of the far ring as the box around it. The haze hides the shape there."""
-    pts = [local(p[0], p[1]) for _, rings in polys for p in rings[0]]
-    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
-    z0, z1 = min(p[1] for p in pts), max(p[1] for p in pts)
-    c = [(x0, z0), (x1, z0), (x1, z1), (x0, z1)]
-    top = [(x, height, z) for x, z in c]
-    roofs = [(top[0], top[2], top[1]), (top[0], top[3], top[2])]
-    walls = []
-    for i in range(4):
-        (ax, az), (bx, bz) = c[i], c[(i + 1) % 4]
-        a0, b0, b1, a1 = (ax, 0.0, az), (bx, 0.0, bz), (bx, height, bz), (ax, height, az)
-        walls += [(a0, b1, b0), (a0, a1, b1)]
-    return bin_, 0, 1, height, (x0 + x1) / 2, (z0 + z1) / 2, roofs, walls
+def hull(pts):
+    """The convex hull of points (x, z), counterclockwise (Andrew's monotone chain)."""
+    pts = sorted(set(pts))
+    if len(pts) < 3:
+        return pts
+    cross = lambda o, a, b: (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+def min_rect(pts):
+    """The smallest rectangle around points (x, z): center, half sizes and angle."""
+    h = hull(pts)
+    if len(h) < 3:
+        x, z = h[0] if h else (0.0, 0.0)
+        return x, z, 1.0, 1.0, 0.0
+    best = None
+    for i in range(len(h)):
+        (ax, az), (bx, bz) = h[i], h[(i + 1) % len(h)]
+        a = math.atan2(bz - az, bx - ax)
+        c, s = math.cos(a), math.sin(a)
+        us = [x * c + z * s for x, z in h]
+        vs = [-x * s + z * c for x, z in h]
+        area = (max(us) - min(us)) * (max(vs) - min(vs))
+        if best is None or area < best[0]:
+            best = (area, a, (max(us) + min(us)) / 2, (max(vs) + min(vs)) / 2,
+                    (max(us) - min(us)) / 2, (max(vs) - min(vs)) / 2)
+    _, a, u, v, hu, hv = best
+    c, s = math.cos(a), math.sin(a)
+    return u * c - v * s, u * s + v * c, max(hu, 1.0), max(hv, 1.0), a
+
+
+def outer_area(area):
+    """The buildings of one district area outside the near box and within OUTER meters, as
+    rectangles: (x, z, half size along, half size across, angle, height)."""
+    z = zipfile.ZipFile(ZIP)
+    name = "DA_WISE_GMLs/%s_3D_Buildings_Merged.gml" % area
+    out = []
+    for _, el in ET.iterparse(z.open(name), events=("end",)):
+        # The areas use CityGML 1.0 or 2.0, so the tags are matched by their local name.
+        if not el.tag.endswith("}Building"):
+            continue
+        ground, zs = [], []
+        for surface in el.iter():
+            kind = surface.tag.rsplit("}", 1)[-1]
+            if not kind.endswith("Surface") or kind == "MultiSurface":
+                continue
+            for pl in surface.iter():
+                if not pl.tag.endswith("}posList"):
+                    continue
+                v = list(map(float, pl.text.split()))
+                zs += v[2::3]
+                if kind == "GroundSurface":
+                    ground += [local(v[i], v[i + 1]) for i in range(0, len(v) - 2, 3)]
+        el.clear()
+        if not ground or not zs:
+            continue
+        height = (max(zs) - min(zs)) * FT
+        cx = sum(p[0] for p in ground) / len(ground)
+        cz = sum(p[1] for p in ground) / len(ground)
+        if height < 3.0 or math.hypot(cx, cz) > OUTER:
+            continue
+        if NEAR[0] < cx < NEAR[1] and NEAR[2] < cz < NEAR[3]:
+            continue
+        x, zz, hu, hv, a = min_rect(ground)
+        out.append((round(x, 1), round(zz, 1), round(hu, 1), round(hv, 1), round(a, 4), round(height, 1)))
+    print(area, len(out), "outer buildings", file=sys.stderr)
+    return out
+
+
+def outer():
+    """The buildings of all five boroughs around the near box, read in parallel. The result
+    is kept in outer.json, so later runs skip the 15 GB of GML."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    cache = DIR / "outer.json"
+    if cache.exists():
+        return [tuple(item) for item in json.loads(cache.read_text())]
+    areas_all = ["DA%d" % i for i in range(1, 21)]
+    seen, out = set(), []
+    with ProcessPoolExecutor(max_workers=8) as pool:
+        for part in pool.map(outer_area, areas_all):
+            for item in part:
+                key = (round(item[0]), round(item[1]))
+                if key not in seen:
+                    seen.add(key)
+                    out.append(item)
+    cache.write_text(json.dumps(out))
+    return out
+
+
+def land_grid(tris, cell=40.0):
+    """The cells of a grid of `cell` meters that lie on the land of the city, as a set."""
+    grid = set()
+    for (ax, az), (bx, bz), (cx, cz) in tris:
+        x0, x1 = int(min(ax, bx, cx) // cell), int(max(ax, bx, cx) // cell)
+        z0, z1 = int(min(az, bz, cz) // cell), int(max(az, bz, cz) // cell)
+        for i in range(x0, x1 + 1):
+            for j in range(z0, z1 + 1):
+                p = ((i + 0.5) * cell, (j + 0.5) * cell)
+                if inside(p, (ax, az), (bx, bz), (cx, cz)) or inside(p, (ax, az), (cx, cz), (bx, bz)):
+                    grid.add((i, j))
+    return grid
+
+
+def height_tag(tags):
+    """The height of an OSM building in meters, from its height or its number of floors."""
+    text = (tags.get("height") or "").replace("m", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        return float(tags.get("building:levels", "")) * 3.3 + 2.0
+    except ValueError:
+        return 0.0
+
+
+def new_jersey(land_tris):
+    """The buildings of Jersey City, Hoboken, Weehawken, Edgewater and Fort Lee from
+    OpenStreetMap, as rectangles like the outer buildings. The city model ends at the
+    Hudson, so they come from OSM (ODbL): only the buildings with a height or floors."""
+    path = DIR / "nj_osm.json"
+    if not path.exists():
+        print("fetch", path.name)
+        query = (
+            '[out:json][timeout:280];(way["building"]["height"](40.68,-74.10,40.88,-73.95);'
+            'way["building"]["building:levels"](40.68,-74.10,40.88,-73.95););out geom qt;'
+        )
+        data = urllib.parse.urlencode({"data": query}).encode()
+        req = urllib.request.Request(
+            "https://overpass-api.de/api/interpreter", data, {"User-Agent": "fframes-the-why"}
+        )
+        with urllib.request.urlopen(req, timeout=300) as r:
+            path.write_bytes(r.read())
+    grid = land_grid(land_tris)
+    out = []
+    for el in json.loads(path.read_text())["elements"]:
+        pts = [local_lonlat(g["lon"], g["lat"]) for g in el.get("geometry", [])]
+        height = height_tag(el.get("tags", {}))
+        if len(pts) < 3 or height < 3.0:
+            continue
+        cx = sum(p[0] for p in pts) / len(pts)
+        cz = sum(p[1] for p in pts) / len(pts)
+        # The city of New York is in the model already.
+        if (int(cx // 40.0), int(cz // 40.0)) in grid:
+            continue
+        x, z, hu, hv, a = min_rect(pts)
+        out.append((round(x, 1), round(z, 1), round(hu, 1), round(hv, 1), round(a, 4), round(height, 1)))
+    print("New Jersey", len(out), "buildings", file=sys.stderr)
+    return out
+
+
+def light_lines():
+    """The streets, highways, bridges, ramps and park paths of all five boroughs, for the
+    street lights of the far city and the lamps of the parks."""
+    rows = fetch(
+        "centerline_all.json",
+        "inkn-q76z.json?$select=the_geom,rw_type,boroughcode"
+        "&$where=rw_type%20in('1','2','3','6','9')&$limit=300000",
+    )
+    kinds = {"1": 0, "2": 1, "3": 2, "6": 3, "9": 4}
+    out = []
+    for r in rows:
+        geom = r.get("the_geom")
+        if not geom or r.get("rw_type") not in kinds:
+            continue
+        for line in geom["coordinates"]:
+            pts = [local_lonlat(lon, lat) for lon, lat in line]
+            if any(math.hypot(x, z) < OUTER for x, z in pts):
+                out.append((kinds[r["rw_type"]], simplify_line(pts, 1.0)))
+    return out
+
+
+def simplify_line(pts, tol):
+    """Douglas-Peucker on an open line."""
+    if len(pts) < 3:
+        return pts
+    (ax, az), (bx, bz) = pts[0], pts[-1]
+    dx, dz = bx - ax, bz - az
+    length = math.hypot(dx, dz) or 1.0
+    best, index = 0.0, 0
+    for i in range(1, len(pts) - 1):
+        d = abs((pts[i][0] - ax) * dz - (pts[i][1] - az) * dx) / length
+        if d > best:
+            best, index = d, i
+    if best < tol:
+        return [pts[0], pts[-1]]
+    return simplify_line(pts[: index + 1], tol)[:-1] + simplify_line(pts[index:], tol)
 
 
 # --- streets, land, parks ---------------------------------------------------------------
@@ -568,7 +755,7 @@ def main():
         "&$where=bin%20between%20'1000000'%20and%20'1999999'&$limit=60000",
     )
     years = {int(r["bin"]): int(r["construction_year"]) for r in rows if r.get("construction_year")}
-    out = bytearray(b"NYC1")
+    out = bytearray(b"NYC2")
     items = list(buildings(years))
     out += struct.pack("<I", len(items))
     tris = 0
@@ -593,11 +780,22 @@ def main():
     out += struct.pack("<I", len(spans))
     for pts in spans:
         out += struct.pack("<I", len(pts)) + struct.pack("<%df" % (2 * len(pts)), *(c for p in pts for c in p))
-    for name, tri_list in (("land", land()), ("parks", parks())):
+    land_tris = land()
+    for name, tri_list in (("land", land_tris), ("parks", parks())):
         out += struct.pack("<I", len(tri_list))
         for tri in tri_list:
             out += struct.pack("<6f", *(c for p in tri for c in p))
         print(name, len(tri_list), "triangles", file=sys.stderr)
+    blocks = outer() + new_jersey(land_tris)
+    out += struct.pack("<I", len(blocks))
+    for block in blocks:
+        out += struct.pack("<6f", *block)
+    lines = light_lines()
+    out += struct.pack("<I", len(lines))
+    for kind, pts in lines:
+        out += struct.pack("<BI", kind, len(pts))
+        out += struct.pack("<%df" % (2 * len(pts)), *(c for p in pts for c in p))
+    print("outer", len(blocks), "light lines", len(lines), file=sys.stderr)
     OUT.write_bytes(bytes(out))
     print("wrote", OUT, len(out) // 1000000, "MB", file=sys.stderr)
 

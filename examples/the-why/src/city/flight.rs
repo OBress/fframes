@@ -202,7 +202,7 @@ pub fn camera(t: f32) -> Camera {
     let mut camera = look::lens(mm)
         .position(position)
         .look_at(position + forward * 1000.0)
-        .clip(1.0, 9000.0);
+        .clip(1.0, 250_000.0);
     camera.up = up;
     // The camera banks into its turns a little, like a drone.
     let rate = turn(

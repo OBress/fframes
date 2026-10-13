@@ -21,7 +21,7 @@ use std::time::Instant;
 use image::RgbaImage;
 
 fn out_dir() -> PathBuf {
-    let dir = PathBuf::from("/tmp/the-why-city");
+    let dir = PathBuf::from("/home/neogoose/dev/the-why-review/city4/dev");
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -111,8 +111,29 @@ fn timing() {
     let set = city::CitySet::new(&assets);
     let renderer = city::CitySet::renderer(1920, 804);
     let t = 8.0;
-    let variants: [Variant; 5] = [
+    let variants: [Variant; 8] = [
         ("all", |_| {}),
+        ("no reflector", |s| s.reflector = None),
+        ("mirror towers", |s| {
+            // Only the walls of the towers in the mirror.
+            let ids: Vec<_> = s.nodes().map(|(id, _)| id).collect();
+            for id in ids {
+                let keep = s[id]
+                    .material_mut()
+                    .is_some_and(|m| m.emissive_map.is_some() || m.reflection > 0.0);
+                if !keep && let Some(m) = s[id].material_mut() {
+                    m.reflection = 1e-4;
+                }
+            }
+        }),
+        ("no outer", |s| {
+            let ids: Vec<_> = s.nodes().map(|(id, _)| id).collect();
+            for id in ids {
+                if s[id].name.as_deref() == Some("outer") {
+                    s[id].visible = false;
+                }
+            }
+        }),
         ("no haze", |s| s.atmosphere = None),
         ("no particles", |s| {
             let ids: Vec<_> = s.nodes().map(|(id, _)| id).collect();
@@ -143,7 +164,7 @@ fn timing() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(t);
-    let mut best = [f32::MAX; 5];
+    let mut best = [f32::MAX; 8];
     for _ in 0..16 {
         for (k, (_, change)) in variants.iter().enumerate() {
             let (mut scene, camera) = set.moment(t);
@@ -474,4 +495,84 @@ fn shutter_motion() {
         "{:.2} samples per frame on average",
         total as f32 / frames as f32
     );
+}
+
+/// The colors of a few pixels (`CITY_PX=x,y` at `CITY_T`) with parts of the scene removed,
+/// to find where a color comes from.
+#[test]
+#[ignore = "probes pixels"]
+fn pixel_probe() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("dynamic_media");
+    let assets = assets::Assets::load(&dir).unwrap();
+    let set = city::CitySet::new(&assets);
+    let renderer = city::CitySet::renderer(1920, 804);
+    let t: f32 = std::env::var("CITY_T")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4.2);
+    let at: Vec<u32> = std::env::var("CITY_PX")
+        .unwrap_or_else(|_| "500,200".into())
+        .split(',')
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    let variants: [Variant; 3] = [
+        ("all", |_| {}),
+        ("no emissive", |s| {
+            let ids: Vec<_> = s.nodes().map(|(id, _)| id).collect();
+            for id in ids {
+                if let Some(m) = s[id].material_mut() {
+                    m.emissive_intensity = 0.0;
+                }
+            }
+        }),
+        ("no env", |s| {
+            let ids: Vec<_> = s.nodes().map(|(id, _)| id).collect();
+            for id in ids {
+                if let Some(m) = s[id].material_mut() {
+                    m.env_intensity = 0.0;
+                }
+            }
+        }),
+    ];
+    for (name, change) in variants {
+        let (mut scene, camera) = set.moment(t);
+        change(&mut scene);
+        let pixels = renderer.render_pixels(&scene, &camera);
+        let image =
+            RgbaImage::from_raw(pixels.width, pixels.height, pixels.to_straight_rgba()).unwrap();
+        let p: Vec<_> = (0..5)
+            .map(|k| image.get_pixel(at[0] + k * 3, at[1]))
+            .collect();
+        println!("{name:>12}: {p:?}");
+    }
+}
+
+/// The mean light of the lit windows of each facade, to check their colors.
+#[test]
+#[ignore = "prints the window colors"]
+fn window_colors() {
+    use city::textures::{Facade, NEAR, Style};
+    for style in [
+        Style::Glass,
+        Style::Fins,
+        Style::Office,
+        Style::Prewar,
+        Style::Low,
+    ] {
+        let f = Facade::new(style, 31, NEAR);
+        let mut sum = fframes_3d::Vec4::ZERO;
+        let mut n = 0;
+        for j in 0..200 {
+            for i in 0..200 {
+                let c = f
+                    .emissive
+                    .sample_lod(fframes_3d::vec2(i as f32 / 200.0, j as f32 / 200.0), 0.0);
+                if c.x + c.y + c.z > 0.05 {
+                    sum += c;
+                    n += 1;
+                }
+            }
+        }
+        println!("{style:?}: {:?} lit {}", sum / n as f32, n);
+    }
 }

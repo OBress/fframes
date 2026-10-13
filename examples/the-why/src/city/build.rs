@@ -212,6 +212,9 @@ pub struct RiseGroup {
     /// The facade meshes of the buildings along the flight through Times Square, with the
     /// sharper textures of [`NEAR`].
     pub near_walls: [MeshBuf; 5],
+    /// The facade meshes of the buildings that the flight sees only from far away, with
+    /// the sparse windows of [`super::textures::DISTANT`].
+    pub distant_walls: [MeshBuf; 5],
     /// The mullions and transoms in front of the near facades.
     pub mullions: MeshBuf,
     /// The roofs inside the chip square, then outside it.
@@ -342,7 +345,7 @@ fn top(b: &Building) -> Option<Top> {
 
 /// The walls of a building with UVs in window bays and floors: U runs along the wall, V up.
 /// Each building starts at a random place in the texture.
-fn walls(buf: &mut MeshBuf, tris: &[[Vec3; 3]], seed: u32, tint: Rgb) {
+pub(super) fn walls(buf: &mut MeshBuf, tris: &[[Vec3; 3]], seed: u32, tint: Rgb) {
     walls_in(buf, tris, seed, tint, (BAYS, FLOORS));
 }
 
@@ -572,7 +575,7 @@ pub fn rise_groups(
     chip_half: f32,
     skip: &HashSet<usize>,
     screens: &[Screen],
-    near: impl Fn(&Building) -> bool,
+    lod: impl Fn(&Building) -> Lod,
     detail: impl Fn(Vec3, Vec3) -> bool,
 ) -> Vec<RiseGroup> {
     let mut groups: Vec<RiseGroup> = (0..GROUPS)
@@ -587,7 +590,7 @@ pub fn rise_groups(
         }
         let g = &mut groups[group_of(rise_start(b.center - dive, b.bin))];
         let inside = (b.center - dive).abs().max_element() < chip_half;
-        building(g, b, inside, near(b), &detail);
+        building(g, b, inside, lod(b), &detail);
     }
     for (k, screen) in screens.iter().enumerate() {
         let b = &city.buildings[screen.building];
@@ -604,12 +607,23 @@ pub fn rise_groups(
     groups
 }
 
+/// How close the flight comes to a building, for the detail of its facade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lod {
+    /// Along the glide through Times Square: sharp windows and steel mullions.
+    Near,
+    /// Near the flight.
+    Mid,
+    /// Only seen from far away: sparse windows on a dark facade.
+    Distant,
+}
+
 /// Adds the walls, the roofs and the roof details of one building.
 fn building(
     group: &mut RiseGroup,
     b: &Building,
     inside: bool,
-    near: bool,
+    lod: Lod,
     detail: &impl Fn(Vec3, Vec3) -> bool,
 ) {
     let style = style(b);
@@ -625,18 +639,20 @@ fn building(
             .iter()
             .chain(b.roofs.iter().filter(|t| t.iter().all(|p| p.y > crown)))
             .partition(|t| t.iter().all(|p| p.y > crown - 0.1));
-        if near {
-            let layout: Layout = NEAR;
-            walls_in(
-                &mut group.near_walls[k],
-                &low,
-                b.bin,
-                tint,
-                (layout.bays, layout.floors),
-            );
-            mullions(&mut group.mullions, &low, detail);
-        } else {
-            walls(&mut group.walls[k], &low, b.bin, tint);
+        match lod {
+            Lod::Near => {
+                let layout: Layout = NEAR;
+                walls_in(
+                    &mut group.near_walls[k],
+                    &low,
+                    b.bin,
+                    tint,
+                    (layout.bays, layout.floors),
+                );
+                mullions(&mut group.mullions, &low, detail);
+            }
+            Lod::Mid => walls(&mut group.walls[k], &low, b.bin, tint),
+            Lod::Distant => walls(&mut group.distant_walls[k], &low, b.bin, tint),
         }
         let roof_tris: Vec<[Vec3; 3]> = b
             .roofs
@@ -1569,35 +1585,6 @@ pub fn trees(city: &Manhattan, center: Vec2, radius: f32) -> Vec<Mat4> {
     out
 }
 
-/// The lights along the bridges: two rows on the deck, which rises to 40 m over the water.
-pub fn bridge_lights(city: &Manhattan) -> Vec<Vec3> {
-    let mut out = Vec::new();
-    for points in &city.bridges {
-        let length: f32 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
-        if length < 300.0 {
-            continue;
-        }
-        let mut s = 0.0;
-        for w in points.windows(2) {
-            let d = w[1] - w[0];
-            let l = d.length().max(1e-3);
-            let side = vec2(-d.y, d.x) / l * 9.0;
-            let mut k = 0.0;
-            while k < l {
-                let along = (s + k) / length;
-                let h = 10.0 + 32.0 * (along * std::f32::consts::PI).sin();
-                let p = w[0] + d * (k / l);
-                for q in [p + side, p - side] {
-                    out.push(vec3(q.x, h, q.y));
-                }
-                k += 18.0;
-            }
-            s += l;
-        }
-    }
-    out
-}
-
 /// The parts of a tower crane. The mast stands on the origin. The jib points along +X at
 /// the height `height`.
 pub struct CraneParts {
@@ -1794,7 +1781,7 @@ pub fn site_frame(
 
 /// The west shore of the Hudson in New Jersey, from south to north. The model of the city
 /// ends at the river, so this shore is drawn after a map.
-const JERSEY: [Vec2; 10] = [
+pub(super) const JERSEY: [Vec2; 10] = [
     vec2(1412.0, -6929.0),
     vec2(1814.0, -5084.0),
     vec2(2417.0, -2930.0),
@@ -1807,11 +1794,11 @@ const JERSEY: [Vec2; 10] = [
     vec2(4080.0, 14442.0),
 ];
 
-/// New Jersey across the river: the land, and low buildings along the shore with a few
-/// towers. They are only seen far away in the haze.
-pub fn new_jersey() -> (Geometry, MeshBuf) {
+/// The land of New Jersey across the river. Its buildings come from OpenStreetMap with
+/// the other buildings outside Midtown (see `outer::blocks`).
+pub fn new_jersey() -> Geometry {
     let mut land = MeshBuf::default();
-    let far = 12000.0;
+    let far = 30000.0;
     for w in JERSEY.windows(2) {
         let (a, b) = (w[0], w[1]);
         let corners = [
@@ -1826,40 +1813,7 @@ pub fn new_jersey() -> (Geometry, MeshBuf) {
             [uvs[0], uvs[3], uvs[2], uvs[1]],
         );
     }
-    let mut walls_buf = MeshBuf::default();
-    for k in 0..900u32 {
-        let t = hash(k * 3 + 1) * (JERSEY.len() - 1) as f32;
-        let i = t as usize;
-        let shore = JERSEY[i].lerp(JERSEY[i + 1], t.fract());
-        let p = shore + vec2(40.0 + 1400.0 * hash(k * 3 + 2).powi(2), 0.0);
-        let tall = hash(k * 3 + 3) < 0.05;
-        let h = if tall {
-            60.0 + 90.0 * hash(k + 7)
-        } else {
-            8.0 + 22.0 * hash(k + 7)
-        };
-        let size = vec2(12.0 + 30.0 * hash(k + 11), 12.0 + 30.0 * hash(k + 13));
-        let (a, b) = (p - size * 0.5, p + size * 0.5);
-        let c = [
-            vec2(a.x, a.y),
-            vec2(b.x, a.y),
-            vec2(b.x, b.y),
-            vec2(a.x, b.y),
-        ];
-        let mut tris = Vec::new();
-        for j in 0..4 {
-            let (p, q) = (c[j], c[(j + 1) % 4]);
-            let [p0, q0, q1, p1] = [
-                vec3(q.x, 0.0, q.y),
-                vec3(p.x, 0.0, p.y),
-                vec3(p.x, h, p.y),
-                vec3(q.x, h, q.y),
-            ];
-            tris.extend([[p0, q0, q1], [p0, q1, p1]]);
-        }
-        walls(&mut walls_buf, &tris, k * 17, Rgb::WHITE);
-    }
-    (land.geometry(), walls_buf)
+    land.geometry()
 }
 
 /// The pins of the chip and its gold seal ring, on the city around the point of the dive.
