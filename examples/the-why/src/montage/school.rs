@@ -20,10 +20,11 @@ use fframes_3d::math::{hash, progress, smoothstep};
 use fframes_3d::*;
 
 use super::{
-    AMBER, AMBER_EDGE, COLD, COLD_BLUE, SKY_RATE, SKY_TILT, camera, ease, ease_out, fbm, mix,
-    polar, random_in_ball, sky, span, stars,
+    AMBER, AMBER_EDGE, BUILD_RATE, COLD, COLD_BLUE, SKY_RATE, SKY_TILT, camera, ease, ease_out,
+    fbm, mix, polar, random_in_ball, sky, span, stars, streak_stars,
 };
 use crate::assets::Assets;
+use crate::look::SHUTTER;
 
 /// The length of the part in seconds.
 pub const LENGTH: f32 = 1.25;
@@ -168,44 +169,44 @@ fn beads() -> Vec<Bead> {
     out
 }
 
-/// The passes of the nozzle around the perimeter. Each pass prints `LAYERS / PASSES`
-/// layers at once, as a ramp: each layer starts `LAG` meters behind the one below it. One
-/// layer per pass would move the nozzle half way around the school in one frame, and it
-/// would jump from place to place from frame to frame.
-const PASSES: usize = 2;
-const PASS_LAYERS: usize = LAYERS / PASSES;
-const LAG: f32 = 1.2;
-/// The distance that the lowest layer of a pass runs ahead: the whole perimeter, and the
-/// ramp behind it.
-const RUN: f32 = PERIMETER + (PASS_LAYERS - 1) as f32 * LAG;
+/// The nozzle prints all layers in one run around the perimeter, as a ramp: each layer
+/// starts `LAG` meters behind the one below it. A run per layer would move the nozzle half
+/// way around the school in one frame, so it would jump from frame to frame. One run moves
+/// it about 2 m in a frame, and its light glides along the walls.
+const LAG: f32 = 0.9;
+/// The length of the ramp behind the lowest layer.
+const RAMP: f32 = (LAYERS - 1) as f32 * LAG;
+/// The distance that the lowest layer runs: the whole perimeter, and the ramp behind it.
+const RUN: f32 = PERIMETER + RAMP;
 
-/// The time at which the nozzle starts pass `p`, and the time for one pass.
-fn pass_time(p: usize) -> (f32, f32) {
-    let each = (PRINT.1 - PRINT.0) / PASSES as f32;
-    (PRINT.0 + p as f32 * each, each)
+/// How far the lowest layer has run along the perimeter at `t`, `0..RUN`, or `None` before
+/// and after the print.
+fn nozzle(t: f32) -> Option<f32> {
+    (PRINT.0..PRINT.1)
+        .contains(&t)
+        .then(|| progress(t, PRINT.0, PRINT.1) * RUN)
 }
 
-/// The nozzle at `t`: its pass and how far the lowest layer of the pass has run along the
-/// perimeter, `0..RUN`, or `None` before and after the print.
-fn nozzle(t: f32) -> Option<(usize, f32)> {
-    if !(PRINT.0..PRINT.1).contains(&t) {
-        return None;
-    }
-    let (_, each) = pass_time(0);
-    let p = (((t - PRINT.0) / each) as usize).min(PASSES - 1);
-    let (start, _) = pass_time(p);
-    Some((p, (t - start) / each * RUN))
+/// The end of the printed part of `layer` when the lowest layer has run `front` meters.
+fn printed_to(layer: usize, front: f32) -> f32 {
+    (front - layer as f32 * LAG).clamp(0.0, PERIMETER)
 }
 
-/// The end of the printed part of `layer` when the lowest layer of the nozzle's pass has run
-/// `front` meters. `None` when the layer belongs to a later pass.
-fn printed_to(layer: usize, pass: usize, front: f32) -> Option<f32> {
-    match (layer / PASS_LAYERS).cmp(&pass) {
-        std::cmp::Ordering::Less => Some(PERIMETER),
-        std::cmp::Ordering::Equal => {
-            Some((front - (layer % PASS_LAYERS) as f32 * LAG).clamp(0.0, PERIMETER))
-        }
-        std::cmp::Ordering::Greater => None,
+/// The place of the gantry over the footprint at `t`, and the layer of the nozzle. The
+/// gantry follows the nozzle at the top of the ramp. It waits at the front left corner,
+/// where the print starts and ends, and moves back after the print.
+fn gantry_at(t: f32) -> (Vec3, f32) {
+    let top = (LAYERS - 1) as f32;
+    match nozzle(t) {
+        Some(front) => (along((front - RAMP).max(0.0)), top),
+        None if t < PRINT.0 => (along(0.0), top),
+        None => (
+            along(0.0).lerp(
+                vec3(0.0, 0.0, -GANTRY_Z + 1.0),
+                ease(progress(t, PRINT.1, PRINT.1 + 0.08)),
+            ),
+            LAYERS as f32,
+        ),
     }
 }
 
@@ -229,6 +230,7 @@ struct Ids {
     flag_light: NodeId,
     glows: NodeId,
     drum: NodeId,
+    stars: NodeId,
 }
 
 /// The site at night, the gantry and the school.
@@ -289,10 +291,7 @@ impl School {
         let (mut beads, mut hot, mut heat) = (Vec::new(), Vec::new(), Vec::new());
         for bead in &self.beads {
             let end = match at {
-                Some((p, front)) => match printed_to(bead.layer, p, front) {
-                    Some(end) => end,
-                    None => continue,
-                },
+                Some(front) => printed_to(bead.layer, front),
                 None if t < PRINT.0 => continue,
                 None => PERIMETER,
             };
@@ -300,9 +299,8 @@ impl School {
                 continue;
             }
             beads.push(bead.place(end, WALL));
-            let (start, each) = pass_time(bead.layer / PASS_LAYERS);
-            let lag = (bead.layer % PASS_LAYERS) as f32 * LAG;
-            let printed = start + each * ((bead.to.min(end) + lag) / RUN);
+            let lag = bead.layer as f32 * LAG;
+            let printed = mix(PRINT.0, PRINT.1, (bead.to.min(end) + lag) / RUN);
             let warm = (-(t - printed).max(0.0) / 0.07).exp();
             if warm > 0.02 {
                 hot.push(bead.place(end, WALL * 1.04));
@@ -317,28 +315,7 @@ impl School {
             m.color = Rgb::hex(AMBER_EDGE) * mix(9.0, 2.0, smoothstep(0.05, 0.4, t));
         }
 
-        // the gantry follows the nozzle at the top of the ramp; it waits at the front left
-        // corner, where each pass starts and ends, and moves back after the print
-        let (head, layer) = match at {
-            Some((p, front)) => {
-                // the head rises to the top of the new pass while it waits at the corner
-                let ramp = (PASS_LAYERS - 1) as f32 * LAG;
-                let top = ((p + 1) * PASS_LAYERS - 1) as f32;
-                let rise = if p == 0 { 0.0 } else { PASS_LAYERS as f32 };
-                (
-                    along((front - ramp).max(0.0)),
-                    top - rise * (1.0 - smoothstep(0.0, ramp, front)),
-                )
-            }
-            None if t < PRINT.0 => (along(0.0), (PASS_LAYERS - 1) as f32),
-            None => (
-                along(0.0).lerp(
-                    vec3(0.0, 0.0, -GANTRY_Z + 1.0),
-                    ease(progress(t, PRINT.1, PRINT.1 + 0.08)),
-                ),
-                LAYERS as f32,
-            ),
-        };
+        let (head, layer) = gantry_at(t);
         let tip = head + Vec3::Y * (LAYER * layer + 0.25);
         scene[ids.bridge].position = vec3(head.x, GANTRY, 0.0);
         scene[ids.carriage].position = vec3(head.x, GANTRY - 0.2, head.z);
@@ -352,12 +329,22 @@ impl School {
             )]),
         );
         if at.is_some() {
-            glows.push(Particle::new(tip, 0.18, Rgb::hex(0xfff0d8) * 50.0));
-            glows.push(Particle::new(tip, 0.9, Rgb::hex(AMBER) * 3.0));
+            // The nozzle runs several meters in a frame. Its glow is a streak over the time
+            // between two motion blur samples, so the samples join into one line of light.
+            let dt = 0.5 * SHUTTER * BUILD_RATE / self.shutter(t) as f32;
+            let tip_at = |t: f32| {
+                let (head, layer) = gantry_at(t);
+                head + Vec3::Y * (LAYER * layer + 0.25)
+            };
+            let (a, b) = (tip_at(t - dt), tip_at(t + dt));
+            glows.push(Particle::new(a, 0.18, Rgb::hex(0xfff0d8) * 50.0).tail(b - a));
+            glows.push(Particle::new(a, 0.9, Rgb::hex(AMBER) * 3.0).tail(b - a));
         }
-        scene[ids.nozzle_light].position = tip + vec3(0.0, 0.6, 0.6);
+        // high above the nozzle, so its pool of light is wide and soft and does not flash on
+        // the walls as the nozzle runs past them
+        scene[ids.nozzle_light].position = tip + vec3(0.0, 2.6, 1.2);
         if let Some(light) = scene[ids.nozzle_light].light_mut() {
-            *light.intensity_mut() = if at.is_some() { 220.0 } else { 0.0 };
+            *light.intensity_mut() = if at.is_some() { 150.0 } else { 0.0 };
         }
 
         // the roof slabs come down on the walls
@@ -417,13 +404,19 @@ impl School {
         if let Object::Particles(p) = &mut scene[ids.glows].object {
             p.items.extend(glows);
         }
+        if let Object::Particles(p) = &mut scene[ids.stars].object {
+            let dt = SHUTTER * BUILD_RATE / self.shutter(t) as f32;
+            streak_stars(&mut p.items, camera_at, t, dt);
+        }
         (scene, camera_at(t))
     }
 
     /// The motion blur samples at `t`: more while the tree leaves the picture and when the
     /// camera tilts up.
     pub fn shutter(&self, t: f32) -> usize {
-        if t < 0.14 {
+        // The nozzle runs about 3 m in a frame while it prints, and its light and the
+        // hot layers move with it. Fewer samples show it as separate copies that flicker.
+        if t < 0.14 || (PRINT.0..PRINT.1 + 0.02).contains(&t) {
             5
         } else if t > 0.85 {
             3
@@ -601,7 +594,7 @@ fn build(assets: &Assets) -> (Scene, Ids) {
             1.0,
         ))
         .background(Background::Environment { blur: 0.0 });
-    scene.add(Node::particles(stars(CAMERA_REST, 1.0), Blending::Additive));
+    let sky_stars = scene.add(Node::particles(stars(CAMERA_REST, 1.0), Blending::Additive));
 
     // the land: dirt of the site, a gravel pad, the path and the street, hills around
     let mut ground = Geometry::floor_segments(6000.0, 6000.0, 300, 300);
@@ -1056,6 +1049,7 @@ fn build(assets: &Assets) -> (Scene, Ids) {
         flag_light,
         glows,
         drum,
+        stars: sky_stars,
     };
     (scene, ids)
 }

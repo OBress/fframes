@@ -33,13 +33,16 @@ const START_X: f32 = 0.0;
 const LINE_HALF: f32 = 1700.0;
 /// The time that the heads of the line take to reach their ends.
 const LINE_TIME: f32 = 0.32;
-/// The height of the hub above the foot of the tower, and the length of a blade.
-const HUB: f32 = 92.0;
-const BLADE: f32 = 54.0;
+/// The height of the hub above the foot of the tower, and the length of a blade: a large
+/// modern turbine, so the turbines read against the sky from the far camera.
+const HUB: f32 = 128.0;
+const BLADE: f32 = 74.0;
 /// The heights of the joints of the three tower sections.
-const SECTIONS: [f32; 4] = [0.0, 30.0, 62.0, HUB - 2.0];
+const SECTIONS: [f32; 4] = [0.0, 42.0, 86.0, HUB - 2.0];
 /// The radius of the tower at the foot and at the top.
-const TOWER_RADIUS: (f32, f32) = (2.2, 1.35);
+const TOWER_RADIUS: (f32, f32) = (3.0, 1.8);
+/// The length of the boom of a crane.
+const BOOM: f32 = 160.0;
 /// The yaw of all rotors: they face the wind, a little to the left of the camera.
 const YAW: f32 = -0.22;
 /// The turbines along the crest, and their spacing in meters.
@@ -113,7 +116,7 @@ struct Turbine {
 impl Turbine {
     /// The crane stands on the camera side of the tower, a little to the right.
     fn crane(&self) -> Vec3 {
-        let p = self.foot + vec3(16.0, 0.0, 14.0);
+        let p = self.foot + vec3(22.0, 0.0, 19.0);
         vec3(p.x, land(p.x, p.z), p.z)
     }
 
@@ -345,7 +348,7 @@ impl Wind {
                 nacelles.push(Mat4::from_rotation_translation(yaw, nacelle_at));
             }
             if rotor > 0.0 {
-                let front = yaw * vec3(0.0, 0.0, 4.2);
+                let front = yaw * vec3(0.0, 0.0, 5.2);
                 let spin = Quat::from_rotation_z(turbine.spin(t));
                 rotors.push(Mat4::from_rotation_translation(
                     yaw * spin,
@@ -357,7 +360,7 @@ impl Wind {
             let to_tower = (turbine.foot - base).with_y(0.0).normalize();
             let angle = turbine.boom(t);
             let pivot = base + Vec3::Y * 3.5;
-            let tip = pivot + (to_tower * angle.cos() + Vec3::Y * angle.sin()) * 118.0;
+            let tip = pivot + (to_tower * angle.cos() + Vec3::Y * angle.sin()) * BOOM;
             let facing = Quat::from_rotation_y(to_tower.x.atan2(to_tower.z));
             cranes.push(Mat4::from_rotation_translation(facing, base));
             booms.push(span(pivot, tip, 1.0));
@@ -544,8 +547,8 @@ fn road_lamps() -> Vec<(Vec3, f32)> {
         .collect()
 }
 
-/// The camera at `t`. It looks at the start of the line, then tilts down a little to the
-/// village. It trucks right faster and faster and passes behind the tree at the end.
+/// The camera at `t`. It looks at the start of the line, then tilts up a little, so the
+/// rotors stay in the picture. It trucks right faster and faster and passes behind the tree at the end.
 fn camera_at(t: f32) -> Camera {
     let x = progress(t, 0.0, LENGTH);
     let position = CAMERA_FROM.lerp(CAMERA_TO, x * x);
@@ -554,7 +557,7 @@ fn camera_at(t: f32) -> Camera {
     // the start of the line is where the flare of the car was in the picture: a little
     // right of and above the middle
     let target =
-        start + vec3(-36.0, -35.0, 0.0) + (position - CAMERA_FROM) * 0.6 - Vec3::Y * (60.0 * tilt);
+        start + vec3(-36.0, -35.0, 0.0) + (position - CAMERA_FROM) * 0.6 + Vec3::Y * (28.0 * tilt);
     camera(55.0, position, target)
         .focus_on(start, mix(3.0, 14.0, smoothstep(LENGTH - 0.2, LENGTH, t)))
         .shake(t, 0.0004, 13)
@@ -570,9 +573,9 @@ fn blade() -> Geometry {
         let u = j as f32 / stations as f32;
         let r = 1.8 + u * BLADE;
         let chord = if u < 0.18 {
-            mix(1.9, 3.9, smoothstep(0.0, 0.18, u))
+            mix(2.6, 5.2, smoothstep(0.0, 0.18, u))
         } else {
-            mix(3.9, 0.7, (u - 0.18) / 0.82)
+            mix(5.2, 0.9, (u - 0.18) / 0.82)
         };
         let thick = (chord * 0.18).max(0.3) * if u < 0.08 { 2.0 } else { 1.0 };
         let twist = Quat::from_rotation_y(0.35 * (1.0 - u) + 0.05);
@@ -600,6 +603,50 @@ fn blade() -> Geometry {
         indices.extend([last + i, tip, last + (i + 1) % around as u32]);
     }
     Geometry::new(positions, Vec::new(), Vec::new(), indices)
+}
+
+/// The surface of the moon, for the UVs of [`Geometry::sphere`]: bright highlands, dark
+/// maria, and craters with bright rims and rays. The noise runs on the direction from the
+/// center, so the map has no seam.
+fn moon_map() -> Arc<Texture> {
+    let (width, height) = (512u32, 256u32);
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    let craters: Vec<(Vec3, f32)> = (0..60u32)
+        .map(|i| {
+            let size = 0.03 + 0.12 * hash(i * 3 + 501).powi(3);
+            (math::random_direction(i * 3 + 500), size)
+        })
+        .collect();
+    for y in 0..height {
+        for x in 0..width {
+            let around = (x as f32 + 0.5) / width as f32 * TAU;
+            let polar = (y as f32 + 0.5) / height as f32 * PI;
+            let d = vec3(
+                polar.sin() * around.cos(),
+                polar.cos(),
+                polar.sin() * around.sin(),
+            );
+            let (a, b) = (d.x * 1.7 + d.z * 0.9, d.y * 1.7 - d.z * 0.6);
+            let maria = smoothstep(0.05, 0.3, fbm(91, a + 4.0, b + 4.0, 4));
+            let fine = fbm(92, a * 9.0, b * 9.0, 4);
+            let mut gray = mix(0.92, 0.5, maria) + 0.07 * fine;
+            for &(c, size) in &craters {
+                let r = d.angle_between(c) / size;
+                if r < 3.0 {
+                    // a dark floor, a bright rim, and faint rays around young craters
+                    gray += if r < 0.8 {
+                        -0.08
+                    } else {
+                        0.18 * (-(r - 1.0).powi(2) * 8.0).exp()
+                    };
+                    gray += 0.06 * (1.0 - r / 3.0) * (around * 40.0 + polar * 23.0).sin().max(0.0);
+                }
+            }
+            let v = (gray.clamp(0.0, 1.0) * 255.0) as u8;
+            rgba.extend([v, v, v, 255]);
+        }
+    }
+    Arc::new(Texture::from_rgba8(width, height, &rgba, true))
 }
 
 /// The scene: the sky, the land, the village, the turbines and the lights.
@@ -869,7 +916,8 @@ fn build(assets: &Assets, houses: &[House]) -> (Scene, Ids, Vec<(Vec3, Vec3, f32
         // the cooler and the wind vane on the roof
         Geometry::cuboid(2.6, 0.6, 2.4).translate(0.0, 2.85, -8.0),
         Geometry::cylinder(0.05, 0.05, 1.6, 4).translate(0.8, 3.4, -9.0),
-    ]);
+    ])
+    .scale(1.35, 1.35, 1.35);
     let nacelles = scene.add(Node::instanced(
         nacelle,
         white.clone(),
@@ -885,6 +933,7 @@ fn build(assets: &Assets, houses: &[House]) -> (Scene, Ids, Vec<(Vec3, Vec3, f32
         ],
         24,
     )
+    .scale(1.35, 1.35, 1.35)
     .rotate_x(FRAC_PI_2);
     let blade = blade();
     let rotor = Geometry::merge([
@@ -926,8 +975,10 @@ fn build(assets: &Assets, houses: &[House]) -> (Scene, Ids, Vec<(Vec3, Vec3, f32
     let moon_at = moon * 4600.0;
     scene.add(
         Node::mesh(
-            Geometry::sphere(70.0, 32, 16),
-            Material::unlit(Rgb::hex(0xf4f2ee) * 3.0).map(assets.concrete.color.clone()),
+            Geometry::sphere(70.0, 48, 24).rotate_y(2.3),
+            Material::unlit(Rgb::hex(0xfff6e6) * 2.4)
+                .map(moon_map())
+                .no_fog(),
         )
         .with_position(moon_at)
         .shadows(false, false),

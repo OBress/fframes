@@ -32,10 +32,11 @@ use fframes_3d::math::{hash, progress, smoothstep};
 use fframes_3d::*;
 
 use super::{
-    AMBER, AMBER_EDGE, COLD, COLD_BLUE, WHIP_HALF, camera, ease, ease_in, ease_out, fbm,
-    haze_steps, mix, polar, ridges, sky, span, spark, whip, yaw_pitch,
+    AMBER, AMBER_EDGE, COLD, COLD_BLUE, DRONE_SAMPLES, WHIP_HALF, camera, ease, ease_in, ease_out,
+    fbm, haze_steps, mix, polar, ridges, sky, span, spark, whip, yaw_pitch,
 };
 use crate::assets::Assets;
+use crate::look::SHUTTER;
 
 /// The radius of the dome in meters.
 const RADIUS: f32 = 20.0;
@@ -342,6 +343,8 @@ struct Ids {
     nozzles: NodeId,
     panels: NodeId,
     drones: NodeId,
+    /// The aluminium edges of the panels that the drones carry.
+    edges: NodeId,
     leds: NodeId,
     mist: NodeId,
     crops: NodeId,
@@ -798,9 +801,10 @@ impl Greenhouse {
 
         // the drones bring the glass after the frame stands
         let mut leds = Vec::new();
-        let (panels, drones) = self.pose_glass(t, &mut leds);
+        let (panels, drones, edges) = self.pose_glass(t, &mut leds);
         set(scene, ids.panels, Instances::new(panels));
         set(scene, ids.drones, Instances::new(drones));
+        set(scene, ids.edges, Instances::new(edges));
         if let Object::Particles(p) = &mut scene[ids.leds].object {
             p.items = leds;
         }
@@ -970,9 +974,10 @@ impl Greenhouse {
     /// `leds`. The drones grow in from nothing high above the frame and shrink to nothing
     /// as they leave, so none of them pops in or out between two frames. They move at most
     /// about 1 m per frame.
-    fn pose_glass(&self, t: f32, leds: &mut Vec<Particle>) -> (Vec<Mat4>, Vec<Mat4>) {
+    fn pose_glass(&self, t: f32, leds: &mut Vec<Particle>) -> (Vec<Mat4>, Vec<Mat4>, Vec<Mat4>) {
         let mut panels = Vec::new();
         let mut drones = Vec::new();
+        let mut edges = Vec::new();
         for (i, p) in self.panels.iter().enumerate() {
             let g = progress(t, p.set - CARRY, p.set);
             if g <= 0.0 {
@@ -985,22 +990,43 @@ impl Greenhouse {
             let from = p.normal * 10.0 + Vec3::Y * (28.0 - center.y).max(10.0) + side;
             // slow at both ends: the drone starts while it is still small, and brakes at
             // the place of the panel
+            let fly = |t: f32| {
+                let left = 1.0 - ease(progress(t, p.set - CARRY, p.set));
+                from * left + side * (0.6 * (PI * left).sin())
+            };
             let left = 1.0 - ease(g);
-            let away = from * left + side * (0.6 * (PI * left).sin());
+            let away = fly(t);
             let arrive = smoothstep(0.0, 0.3, g);
-            panels.push(
-                Mat4::from_translation(center + away)
-                    * Mat4::from_scale(Vec3::splat(arrive))
-                    * Mat4::from_translation(-center)
-                    * p.place,
-            );
+            let place = Mat4::from_translation(center + away)
+                * Mat4::from_scale(Vec3::splat(arrive))
+                * Mat4::from_translation(-center)
+                * p.place;
+            panels.push(place);
+            // a panel in flight has a thin metal edge, so it reads as a framed pane of
+            // glass. In place, the struts and the gaskets hold it. The edge gets thin
+            // before the panel reaches the frame: thin lines that slide past the struts
+            // crawl.
+            let edge = 0.08 * arrive * (1.0 - smoothstep(0.55, 0.85, g));
+            if edge > 0.005 {
+                let [a, b, c] = [Vec3::ZERO, Vec3::X, Vec3::Y].map(|v| place.transform_point3(v));
+                for (from, to) in [(a, b), (b, c), (c, a)] {
+                    edges.push(span(from, to, edge));
+                }
+            }
             let leave = progress(t, p.set, p.set + LEAVE);
             let size = arrive * (1.0 - smoothstep(0.55, 1.0, leave));
             if !p.drone || size < 0.01 {
                 continue;
             }
             let up = p.normal.with_y(0.0) * 5.0 + Vec3::Y * 14.0;
-            let drone = center + away + p.normal * 0.5 + Vec3::Y * 0.9 + up * (leave * leave);
+            let drone_at = |t: f32| {
+                let leave = progress(t, p.set, p.set + LEAVE);
+                center + fly(t) + p.normal * 0.5 + Vec3::Y * 0.9 + up * (leave * leave)
+            };
+            let drone = drone_at(t);
+            // the lights streak over the time between two motion blur samples, so the
+            // samples join into one line and do not show as rows of dots
+            let streak = drone_at(t + SHUTTER * 1.2 / DRONE_SAMPLES as f32) - drone;
             let brake = Quat::from_axis_angle(
                 Vec3::Y.cross(from.with_y(0.0)).normalize_or(Vec3::X),
                 -2.0 * left * (1.0 - left),
@@ -1019,18 +1045,24 @@ impl Greenhouse {
             // hundred of them do not strobe
             let phase = (t * 3.0 + hash(i as u32)).fract();
             let blink = 8.0 + 32.0 * (-((phase - 0.5) / 0.12).powi(2)).exp();
-            leds.push(Particle::new(
-                drone - vec3(0.0, 0.18, 0.0) * size,
-                0.08 * size,
-                Rgb::hex(COLD_BLUE) * (blink * size),
-            ));
-            leds.push(Particle::new(
-                drone + vec3(0.0, 0.1, 0.0) * size,
-                0.05 * size,
-                Rgb::hex(COLD) * (20.0 * size),
-            ));
+            leds.push(
+                Particle::new(
+                    drone - vec3(0.0, 0.18, 0.0) * size,
+                    0.08 * size,
+                    Rgb::hex(COLD_BLUE) * (blink * size),
+                )
+                .tail(streak),
+            );
+            leds.push(
+                Particle::new(
+                    drone + vec3(0.0, 0.1, 0.0) * size,
+                    0.05 * size,
+                    Rgb::hex(COLD) * (20.0 * size),
+                )
+                .tail(streak),
+            );
         }
-        (panels, drones)
+        (panels, drones, edges)
     }
 }
 
@@ -1133,7 +1165,7 @@ fn mist(t: f32) -> Vec<Particle> {
         return Vec::new();
     }
     let (radius, height) = LIGHT_RING;
-    (0..320u32)
+    (0..480u32)
         .filter_map(|i| {
             let life = 1.8;
             let age = (t - MIST + life * hash(i)).rem_euclid(life);
@@ -1149,11 +1181,12 @@ fn mist(t: f32) -> Vec<Particle> {
             ) * 2.2;
             let p = around(a) * radius + Vec3::Y * (height + BEAM_TOP - 0.3) + drift * age;
             let fade = (PI * age / life).sin();
-            Some(Particle::new(
-                p,
-                0.3 + 0.9 * age,
-                Rgb::hex(0xe0f4e4) * (0.09 * fade * on),
-            ))
+            // a soft veil that grows and thins, white where it is close to the grow
+            // lights above
+            Some(
+                Particle::new(p, 0.5 + 1.6 * age, Rgb::hex(0xe4f6e8) * 0.9)
+                    .opacity(0.09 * fade * on / (1.0 + age)),
+            )
         })
         .collect()
 }
@@ -1236,15 +1269,15 @@ fn plants() -> (Vec<Plant>, Vec<Plant>, Vec<Plant>, Vec<Plant>) {
             time: 0.7,
         });
         // a crown of many small clumps of leaves that unfold when the trunk stands
-        for c in 0..14u32 {
+        for c in 0..22u32 {
             let offset = vec3(
-                (hash(i * 17 + c) - 0.5) * 0.9,
-                (hash(i * 19 + c) - 0.3) * 0.35,
-                (hash(i * 23 + c) - 0.5) * 0.9,
+                (hash(i * 17 + c) - 0.5) * 0.85,
+                (hash(i * 19 + c) - 0.3) * 0.4,
+                (hash(i * 23 + c) - 0.5) * 0.85,
             ) * h;
             crowns.push(Plant {
                 transform: Mat4::from_scale_rotation_translation(
-                    Vec3::splat(h * (0.09 + 0.05 * hash(i * 29 + c))),
+                    Vec3::splat(h * (0.1 + 0.05 * hash(i * 29 + c))),
                     Quat::from_rotation_y(c as f32 * 1.7),
                     base + vec3(0.0, h * 0.78, 0.0) + offset,
                 ),
@@ -1542,8 +1575,16 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         Material::standard(0x24272c).roughness(0.4),
         Instances::default(),
     ));
+    let edges = scene.add(
+        Node::instanced(
+            unit.clone(),
+            Material::metal(0xb8bec8, 0.3),
+            Instances::default(),
+        )
+        .shadows(false, false),
+    );
     let leds = scene.add(Node::particles(Vec::new(), Blending::Additive));
-    let mist = scene.add(Node::particles(Vec::new(), Blending::Additive));
+    let mist = scene.add(Node::particles(Vec::new(), Blending::Normal));
 
     // the plants: rosettes of leaves, corn with long drooping leaves, and small trees
     let leaf = Material::standard(0xffffff).roughness(0.7).double_sided();
@@ -1594,11 +1635,20 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         leaf.clone(),
         Instances::default(),
     ));
-    let crowns = scene.add(Node::instanced(
-        Geometry::icosahedron(1.0, 1).flat(),
-        leaf,
-        Instances::default(),
-    ));
+    // a clump of a crown: leaves on a ball of radius 1, turned outward at random, so its
+    // edge is ragged and the light comes through its gaps
+    let clump = Geometry::merge((0..40u32).map(|k| {
+        let out = math::random_direction(k * 7 + 3);
+        let turn = Quat::from_rotation_arc(Vec3::Z, out)
+            * Quat::from_rotation_z(hash(k * 7 + 4) * TAU)
+            * Quat::from_rotation_x(-0.5 + 0.4 * hash(k * 7 + 5));
+        blade(0.32, 0.85).transform(Mat4::from_rotation_translation(
+            turn,
+            out * (0.35 + 0.35 * hash(k * 7 + 6)),
+        ))
+    }))
+    .flat();
+    let crowns = scene.add(Node::instanced(clump, leaf, Instances::default()));
     // the light of the grow lights, and a thin shell inside the glass that glows green at
     // its edges: the light in the damp air under the glass
     let inside = [
@@ -1665,6 +1715,7 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         nozzles,
         panels,
         drones,
+        edges,
         leds,
         mist,
         crops,

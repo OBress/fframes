@@ -106,6 +106,8 @@ struct Ids {
     city: Vec<NodeId>,
     city_glow: [NodeId; 3],
     sutro_lights: NodeId,
+    /// The sea, which mirrors the bridge.
+    sea: NodeId,
 }
 
 /// A deck segment of the suspended spans or the approaches.
@@ -199,6 +201,12 @@ impl Bridge {
         if let Some(air) = &mut scene.atmosphere {
             // the fog comes in from the ocean through the Gate
             air.offset = vec3(-60.0 * t, 0.0, -8.0 * t);
+        }
+        // The fog bank lies on the water during the pull back. The haze does not dim the
+        // mirror image of the bright pilot line enough, so the sea mirrors little until
+        // the camera is wide and the lamps of the bridge come.
+        if let Some(m) = scene[self.ids.sea].material_mut() {
+            m.reflection = mix(0.06, 0.8, smoothstep(2.4, 3.1, t));
         }
         (scene, camera)
     }
@@ -683,7 +691,7 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
     // the place
     let land = bay::land_mesh(bay);
     scene.add(Node::mesh(land, assets.dirt.material(0xffffff, 1.0, 0.0)).shadows(false, false));
-    scene.add(bay::water());
+    let sea = scene.add(bay::water());
     scene.add(bay::presidio(bay));
     let towers_mesh = scene.add(bay::towers(bay));
     let (sutro, sutro_spots) = bay::sutro(bay);
@@ -901,6 +909,7 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
         city,
         city_glow,
         sutro_lights,
+        sea,
     };
     (scene, ids)
 }

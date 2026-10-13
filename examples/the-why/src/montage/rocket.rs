@@ -151,24 +151,33 @@ struct Lighting {
     fires: Vec<(Vec3, Vec3)>,
     /// The direction to the dawn glow.
     glow: Vec3,
+    /// The position of the camera, for the bright rim of the backlit edges.
+    eye: Vec3,
 }
 
 impl Lighting {
     /// The light that steam at `p` sends to the camera. `n` is the direction from the
-    /// center of its cloud: the top of a cloud gets the sky, the side to a fire gets the
-    /// fire.
-    fn steam(&self, p: Vec3, n: Vec3) -> Vec3 {
-        let sky = Rgb::hex(0xc4c4dc).0 * (0.3 + 1.2 * (0.5 + 0.5 * n.y).powf(1.5));
-        let dawn = Rgb::hex(0xffa070).0 * (0.3 * n.dot(self.glow).max(0.0));
-        let mut color = sky + dawn;
+    /// center of its cloud, and `depth` is `0..1` from the surface of the cloud to its
+    /// core. The top of a cloud gets the sky, its underside is in shade, the side to a fire
+    /// gets the fire, and the edges against the dawn glow get a warm rim.
+    fn steam(&self, p: Vec3, n: Vec3, depth: f32) -> Vec3 {
+        let up = 0.5 + 0.5 * n.y;
+        // cool blue shade under the cloud, lavender white on the top
+        let sky = Rgb::hex(0x5a6080)
+            .0
+            .lerp(Rgb::hex(0xd8d4e8).0, up.powf(1.3));
+        let view = (self.eye - p).normalize_or(Vec3::Z);
+        let rim = (1.0 - n.dot(view).abs()).powi(2) * (0.4 + 0.6 * n.dot(self.glow).max(0.0));
+        let dawn = Rgb::hex(0xffa070).0 * (0.25 * n.dot(self.glow).max(0.0) + 0.5 * rim);
+        let mut color = (sky + dawn) * (1.0 - 0.6 * depth);
         for &(at, light) in &self.fires {
             let to = at - p;
             let d2 = to.length_squared();
             let d = d2.sqrt().max(0.1);
-            // light that wraps around the cloud, strongest on the side to the fire. The
-            // steam between absorbs it, so far clouds get little.
-            let facing = 0.3 + 0.7 * (0.5 + 0.5 * n.dot(to / d));
-            color += light * (facing * (-d / 35.0).exp() / (d2 + 300.0));
+            // light that wraps a little around the cloud, strongest on the side to the
+            // fire. The steam between absorbs it, so far clouds get little.
+            let facing = 0.15 + 0.85 * (0.5 + 0.5 * n.dot(to / d)).powi(2);
+            color += light * (facing * (-d / 30.0).exp() / (d2 + 400.0));
         }
         color
     }
@@ -178,8 +187,9 @@ impl Lighting {
 /// `velocity` by drag, rises as it warms the air, and grows. It rolls as it moves, so its
 /// puffs turn around its center.
 ///
-/// The puffs are opaque: the renderer darkens a normal particle with an opacity below 1
-/// and does not make it thinner. A cloud that goes away shrinks.
+/// Each puff is a large, faint, soft particle. Many of them overlap into a soft volume
+/// with a dense core. The cloud thins while it grows, and it fades out at the end of its
+/// life.
 struct Cloud {
     start: f32,
     origin: Vec3,
@@ -194,6 +204,8 @@ struct Cloud {
     puffs: u32,
     /// The gray of the steam: 1 is white.
     albedo: f32,
+    /// The opacity of one puff of the young cloud, `0..1`.
+    density: f32,
     /// The age in seconds at which it is gone.
     life: f32,
     seed: u32,
@@ -206,29 +218,43 @@ impl Cloud {
         if age <= 0.0 || age >= self.life {
             return;
         }
-        let radius = (self.radius + self.growth * age.sqrt())
-            * (1.0 - smoothstep(self.life * 0.5, self.life, age));
+        let radius = self.radius + self.growth * age.sqrt();
+        // the cloud thins while it grows, and it fades in and out
+        let thin = (self.radius / radius).powf(0.4).max(0.5);
+        let fade = smoothstep(0.0, 0.06, age) * (1.0 - smoothstep(self.life * 0.4, self.life, age));
+        let density = self.density * thin * fade;
+        if density < 0.004 {
+            return;
+        }
         let travel = self.drag * (1.0 - (-age / self.drag).exp());
         let mut center =
             self.origin + self.velocity * travel + Vec3::Y * (0.5 * self.lift * age * age);
-        center.y = center.y.max(radius * 0.5);
+        center.y = center.y.max(radius * 0.4);
         let ahead = self.velocity.with_y(0.0);
         let roll = Quat::from_axis_angle(
             Vec3::Y.cross(ahead).normalize_or(Vec3::X),
             ahead.length() * travel / (2.0 * radius),
         );
-        // a dense core and lumps on its surface. The steam near the ground is in the shade
-        // of the steam above it.
-        let shade = self.albedo * (0.55 + 0.45 * smoothstep(0.0, 40.0, center.y));
-        let core = light.steam(center, Vec3::Y) * (shade * 0.8);
-        out.push(Particle::new(center, radius * 0.85, Rgb(core)));
+        // The steam near the ground is in the shade of the steam above it.
+        let shade = self.albedo * (0.6 + 0.4 * smoothstep(0.0, 40.0, center.y));
+        // a dense core, and soft lumps that reach out past it. The lumps at the edge are
+        // larger and fainter, so the edge of the cloud is soft and uneven.
+        let core = light.steam(center, Vec3::Y, 1.0) * shade;
+        out.push(Particle::new(center, radius * 0.75, Rgb(core)).opacity(density));
         for k in 1..self.puffs {
             let seed = self.seed * 37 + k * 5;
             let n = roll * random_direction(seed);
-            let p = center + n * radius * (0.5 + 0.35 * hash(seed + 1));
-            let size = radius * (0.3 + 0.25 * hash(seed + 2));
-            let color = light.steam(p, n) * (shade * (0.85 + 0.3 * hash(seed + 3)));
-            out.push(Particle::new(p, size, Rgb(color)));
+            // the odd puffs fill the body, the even ones are the lumps on its surface
+            let (out_by, size, opacity) = if k % 2 == 1 {
+                let out_by = 0.2 + 0.4 * hash(seed + 1);
+                (out_by, 0.5 + 0.3 * hash(seed + 2), 0.85)
+            } else {
+                let out_by = 0.6 + 0.3 * hash(seed + 1);
+                (out_by, 0.24 + 0.2 * hash(seed + 2), 1.0)
+            };
+            let p = center + n * radius * out_by;
+            let color = light.steam(p, n, 1.0 - out_by) * (shade * (0.85 + 0.3 * hash(seed + 3)));
+            out.push(Particle::new(p, radius * size, Rgb(color)).opacity(density * opacity));
         }
     }
 }
@@ -243,9 +269,10 @@ fn clouds() -> Vec<Cloud> {
         drag: 0.8 + 0.5 * h(10),
         lift: 1.0 + 3.0 * h(11),
         radius: 3.0 + 2.0 * h(12),
-        growth: 6.0 + 6.0 * h(13),
-        puffs: 14,
+        growth: 7.0 + 7.0 * h(13),
+        puffs: 20,
         albedo: 0.85 + 0.15 * h(14),
+        density: 1.0,
         life: f32::MAX,
         seed,
     };
@@ -303,8 +330,9 @@ fn clouds() -> Vec<Cloud> {
             lift: 1.5,
             radius: 2.0 + 1.5 * h(6),
             growth: 4.0 + 3.0 * h(7),
-            puffs: 5,
+            puffs: 8,
             albedo: 0.8,
+            density: 0.9,
             life: f32::MAX,
             seed: i + 20_000,
         });
@@ -323,10 +351,11 @@ fn clouds() -> Vec<Cloud> {
             velocity: out * (10.0 + 8.0 * h(2)) + vec3(3.0, -1.0 - 2.0 * h(3), 0.0),
             drag: 0.7,
             lift: -7.0,
-            radius: 0.2 + 0.15 * h(4),
-            growth: 1.5,
+            radius: 0.35 + 0.2 * h(4),
+            growth: 2.6,
             puffs: 6,
-            albedo: 1.3,
+            albedo: 1.15,
+            density: 0.1,
             life: 1.0,
             seed: i + 40_000,
         });
@@ -345,7 +374,8 @@ fn clouds() -> Vec<Cloud> {
             radius: 1.0 + 0.6 * h(4),
             growth: 4.0,
             puffs: 6,
-            albedo: 1.1,
+            albedo: 1.05,
+            density: 0.12,
             life: 1.4,
             seed: i + 80_000,
         });
@@ -360,9 +390,10 @@ fn clouds() -> Vec<Cloud> {
             drag: 0.5,
             lift: -3.0,
             radius: 0.4 + 0.3 * h(4),
-            growth: 2.4,
-            puffs: 4,
-            albedo: 1.6,
+            growth: 3.0,
+            puffs: 6,
+            albedo: 1.2,
+            density: 0.1,
             life: 1.1,
             seed: i + 60_000,
         });
@@ -643,16 +674,26 @@ impl Rocket {
 
         let flare = ease_in(progress(t, FLARE, 5.0));
         if power > 0.0 {
-            // the shock diamonds in the exhaust under the engines
-            for k in 0..5 {
-                let y = rocket_y - 2.4 - k as f32 * 2.9 * reach.min(1.0);
+            // the shock diamonds in the exhaust under the engines: a chain of bright knots
+            // in the dimmer core, each a hot center in a longer, warmer glow
+            for k in 0..7 {
+                let y = rocket_y - 2.2 - k as f32 * 3.1 * reach.min(1.0);
                 if y < PAD_Y + 0.5 {
                     break;
                 }
-                let fade = (1.0 - k as f32 / 5.0) * power.min(1.5);
+                let fade = (1.0 - k as f32 / 7.0).powf(1.4) * power.min(1.5);
+                let at = vec3(0.0, y, 0.0);
                 sparks.push(
-                    Particle::new(vec3(0.0, y, 0.0), 0.6, Rgb::hex(0xfff8ec) * (32.0 * fade))
-                        .tail(Vec3::Y * -1.0),
+                    Particle::new(at + Vec3::Y * 0.7, 0.8, Rgb::hex(0xffd8a0) * (14.0 * fade))
+                        .tail(Vec3::Y * -1.4),
+                );
+                sparks.push(
+                    Particle::new(
+                        at + Vec3::Y * 0.35,
+                        0.42,
+                        Rgb::hex(0xfffaf0) * (70.0 * fade),
+                    )
+                    .tail(Vec3::Y * -0.7),
                 );
             }
             // the turbulent body of the flame: blobs of light that flicker and stream down
@@ -664,7 +705,7 @@ impl Rocket {
                     continue;
                 }
                 let color = Rgb::hex(0xffc888).lerp(Rgb::hex(AMBER_EDGE), s)
-                    * (0.7 * (1.0 - s).powf(1.2) * power.min(1.5) * (0.6 + 0.8 * hash(k + 7)));
+                    * (0.45 * (1.0 - s).powf(1.2) * power.min(1.5) * (0.6 + 0.8 * hash(k + 7)));
                 sparks.push(Particle::new(p, 2.2 + 4.5 * s, color));
             }
             // a glow of three layers, wide and dim to small and hot, so it fades out softly
@@ -736,15 +777,16 @@ impl Rocket {
         let fire = Rgb::hex(0xffb878).0;
         let light = Lighting {
             fires: vec![
-                (flame_at, fire * (4000.0 * power.min(1.6))),
+                (flame_at, fire * (1800.0 * power.min(1.6))),
                 (
                     vec3(0.0, (rocket_y - 4.0).max(PAD_Y + 1.0), 0.0),
-                    fire * (4000.0 * power.min(1.6)),
+                    fire * (1800.0 * power.min(1.6)),
                 ),
-                (vec3(MOUTH_X + 6.0, 4.0, 0.0), fire * (2500.0 * trench)),
-                (vec3(-MOUTH_X - 6.0, 4.0, 0.0), fire * (2500.0 * trench)),
+                (vec3(MOUTH_X + 6.0, 4.0, 0.0), fire * (1400.0 * trench)),
+                (vec3(-MOUTH_X - 6.0, 4.0, 0.0), fire * (1400.0 * trench)),
             ],
             glow: vec3(GLOW.cos(), 0.15, GLOW.sin()).normalize(),
+            eye: camera.position,
         };
         let mut smoke = Vec::new();
         for cloud in &self.clouds {
@@ -1082,7 +1124,7 @@ fn build(assets: &Assets) -> (Scene, Ids, Tower, Vec<Vec3>) {
                 (0.4, -13.0),
                 (0.0, -16.0),
             ]),
-            Material::glow(0xffe8c4, 0.9),
+            Material::glow(0xffd8a8, 0.3),
         ),
         (
             flame_shape(&[
@@ -1093,7 +1135,7 @@ fn build(assets: &Assets) -> (Scene, Ids, Tower, Vec<Vec3>) {
                 (1.0, -30.0),
                 (0.0, -38.0),
             ]),
-            Material::glow(0xffa040, 0.4),
+            Material::glow(0xff9238, 0.4),
         ),
     ]
     .map(|(g, m)| {

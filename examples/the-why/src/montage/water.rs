@@ -19,10 +19,11 @@ use fframes_3d::math::{hash, progress, smoothstep};
 use fframes_3d::*;
 
 use super::{
-    AMBER, AMBER_EDGE, COLD, SKY_RATE, SKY_TILT, camera, ease, ease_out, fbm, mix, polar, ridges,
-    sky, span, stars, yaw_pitch,
+    AMBER, AMBER_EDGE, BUILD_RATE, COLD, SKY_RATE, SKY_TILT, camera, ease, ease_out, fbm, mix,
+    polar, ridges, sky, span, stars, streak_stars, yaw_pitch,
 };
 use crate::assets::Assets;
+use crate::look::SHUTTER;
 
 /// The length of the part in seconds.
 pub const LENGTH: f32 = 1.25;
@@ -99,6 +100,7 @@ struct Ids {
     head_light: NodeId,
     glows: NodeId,
     line: NodeId,
+    stars: NodeId,
 }
 
 /// The plain, the field and the canal before the dawn.
@@ -266,12 +268,16 @@ impl Water {
                     }
                 }
                 if warm > 0.03 && fill < 1.0 {
+                    // The front runs tens of meters in a frame. A streak over the time
+                    // between two motion blur samples keeps it from sparkling.
                     let front = vec3(x, 0.15, -CANAL - 0.6 - length);
-                    glows.push(Particle::new(
-                        front,
-                        0.5,
-                        Rgb::hex(0xffd8a0) * (20.0 * warm),
-                    ));
+                    let u = progress(t, at, at + 0.28);
+                    let speed = FURROW_LENGTH * 3.0 * (1.0 - u).powi(2) / 0.28;
+                    let dt = SHUTTER * BUILD_RATE / self.shutter(t) as f32;
+                    glows.push(
+                        Particle::new(front, 0.5, Rgb::hex(0xffd8a0) * (20.0 * warm))
+                            .tail(Vec3::Z * (speed * dt)),
+                    );
                 }
             }
             let grow = ease_out(progress(t, at + 0.12, at + 0.45));
@@ -302,13 +308,24 @@ impl Water {
         if let Object::Particles(p) = &mut scene[ids.glows].object {
             p.items = glows;
         }
+        if let Object::Particles(p) = &mut scene[ids.stars].object {
+            let dt = SHUTTER * BUILD_RATE / self.shutter(t) as f32;
+            streak_stars(&mut p.items, |t| self.camera_at(t), t, dt);
+        }
         (scene, self.camera_at(t))
     }
 
     /// The motion blur samples at `t`: more on the fast tilt at the start, and on the pan
     /// after the head, where the thin lines of the far furrows would crawl.
     pub fn shutter(&self, t: f32) -> usize {
-        if t < 0.2 || t > 0.5 { 3 } else { 2 }
+        // the thin rows of water and crop crawl with fewer samples while the camera pans
+        if t > 0.5 {
+            4
+        } else if t < 0.2 {
+            3
+        } else {
+            2
+        }
     }
 
     /// The camera at `t`, in the world. It comes down out of the stars, still turning at
@@ -424,13 +441,13 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
             sky(
                 Rgb::hex(0x0e1a3c) * 0.7,
                 Rgb::hex(0x5a6890) * 0.55,
-                Rgb::hex(0xff9a60) * 1.2,
+                Rgb::hex(0xff9a60) * 3.0,
                 ahead.z.atan2(ahead.x),
             ),
             1.0,
         ))
         .background(Background::Environment { blur: 0.0 });
-    scene.add(Node::particles(
+    let sky_stars = scene.add(Node::particles(
         stars(turn * CAMERA, 0.7),
         Blending::Additive,
     ));
@@ -748,6 +765,7 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
         head_light,
         glows,
         line,
+        stars: sky_stars,
     };
     (scene, ids)
 }

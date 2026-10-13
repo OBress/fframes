@@ -172,6 +172,9 @@ const SKY_RATE: f32 = 2.6;
 /// rad/s.
 const WHIP_RATE: f32 = 12.0;
 
+/// The motion blur samples while the drones bring the glass of the greenhouse.
+const DRONE_SAMPLES: usize = 6;
+
 /// The shot: the templates of the six parts.
 pub struct MontageSet {
     bridge: bridge::Bridge,
@@ -239,12 +242,13 @@ impl MontageSet {
 
     /// The motion blur samples at `t`: more on the fast camera moves and the transitions.
     pub fn shutter(&self, t: f32) -> usize {
-        // The whip pan: about one sample for each 20 pixels of blur at 1920 pixels, and 6 at
-        // most, so the frame stays within its time. Both sides of the whip play at their
-        // own speed.
+        // The whip pan: about one sample for each 6 pixels of blur at 1920 pixels. Fewer
+        // samples show the thin struts of the dome and the tower as rows of sharp copies.
+        // Only the ten fastest frames need more than 6. Both sides of the whip play at
+        // their own speed.
         let whip = |x: f32| {
             let rate = WHIP_HALF * WHIP_RATE / (WHIP_RATE * x).cosh().powi(2);
-            (rate * 0.9).ceil() as usize
+            (rate * 2.8).ceil() as usize
         };
         let (part, x) = part_at(t);
         match part {
@@ -259,17 +263,17 @@ impl MontageSet {
             Part::School => self.school.shutter(x),
             Part::Water => self.water.shutter(x),
             // the pen is fastest at the start of the ring, and a hundred drones fly in
-            // with the glass from 1.2 to 3.8
+            // with the framed glass from 1.2 to 3.8: the thin frames crawl with 2 samples
             Part::Greenhouse => whip(x - 5.0).clamp(
                 match x {
                     x if x < 1.4 => 3,
-                    x if x < 3.9 => 2,
+                    x if x < 3.9 => DRONE_SAMPLES,
                     _ => 1,
                 },
-                6,
+                24,
             ),
             // the shake of the launch and the climb
-            Part::Rocket => whip(x).clamp(if x > rocket::LIFTOFF { 2 } else { 1 }, 6),
+            Part::Rocket => whip(x).clamp(if x > rocket::LIFTOFF { 2 } else { 1 }, 24),
         }
     }
 
@@ -523,6 +527,24 @@ fn stars(center: Vec3, light: f32) -> Vec<Particle> {
             ))
         })
         .collect()
+}
+
+/// Stretches the star `items` along their path over the picture while the camera turns,
+/// from `t - dt / 2` to `t + dt / 2` (seconds of a part). Set `dt` to the time between two
+/// motion blur samples: the streaks of the samples then join into one line, and the stars
+/// do not show as rows of dots.
+fn streak_stars(items: &mut [Particle], camera_at: impl Fn(f32) -> Camera, t: f32, dt: f32) {
+    let basis = |c: &Camera| Mat3::from_cols(c.right(), c.up_vector(), -c.forward());
+    let now = camera_at(t);
+    let view = basis(&now);
+    // the direction that shows at the same place in the picture of the camera at `t + o`
+    let seen = |o: f32| view * basis(&camera_at(t + o)).transpose();
+    let (a, b) = (seen(-0.5 * dt), seen(0.5 * dt));
+    for p in items {
+        let d = p.position - now.position;
+        p.position = now.position + a * d;
+        p.tail = b * d - a * d;
+    }
 }
 
 /// A camera with a lens of `mm` millimeters from `position` to `target`, with the clip
