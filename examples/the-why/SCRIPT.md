@@ -12,7 +12,9 @@ line he draws in the dust, and shows what happens when someone gives the machine
 > If you have your why, you can bear almost any how. *(our translation)*
 
 1920x1080 for review, 3840x2160 for the master. 60 fps. Everything is rendered by fframes-3d on
-the GPU; titles and the robot HUD are SVG in the same frame.
+the GPU; titles and the robot HUD are SVG in the same frame. Real places come from open data:
+Manhattan from the NYC 3D Building Model (`fetch-nyc.sh`), the Golden Gate from USGS terrain,
+DataSF buildings and OpenStreetMap (`fetch-sf.sh`).
 
 ## Look
 
@@ -29,16 +31,16 @@ the GPU; titles and the robot HUD are SVG in the same frame.
 
 | # | time | shot | transition into the next shot |
 |---|---|---|---|
-| 1 | 0.0 to 7.0 | **The cursor.** Black. A cursor blinks. Code types itself, then floods the screen faster than anyone can read. | The cursor block grows and turns into a welding spark. |
+| 1 | 0.0 to 7.0 | **The cursor.** A macro of the subpixels of a blinking cursor. A question types itself; the machine answers with code, faster than anyone can read. The camera pulls back: the screen is one of thousands, all writing. | The screens go dark; the camera rushes into the last cursor, which becomes a welding arc. |
 | 2 | 7.0 to 19.0 | **The factory of answers.** An endless hall. Thousands of robot arms in perfect rhythm, sparks, conveyors of glowing parts, light shafts through high windows. Slow dolly at floor level, 24 mm. | A robot turns its camera eye toward the catwalk; we cut into its view. |
 | 3 | 19.0 to 29.0 | **The engineer.** Robot POV with a HUD: `HUMAN · ROLE: NONE`. He stands on a catwalk, an old laptop closed on the rail. The arms below never pause. | The robot places a chip; the camera dives into the chip. |
-| 4 | 29.0 to 42.0 | **The perfect city.** The traces of the chip become streets. A night city, lit and flawless, built by cranes that never stop. Traffic lights change for nobody. No people. | The camera tilts up from the city lights into the stars. |
+| 4 | 29.0 to 42.0 | **The perfect city.** The traces of the chip become the streets of Manhattan (the NYC 3D Building Model). Past the Empire State Building, through Times Square, where the screens play made-of-motion. Traffic lights change for nobody. No people. | The camera tilts up from the city lights into the stars. |
 | 5 | 42.0 to 52.0 | **The walk.** The same stars; the camera tilts down to a desert plateau. The engineer walks away from the factory glow on the horizon. Wind. | He kneels; the camera orbits low around him, time slows. |
 | 6 | 52.0 to 58.5 | **The line.** Close on the dust. He draws one line with his finger. It begins to glow, warm. The music stops; one note. | The light of the line runs across the desert into the factory. |
 | 7 | 58.5 to 67.0 | **The wave.** Inside, the arms stop. One after another, thousands of them turn toward the glass wall and the light. | The light of the line becomes the first cable of a bridge. |
-| 8 | 67.0 to 82.0 | **The why.** Machines build what people need: a bridge over a canyon to a village whose lights come on (67 to 72), a greenhouse dome that turns green in the desert (72 to 77), a rocket that leaves at dawn (77 to 82). Each part starts from the line. | The rocket flare fills the frame and becomes the sun. |
-| 9 | 82.0 to 92.0 | **Sunrise.** The engineer stands on the plateau. The bridge, the greenhouse, the rocket trail in the light. Long shadows, dust in the air. The quote. | Fade to black on the last word. |
-| 10 | 92.0 to 98.0 | **Title.** "The how is automated." Beat. "The why is yours." Small: made with fframes. | |
+| 8 | 67.0 to 82.0 | **The why.** Machines build what people need: the Golden Gate Bridge in its real strait at night, and San Francisco and Sausalito light up (67 to 72); a greenhouse dome that turns green in the desert at first light (72 to 77); a rocket that leaves at dawn (77 to 82). Each part starts from the line. | The rocket flare fills the frame and becomes the sun. |
+| 9 | 82.0 to 92.0 | **Sunrise.** The engineer stands on the plateau. The Golden Gate over the canyon, the greenhouse, the rocket trail in the light. Long shadows, dust in the air, birds. The quote. | Fade to black on the last word. |
+| 10 | 92.0 to 98.0 | **Title.** "The how is automated." Beat. "The why is yours." A warm line draws under "why". Small: the title and made with fframes. | |
 
 ## Narration
 
