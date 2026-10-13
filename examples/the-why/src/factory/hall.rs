@@ -119,7 +119,7 @@ impl Hall {
         scene.add(
             Node::mesh(
                 Geometry::floor(HALF_WIDTH * 2.0, length),
-                concrete.clone().roughness(0.6),
+                concrete.clone().roughness(0.45).reflection(0.45),
             )
             .at(0.0, 0.0, center)
             .shadows(false, true),

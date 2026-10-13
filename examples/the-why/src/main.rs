@@ -2,9 +2,10 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use fframes::RenderOptions;
 use fframes::cli::{self, clap};
-use fframes::{EncoderOptions, MediaProvider};
+use fframes::{
+    CombinedMediaProvider, EncoderOptions, MediaDirectory, MediaProvider, RenderOptions,
+};
 use fframes_skia_renderer::{
     SkiaFFramesRenderer, SkiaPipelineConcurrencyPolicy, SkiaPipelineConfig,
 };
@@ -23,11 +24,15 @@ fn main() -> ExitCode {
     let media = TheWhyMedia::new().expect("media");
     let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("dynamic_media");
     let assets = Assets::load(&folder).expect("dynamic_media: run ./fetch-assets.sh first");
+    // the videos on screens in the scenes and the soundtrack load at run time
+    let play = MediaDirectory::read_folder(folder.join("play")).expect("dynamic_media/play");
+    let play = play.process_media_source().expect("dynamic_media/play");
+    let media = CombinedMediaProvider::from([&media as &dyn MediaProvider, &play]);
     let scale = args.scale.unwrap_or(1.0);
     let video = TheWhy::new(Arc::new(assets), scale);
 
     let options = RenderOptions {
-        media: Some(&media as &dyn MediaProvider),
+        media: Some(&media),
         video_encoder_options: EncoderOptions {
             preferred_encoder: Some("libx264"),
             codec_params: Some(&[("crf", "16"), ("preset", "slow"), ("tune", "film")]),

@@ -102,7 +102,7 @@ impl Video for TheWhy {
         svgr!(
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3840 2160" width={WIDTH} height={HEIGHT}>
                 {ctx.render_scenes(&frame)}
-                {self.overlay.render(&frame, 0.12)}
+                {self.overlay.render(&frame, 0.09)}
             </svg>
         )
     }

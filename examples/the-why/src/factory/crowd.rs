@@ -1,6 +1,6 @@
-//! The crowd of arms on the production lines. Each link of the arm is a coarse copy of the
-//! link of the hero arm in [`super::arm`] with about 1/50 of the triangles. All arms draw as
-//! instances: one draw for each link and material.
+//! The crowd of arms on the production lines. All arms draw as instances: one draw for each
+//! part. Arms near the camera use the parts of the hero arm in [`super::arm`]. Arms farther
+//! away use coarse copies of its links with about 1/50 of the triangles.
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -9,7 +9,8 @@ use fframes_3d::math::{hash, smoothstep};
 use fframes_3d::*;
 
 use super::arm::{
-    self, A1, A3, EYE, GRIP, J2_UP, J4_AT, Joints, L2, L3, Palette, axle, hull, side_plate,
+    self, A1, A3, Arm, EYE, Expression, GRIP, J2_UP, J4_AT, Joints, L2, L3, Palette, axle, hull,
+    side_plate,
 };
 
 /// The parts of the coarse arm: the base and the six joints, each with a painted shell and
@@ -150,10 +151,70 @@ pub fn frames(base: Mat4, q: &Joints) -> [Mat4; 7] {
     out
 }
 
+/// The meshes of the hero arm, merged for each joint frame and material: `(frame, geometry,
+/// material)`. Frame 0 is the base.
+pub struct Detail(Vec<(usize, Geometry, Material)>);
+
+impl Detail {
+    /// Builds a hero arm and moves each of its meshes into the frame of its joint. The iris
+    /// is left out: the crowd draws its own eyes. So is the gas spring, which has no joint.
+    pub fn bake(palette: &Palette, font: &[u8]) -> Self {
+        let mut scene = Scene::new();
+        let arm = Arm::build(&mut scene, palette, font);
+        let face = Expression {
+            ring: 2.0,
+            status: 3.0,
+            eye: 0.0,
+            lid: 1.0,
+        };
+        arm.apply(&mut scene, &Joints::default(), arm::OPEN * 0.4, &face);
+        let frames = arm.frames();
+        let world = scene.world_matrices();
+        let mut parts: Vec<(usize, String, Material, Vec<Geometry>)> = Vec::new();
+        for (id, node) in scene.nodes() {
+            let Object::Mesh(mesh) = &node.object else {
+                continue;
+            };
+            if id == arm.iris {
+                continue;
+            }
+            // the nearest ancestor that is a joint frame
+            let mut parent = node.parent();
+            let frame = loop {
+                match parent {
+                    Some(p) => match frames.iter().position(|f| *f == p) {
+                        Some(i) => break Some(i),
+                        None => parent = scene[p].parent(),
+                    },
+                    None => break None,
+                }
+            };
+            let Some(frame) = frame else {
+                continue;
+            };
+            let to_frame = world[frames[frame].index()].inverse() * world[id.index()];
+            let geometry = mesh.geometry.as_ref().clone().transform(to_frame);
+            let key = format!("{:?}", mesh.material);
+            match parts.iter_mut().find(|(f, k, ..)| *f == frame && *k == key) {
+                Some((.., list)) => list.push(geometry),
+                None => parts.push((frame, key, mesh.material.clone(), vec![geometry])),
+            }
+        }
+        Self(
+            parts
+                .into_iter()
+                .map(|(frame, _, material, list)| (frame, Geometry::merge(list), material))
+                .collect(),
+        )
+    }
+}
+
 /// The instanced nodes of the crowd in a scene. [`Crowd::pose`] fills their instances.
 pub struct Crowd {
     shells: [NodeId; 7],
     metals: [NodeId; 7],
+    /// The parts of the near arms, with their joint frames.
+    detail: Vec<(usize, NodeId)>,
     eyes: NodeId,
 }
 
@@ -176,13 +237,18 @@ pub struct Posed {
 
 impl Crowd {
     /// Adds the instanced nodes to `scene`, without instances.
-    pub fn build(scene: &mut Scene, model: &Model, palette: &Palette) -> Self {
+    pub fn build(scene: &mut Scene, model: &Model, detail: &Detail, palette: &Palette) -> Self {
         let empty = || Arc::new(Instances::new([]));
         let add = |scene: &mut Scene, geometry: &Geometry, material: &Material| {
             scene.add(Node::instanced(geometry.clone(), material.clone(), empty()))
         };
         let shells = std::array::from_fn(|i| add(scene, &model.shells[i], &palette.white));
         let metals = std::array::from_fn(|i| add(scene, &model.metals[i], &palette.graphite));
+        let detail = detail
+            .0
+            .iter()
+            .map(|(frame, geometry, material)| (*frame, add(scene, geometry, material)))
+            .collect();
         let eyes = scene.add(
             Node::instanced(model.eye.clone(), Material::glow(Rgb::WHITE, 1.0), empty())
                 .shadows(false, false),
@@ -190,27 +256,40 @@ impl Crowd {
         Self {
             shells,
             metals,
+            detail,
             eyes,
         }
     }
 
-    /// Sets the instances of all arms in `scene`.
-    pub fn pose(&self, scene: &mut Scene, arms: &[Posed]) {
-        let frames: Vec<[Mat4; 7]> = arms.iter().map(|a| frames(a.base, &a.joints)).collect();
+    /// Sets the instances of all arms in `scene`. The `near` arms show the detailed parts.
+    pub fn pose(&self, scene: &mut Scene, arms: &[Posed], near: impl Fn(&Posed) -> bool) {
+        let frames: Vec<([Mat4; 7], bool)> = arms
+            .iter()
+            .map(|a| (frames(a.base, &a.joints), near(a)))
+            .collect();
         let set = |scene: &mut Scene, node: NodeId, instances: Instances| {
             if let Object::Mesh(mesh) = &mut scene[node].object {
                 mesh.instances = Some(Arc::new(instances));
             }
         };
-        for link in 0..7 {
-            let transforms: Vec<Mat4> = frames.iter().map(|f| f[link]).collect();
-            set(scene, self.shells[link], Instances::new(transforms.clone()));
-            set(scene, self.metals[link], Instances::new(transforms));
+        let link = |i: usize, near: bool| -> Vec<Mat4> {
+            frames
+                .iter()
+                .filter(|f| f.1 == near)
+                .map(|f| f.0[i])
+                .collect()
+        };
+        for i in 0..7 {
+            set(scene, self.shells[i], Instances::new(link(i, false)));
+            set(scene, self.metals[i], Instances::new(link(i, false)));
+        }
+        for (frame, node) in &self.detail {
+            set(scene, *node, Instances::new(link(*frame, true)));
         }
         set(
             scene,
             self.eyes,
-            Instances::new(frames.iter().map(|f| f[6])).colors(arms.iter().map(|a| a.eye)),
+            Instances::new(frames.iter().map(|f| f.0[6])).colors(arms.iter().map(|a| a.eye)),
         );
     }
 }

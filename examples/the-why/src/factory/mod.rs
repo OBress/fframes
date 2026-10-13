@@ -74,8 +74,9 @@ impl FactorySet {
         let mut scene = Scene::new();
         let hall = Hall::build(&mut scene, assets);
         let palette = Palette::new();
-        let crowd = Crowd::build(&mut scene, &crowd::Model::new(), &palette);
         let font = include_bytes!("../../media/Inter_24pt-Bold.ttf");
+        let detail = crowd::Detail::bake(&palette, font);
+        let crowd = Crowd::build(&mut scene, &crowd::Model::new(), &detail, &palette);
         let mut hero = |z: f32, phase: f32| {
             let arm = Arm::build(&mut scene, &palette, font);
             let base = aisle_station(z);
@@ -97,6 +98,7 @@ impl FactorySet {
             .collect();
         let sun = scene.add(Node::group());
         scene.environment = Environment::map(assets.factory_sky.clone(), 0.35);
+        scene.reflector = Some(Reflector::floor());
 
         // The engineer on the catwalk, and his old laptop on the rail.
         let engineer = Figure::build(&mut scene, None, &FigureStyle::default());
@@ -224,7 +226,7 @@ impl FactorySet {
                 eye,
             })
             .collect();
-        self.crowd.pose(scene, &posed);
+        self.crowd.pose(scene, &posed, |a| near(a, camera));
         self.hall.conveyors(
             scene,
             t,
@@ -573,7 +575,8 @@ impl FactorySet {
                 }
             })
             .collect();
-        self.crowd.pose(&mut scene, &posed);
+        self.crowd
+            .pose(&mut scene, &posed, |a| near(a, camera.position));
         self.hall.conveyors(
             &mut scene,
             time.min(WAVE_ARRIVAL + 40.0),
@@ -759,6 +762,11 @@ impl FactorySet {
             Blending::Additive,
         ));
     }
+}
+
+/// Whether an arm is near enough to `camera` to show the detailed parts.
+fn near(arm: &Posed, camera: Vec3) -> bool {
+    arm.base.w_axis.truncate().distance(camera) < 18.0
 }
 
 /// The sparks of a welding torch at `tip` at time `t`. `welding(b)` tells whether the torch

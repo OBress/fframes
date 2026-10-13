@@ -161,12 +161,13 @@ pub struct Arm {
     /// The base on the floor. Move it to place the arm.
     pub base: NodeId,
     joints: [NodeId; 6],
+    /// The glowing iris of the eye.
+    pub iris: NodeId,
     fingers: [NodeId; 2],
     spring_body: NodeId,
     spring_rod: NodeId,
     status: NodeId,
     ring: NodeId,
-    iris: NodeId,
     lid: NodeId,
 }
 
@@ -1117,6 +1118,12 @@ impl Arm {
             iris,
             lid,
         }
+    }
+
+    /// The base and the six joint nodes: the frames that the parts of the arm move with.
+    pub fn frames(&self) -> [NodeId; 7] {
+        let [j1, j2, j3, j4, j5, j6] = self.joints;
+        [self.base, j1, j2, j3, j4, j5, j6]
     }
 
     /// Poses the arm. `gap` is half the distance between the finger pads.

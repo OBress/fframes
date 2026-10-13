@@ -10,7 +10,11 @@ use fframes_3d::Renderer;
 use crate::WIDTH;
 use crate::look::{BAR, PICTURE_HEIGHT, SANS};
 
-type Picture = Box<dyn Fn(&Renderer, f32) -> ImageData<'static> + Send + Sync>;
+type Picture = Box<
+    dyn for<'a, 'b> Fn(&Renderer, &Frame, &FFramesContext<'a, 'b>) -> ImageData<'static>
+        + Send
+        + Sync,
+>;
 type Overlay = Box<dyn Fn(f32) -> Svgr<'static> + Send + Sync>;
 
 /// One shot of the film.
@@ -38,6 +42,22 @@ impl Shot {
         seconds: f32,
         renderer: Renderer,
         picture: impl Fn(&Renderer, f32) -> ImageData<'static> + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_media(name, seconds, renderer, move |r, frame, _| {
+            picture(r, frame.seconds())
+        })
+    }
+
+    /// A shot with a 3D picture that uses the media of the video, for example the frames of
+    /// a video on a screen in the scene.
+    pub fn with_media(
+        name: &'static str,
+        seconds: f32,
+        renderer: Renderer,
+        picture: impl for<'a, 'b> Fn(&Renderer, &Frame, &FFramesContext<'a, 'b>) -> ImageData<'static>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             name,
@@ -93,12 +113,12 @@ impl Scene for Shot {
         Duration::Seconds(self.seconds)
     }
 
-    fn render_frame<'a>(&'a self, frame: Frame, _ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
+    fn render_frame<'a>(&'a self, frame: Frame, ctx: &FFramesContext<'a, '_>) -> Svgr<'a> {
         let t = frame.seconds();
         let picture = self
             .picture
             .as_ref()
-            .map(|(renderer, picture)| picture(renderer, t));
+            .map(|(renderer, picture)| picture(renderer, &frame, ctx));
         let image = match &picture {
             Some(image) => svgr!(
                 <image href={image.href()} x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} preserveAspectRatio="none" />
