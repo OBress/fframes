@@ -181,7 +181,7 @@ impl Video for TheWhy {
         };
         let say = |file, at: f32| AudioTrack::new(file, Second(at)..Eof).voice().gain_db(1.0);
         let sound = |file, at: f32, gain: f32| AudioTrack::new(file, Second(at)..Eof).gain_db(gain);
-        AudioMap::from(vec![
+        let mut tracks = vec![
             AudioTrack::new("score.mp3", Second(0.0)..Eof)
                 .gain_db(-4.0)
                 .duck(score),
@@ -221,9 +221,14 @@ impl Video for TheWhy {
                 .fade_in(1.0)
                 .fade_out(1.5),
             sound("sfx_crane.mp3", 34.0, -18.0).fade_out(1.0),
-            sound("sfx_wind.mp3", 42.0, -3.0).fade_in(1.5).fade_out(1.0),
-            sound("sfx_steps.mp3", 45.0, -9.0).fade_out(1.0),
+            sound("sfx_wind.mp3", 42.0, 3.0).fade_in(1.5).fade_out(1.0),
+            // the knee on the ground, the finger in the dust, the embers of the line
+            sound("sfx_step_3.mp3", 52.37, -8.0),
+            sound("sfx_scrape.mp3", 52.95, 8.0).fade_out(0.4),
             sound("sfx_ignite.mp3", 54.3, -10.0),
+            sound("sfx_embers.mp3", 54.6, 6.0)
+                .fade_in(0.5)
+                .fade_out(1.0),
             sound("sfx_hum.mp3", 54.8, -9.0).fade_in(0.8),
             sound("sfx_streak.mp3", 56.6, -7.0),
             // the wave, the builds, the sunrise
@@ -255,7 +260,22 @@ impl Video for TheWhy {
                 .fade_in(2.0)
                 .fade_out(2.0),
             sound("sfx_boom.mp3", 92.4, -12.0),
-        ])
+        ];
+        // The footfalls of the walk. Four takes, leveled to the same peak, and louder as he
+        // comes closer to the camera.
+        let steps = [
+            ("sfx_step_1.mp3", 16.0),
+            ("sfx_step_2.mp3", 20.0),
+            ("sfx_step_3.mp3", 4.0),
+            ("sfx_step_4.mp3", 15.0),
+        ];
+        let walk_start = 42.0;
+        for (i, t) in desert::footfalls().into_iter().enumerate() {
+            let (file, level) = steps[i % steps.len()];
+            let near = (t / 8.3).clamp(0.0, 1.0);
+            tracks.push(sound(file, walk_start + t, level - 24.0 + 16.0 * near));
+        }
+        AudioMap::from(tracks)
     }
 
     fn define_scenes(&self) -> Scenes<'_> {
