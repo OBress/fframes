@@ -48,7 +48,12 @@ fn review() {
         started.elapsed().as_secs_f32(),
         set.screens().len()
     );
-    let renderer = city::CitySet::renderer(1920, 804);
+    // `CITY_CPU=1` renders with the CPU rasterizer, so a second run can share the work.
+    let renderer = if std::env::var("CITY_CPU").is_ok() {
+        city::CitySet::renderer(1920, 804).cpu()
+    } else {
+        city::CitySet::renderer(1920, 804)
+    };
     let (scene, _) = set.moment(8.0);
     for &id in set.screens() {
         if let Some(mesh) = scene[id].as_mesh() {
@@ -75,7 +80,10 @@ fn review() {
             .unwrap();
         tiles.push(image);
     }
-    sheet(&tiles, 2).save(out_dir().join("sheet.png")).unwrap();
+    let name = std::env::var("CITY_SHEET").unwrap_or_else(|_| "sheet".to_owned());
+    sheet(&tiles, 2)
+        .save(out_dir().join(format!("{name}.png")))
+        .unwrap();
 }
 
 /// The tiles at half size, `columns` in a row.
@@ -444,4 +452,26 @@ fn nyc_overview() {
             RgbaImage::from_raw(pixels.width, pixels.height, pixels.to_straight_rgba()).unwrap();
         image.save(out_dir().join(format!("{name}.png"))).unwrap();
     }
+}
+
+/// The motion on the picture during the shutter of each frame, to tune the shutter.
+#[test]
+fn shutter_motion() {
+    for k in 0..=130 {
+        let t = k as f32 * 0.1;
+        let m = city::flight_motion(t);
+        let e = city::flight_exposure(t);
+        let n = city::flight_samples(t);
+        let bar = "#".repeat((m / 2.0).min(80.0) as usize);
+        println!("t {t:5.2}: {m:6.1} px, open {e:4.2}, {n} samples {bar}");
+    }
+    // The samples of all frames, for the frame time.
+    let frames = (city::DURATION * FPS as f32) as usize;
+    let total: usize = (0..frames)
+        .map(|f| city::flight_samples(f as f32 / FPS as f32))
+        .sum();
+    println!(
+        "{:.2} samples per frame on average",
+        total as f32 / frames as f32
+    );
 }

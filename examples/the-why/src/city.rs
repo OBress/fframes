@@ -51,8 +51,10 @@ use crate::assets::{Assets, Pbr};
 use crate::look;
 use build::{BAY, CraneParts, FLOOR, MeshBuf, RISE_TIME, RoofLight, STYLES};
 use data::Manhattan;
-pub use flight::camera;
 use flight::near_flight;
+pub use flight::{
+    camera, exposure as flight_exposure, motion as flight_motion, samples as flight_samples,
+};
 use traffic::{Lane, Signal};
 
 /// The direction of the camera at the end of the shot. Shot 5 starts with it.
@@ -837,9 +839,10 @@ impl CitySet {
         })
     }
 
-    /// Motion blur samples at `t`.
-    pub fn shutter(&self, _t: f32) -> usize {
-        3
+    /// Motion blur samples at `t`: 3 to 6, more in the frames that move fast. Those frames
+    /// also close the shutter sooner, see [`CitySet::moment`].
+    pub fn shutter(&self, t: f32) -> usize {
+        flight::samples(t)
     }
 
     /// Nothing over the picture.
@@ -857,8 +860,11 @@ impl CitySet {
         &self.screen_ids
     }
 
-    /// The scene and the camera at `t` seconds into the shot.
+    /// The scene and the camera at `t` seconds into the shot. For the motion blur samples
+    /// of a fast frame, the time moves toward the frame time, so its shutter closes sooner
+    /// (see `flight::exposure_time`).
     pub fn moment(&self, t: f32) -> (Scene, Camera) {
+        let t = flight::exposure_time(t);
         let camera = camera(t);
         let mut scene = self.scene.clone();
         let m = &self.materials;
@@ -1070,7 +1076,7 @@ impl CitySet {
         }
 
         // The small lights streak with the motion of the camera.
-        let before = self::camera(t - look::SHUTTER * 0.5);
+        let before = self::camera(t - look::SHUTTER * 0.5 * flight::exposure(t));
         for id in [
             self.lamp_heads,
             self.small_lights,
