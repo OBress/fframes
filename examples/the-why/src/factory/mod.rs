@@ -20,6 +20,8 @@ use arm::{Arm, Expression, Joints, Palette};
 use crowd::{Crowd, Lod, Posed, Station};
 use hall::Hall;
 
+/// The intensity of the sky light in the hall by day.
+const SKY: f32 = 0.35;
 /// The color of the eyes and the status lights of the arms at work.
 const COLD: u32 = 0x6fb8ff;
 /// The color of human intent: the light of the line.
@@ -76,6 +78,11 @@ pub struct FactorySet {
     lamp: NodeId,
     /// The star sky outside the glass wall, hidden by day.
     stars: NodeId,
+    /// A black sheet over the board around the chip, for the end of the dive.
+    veil: NodeId,
+    /// Flat pins over the left and the right pins of the seated chip, as the pins of the
+    /// chip in shot 4 (`crate::city`). They show at the end of the dive.
+    leads: NodeId,
 }
 
 /// The test whether a sphere can show in the picture of a camera.
@@ -248,7 +255,7 @@ impl FactorySet {
             })
             .collect();
         let sun = scene.add(Node::group());
-        scene.environment = Environment::map(assets.factory_sky.clone(), 0.35);
+        scene.environment = Environment::map(assets.factory_sky.clone(), SKY);
         scene.reflector = Some(Reflector::floor());
         let stars = scene.add(crate::stars::stars().hidden());
 
@@ -325,6 +332,36 @@ impl FactorySet {
                 .at(tray.x, TRAY.y, tray.z),
         );
         let chip = scene.add(crate::city::chip());
+        // The sheet lies over the pads (40 µm) and under the pins (300 µm).
+        let veil = scene.add(
+            Node::mesh(
+                Geometry::floor(0.5, 0.5),
+                Material::unlit(0x010203).transparent(),
+            )
+            .at(jig.x, JIG.y + 0.0001, jig.z)
+            .shadows(false, false)
+            .hidden(),
+        );
+        // 44 pins on each side, 36 m apart and 99 m long out of a chip of 1620 m in the
+        // city, at 1 / 45000.
+        let s = crate::city::CHIP_SCALE;
+        let leads = Geometry::merge((0..44).flat_map(|k| {
+            let z = (k as f32 - 21.5) * 36.0 * s;
+            [-1.0f32, 1.0].map(|side| {
+                Geometry::cuboid(99.0 * s, 0.0002, 8.0 * 1.8 * s).translate(
+                    side * (810.0 + 49.5) * s,
+                    CHIP_TOP - 0.0001,
+                    z,
+                )
+            })
+        }));
+        let seat = watcher.base.transform_point3(seated());
+        let leads = scene.add(
+            Node::mesh(leads, Material::metal(0xd9dde3, 0.24).transparent())
+                .at(seat.x, seat.y, seat.z)
+                .shadows(false, false)
+                .hidden(),
+        );
         let lamp = scene.add(Node::light(Light::spot(0xe8f2ff, 0.0, 0.5, 0.7)));
         Self {
             scene,
@@ -339,6 +376,8 @@ impl FactorySet {
             chip,
             lamp,
             stars,
+            veil,
+            leads,
         }
     }
 
@@ -352,19 +391,22 @@ impl FactorySet {
     }
 
     /// The hall by day: cold light falls through the roof glazing. `shadow_bounds` is the
-    /// part of the hall with sharp shadows and light shafts.
-    fn day(&self, t: f32, shadow_bounds: Aabb) -> Scene {
+    /// part of the hall with sharp shadows and light shafts. `daylight` (`0..1`) dims the
+    /// sun, the light of the hemisphere and the haze.
+    fn day(&self, t: f32, shadow_bounds: Aabb, daylight: f32) -> Scene {
         let mut scene = self.scene.clone();
         scene[self.sun].object = Object::Light(
-            Light::directional(0xdfe9ff, 7.0, vec3(0.35, 0.75, -1.0)).with_shadow(Shadow {
-                map_size: 4096,
-                softness: 1.5,
-                bounds: Some(shadow_bounds),
-                ..Default::default()
-            }),
+            Light::directional(0xdfe9ff, 7.0 * daylight, vec3(0.35, 0.75, -1.0)).with_shadow(
+                Shadow {
+                    map_size: 4096,
+                    softness: 1.5,
+                    bounds: Some(shadow_bounds),
+                    ..Default::default()
+                },
+            ),
         );
         scene.atmosphere = Some(Atmosphere {
-            density: 0.022,
+            density: 0.022 * daylight,
             color: Rgb::hex(0xe4ecff),
             base: 2.0,
             falloff: 0.03,
@@ -377,7 +419,11 @@ impl FactorySet {
             steps: 24,
         });
         scene.background = Background::Color(Rgb::hex(0xc8d6ea));
-        scene.add(Node::light(Light::hemisphere(0x5d6a80, 0x16181c, 0.5)));
+        scene.add(Node::light(Light::hemisphere(
+            0x5d6a80,
+            0x16181c,
+            0.5 * daylight,
+        )));
         self.hall.light_lamps(&mut scene, Rgb::hex(0xdcecff) * 6.0);
         scene
     }
@@ -457,7 +503,7 @@ impl FactorySet {
             min: vec3(-hall::HALF_WIDTH, 0.0, camera.position.z - 130.0),
             max: vec3(hall::HALF_WIDTH, hall::WALL + 4.0, camera.position.z + 25.0),
         };
-        let mut scene = self.day(t, bounds);
+        let mut scene = self.day(t, bounds, 1.0);
         let view = View::new(&camera);
         self.work(&mut scene, t, &view);
         self.pose_hero(&mut scene, &self.welder, welder, t, 0.0);

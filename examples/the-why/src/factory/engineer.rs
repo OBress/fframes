@@ -70,7 +70,10 @@ impl FactorySet {
             }
         };
         let time = t + 12.0;
-        let mut scene = self.day(time, bounds);
+        // In the dive the light of the hall goes away and the light of shot 4 comes: a dark
+        // studio with one large soft light straight above.
+        let daylight = 1.0 - smoothstep(8.4, 9.6, t);
+        let mut scene = self.day(time, bounds, daylight);
         let view = View::new(&camera);
         self.work(&mut scene, time, &view);
         self.pose_hero(
@@ -85,12 +88,34 @@ impl FactorySet {
         self.pose_engineer(&mut scene, 24.0 + t, smoothstep(1.4, 3.1, t));
         self.show(&mut scene, &self.welder, &view);
         // The inspection lamp lights the board from the far side, so the pads and the
-        // traces glint toward the eye.
-        let on = smoothstep(WHIP, ARRIVE, t);
+        // traces glint toward the eye. It goes off in the dive.
+        let on = smoothstep(WHIP, ARRIVE, t) * (1.0 - smoothstep(8.2, 9.0, t));
         let lamp = jig + vec3(0.16, 0.4, 0.42);
-        // In the dive the metal of the chip shines brighter, as in the light of shot 4.
+        // The sky of the hall fades first, then the studio of shot 4 comes in its place.
         if let Environment::Map { intensity, .. } = &mut scene.environment {
-            *intensity = 0.35 + 1.4 * smoothstep(8.4, 9.8, t);
+            *intensity = SKY * (1.0 - smoothstep(8.6, 8.95, t));
+        }
+        let city = smoothstep(8.95, 9.3, t);
+        if t > 8.95 {
+            scene.environment = chip_light(city);
+            scene.add(Node::light(Light::hemisphere(
+                0x0a1424,
+                0x2a4470,
+                0.35 * city,
+            )));
+        }
+        // The board falls into black around the chip, as the ground around the chip of
+        // shot 4. Flat pins as in shot 4 take the place of the gull wing pins.
+        let veil = smoothstep(8.5, 9.4, t);
+        let leads = smoothstep(8.9, 9.6, t);
+        // As the flat pins come, the sheet rises over the gull wing pins to 0.3 mm under the
+        // top of the chip.
+        scene[self.veil].position.y = JIG.y + 0.0001 + (0.0021 + CHIP_TOP - 0.0004) * leads;
+        for (node, opacity) in [(self.veil, veil), (self.leads, leads)] {
+            scene[node].visible = opacity > 0.0;
+            if let Some(m) = scene[node].material_mut() {
+                m.opacity = opacity;
+            }
         }
         let lamp_node = &mut scene[self.lamp];
         lamp_node.position = lamp;
@@ -175,7 +200,7 @@ impl FactorySet {
         let zoom = [35.0f32, 50.0, 70.0, 85.0];
         let i = (stage.floor() as usize).min(2);
         let gaze_mm = zoom[i] + (zoom[i + 1] - zoom[i]) * (stage - i as f32);
-        let macro_mm = 60.0 + 12.0 * smoothstep(ARRIVE + 0.1, ARRIVE + 0.35, t);
+        let macro_mm = 66.0 + 14.0 * smoothstep(ARRIVE + 0.1, ARRIVE + 0.35, t);
         let mm = gaze_mm + (macro_mm - gaze_mm) * k;
 
         // The dive: the camera rises from the eye over the chip and falls straight down at
@@ -355,4 +380,27 @@ impl FactorySet {
             </g>
         )
     }
+}
+
+/// The light of the chip at the start of shot 4 (`crate::city`): a dark night sky, a band of
+/// city glow at the horizon and one large soft light straight above, times `intensity`.
+fn chip_light(intensity: f32) -> Environment {
+    let glow = Rgb::hex(0x5d7cb0) * 0.9;
+    let band = |azimuth: f32| {
+        let a = deg(azimuth);
+        SoftBox::new(vec3(a.sin(), 0.05, a.cos()), 125.0, 7.0, glow)
+    };
+    Environment::Studio(Studio {
+        sky: Rgb::hex(0x03060d),
+        horizon: Rgb::hex(0x1c2c48),
+        ground: Rgb::hex(0x0b1220),
+        softboxes: vec![
+            band(0.0),
+            band(120.0),
+            band(240.0),
+            SoftBox::new(vec3(0.12, 1.0, 0.08), 64.0, 52.0, Rgb::hex(0xf4f1ea) * 1.1),
+        ],
+        intensity,
+        rotation: 0.0,
+    })
 }

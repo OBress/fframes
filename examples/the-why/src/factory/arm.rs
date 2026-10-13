@@ -193,6 +193,8 @@ pub struct Palette {
     pub dark: Material,
     pub yellow: Material,
     pub glass: Material,
+    /// Machined aluminium with a cold rim at its edges, for the jaws of the gripper.
+    pub aluminium: Material,
     /// The color of the status lights, the base ring and the eye.
     pub accent: Rgb,
 }
@@ -210,6 +212,9 @@ impl Palette {
                 .roughness(0.03)
                 .clearcoat(1.0)
                 .env_intensity(1.6),
+            aluminium: Material::metal(0xa4abb4, 0.36)
+                .env_intensity(0.4)
+                .rim(Rgb::hex(0x9fd4ff) * 0.25, 6.0),
             accent: Rgb::hex(0x6fb8ff),
         }
     }
@@ -469,6 +474,107 @@ fn motor(
         parent,
         Node::mesh(rod(0.016, 0.03, nut, side, 6), p.chrome.clone()),
     );
+}
+
+/// The parts of the jaw on +X, in its own frame: the inner face is at X = 0 and the tip at
+/// Z = 0.275, sorted by material.
+struct Jaw {
+    metal: Geometry,
+    pockets: Geometry,
+    steel: Geometry,
+    rubber: Geometry,
+}
+
+fn finger_parts() -> Jaw {
+    // the carriage on the rail, with chamfered edges along Z
+    let carriage =
+        Geometry::extrude_segments(&Geometry::rect_shape(0.034, 0.066, 0.004), 0.05, 0.0015, 1)
+            .translate(0.017, 0.0, 0.16);
+    // The finger tapers to the tip. Its profile in the XZ plane is extruded along Y.
+    let profile = [
+        vec2(0.0, 0.18),
+        vec2(0.024, 0.18),
+        vec2(0.024, 0.2),
+        vec2(0.013, 0.262),
+        vec2(0.009, 0.275),
+        vec2(0.0, 0.275),
+    ];
+    let finger = Geometry::extrude_segments(&profile, 0.05, 0.002, 1).rotate_x(FRAC_PI_2);
+    // two pockets milled into the top face, and the same on the bottom face
+    let pockets = [-1.0f32, 1.0].into_iter().flat_map(|y| {
+        [
+            Geometry::rounded_box(0.006, 0.001, 0.026, 0.002, 1).translate(0.017, y * 0.025, 0.205),
+            Geometry::rounded_box(0.004, 0.001, 0.014, 0.0015, 1).translate(
+                0.0125,
+                y * 0.025,
+                0.243,
+            ),
+        ]
+    });
+    // socket head cap screws: a steel head with a dark hex socket
+    let screw = |at: Vec3, r: f32| {
+        Geometry::merge([
+            Geometry::cylinder(r, r, r * 0.7, 14).translate(at.x, at.y + r * 0.35, at.z),
+            Geometry::cylinder(r * 0.45, r * 0.45, 0.0004, 6).translate(
+                at.x,
+                at.y + r * 0.72,
+                at.z,
+            ),
+        ])
+    };
+    let screws = Geometry::merge([
+        screw(vec3(0.009, 0.033, 0.147), 0.0035),
+        screw(vec3(0.025, 0.033, 0.173), 0.0035),
+        screw(vec3(0.007, 0.025, 0.191), 0.0024),
+        screw(vec3(0.017, 0.025, 0.191), 0.0024),
+    ]);
+    // the piston rod goes into the cylinder on the gripper
+    let piston = rod(0.003, 0.05, vec3(0.059, 0.024, 0.156), Vec3::X, 10);
+    // the ribbed pad on the inner face holds the part
+    let pad = Geometry::merge(
+        std::iter::once(
+            Geometry::rounded_box(0.005, 0.044, 0.048, 0.0015, 1).translate(-0.0025, 0.0, 0.246),
+        )
+        .chain((0..6).map(|i| {
+            Geometry::rounded_box(0.002, 0.044, 0.003, 0.0008, 1).translate(
+                -0.006,
+                0.0,
+                0.226 + i as f32 * 0.008,
+            )
+        })),
+    );
+    let cable = Geometry::tube(
+        &[
+            vec3(0.028, 0.033, 0.142),
+            vec3(0.038, 0.046, 0.132),
+            vec3(0.058, 0.052, 0.112),
+            vec3(0.078, 0.05, 0.096),
+        ],
+        0.0022,
+        8,
+    );
+    // a raised spine along the top and the bottom of the finger
+    let spines = [-1.0f32, 1.0].map(|y| {
+        Geometry::extrude_segments(&Geometry::rect_shape(0.008, 0.06, 0.0015), 0.003, 0.0008, 1)
+            .rotate_x(FRAC_PI_2)
+            .translate(0.006, y * 0.026, 0.222)
+    });
+    // a scale of fine marks along the inner edge of the top face
+    let marks = (0..9).map(|i| {
+        let long = if i % 4 == 0 { 0.003 } else { 0.0018 };
+        Geometry::cuboid(long, 0.0006, 0.0005).translate(
+            0.0006 + long * 0.5,
+            0.0252,
+            0.196 + i as f32 * 0.0045,
+        )
+    });
+    let [top, bottom] = spines;
+    Jaw {
+        metal: Geometry::merge([carriage, finger, top, bottom]),
+        pockets: Geometry::merge(pockets.chain(marks)),
+        steel: Geometry::merge([screws, piston]),
+        rubber: Geometry::merge([pad, cable]),
+    }
 }
 
 impl Arm {
@@ -940,14 +1046,45 @@ impl Arm {
                 p.graphite.clone(),
             ),
         );
-        for y in [0.035f32, -0.035] {
+        // The linear rail of the jaws on the front of the gripper, and a small pneumatic
+        // cylinder for each jaw on top of it, with an end cap and an air hose.
+        scene.add_to(
+            j6,
+            Node::mesh(
+                Geometry::rounded_box(0.24, 0.012, 0.009, 0.002, 1).translate(0.0, 0.0, 0.148),
+                p.chrome.clone(),
+            ),
+        );
+        for x in [-1.0f32, 1.0] {
             scene.add_to(
                 j6,
                 Node::mesh(
-                    Geometry::rounded_box(0.24, 0.016, 0.014, 0.005, 1).translate(0.0, y, 0.15),
-                    p.chrome.clone(),
+                    rod(0.0095, 0.045, vec3(x * 0.1075, 0.024, 0.156), Vec3::X, 16),
+                    p.aluminium.clone(),
                 ),
             );
+            scene.add_to(
+                j6,
+                Node::mesh(
+                    Geometry::rounded_box(0.008, 0.022, 0.022, 0.002, 1).translate(
+                        x * 0.134,
+                        0.024,
+                        0.156,
+                    ),
+                    p.graphite.clone(),
+                ),
+            );
+            let hose = Geometry::tube(
+                &[
+                    vec3(x * 0.134, 0.036, 0.156),
+                    vec3(x * 0.136, 0.05, 0.14),
+                    vec3(x * 0.12, 0.052, 0.11),
+                    vec3(x * 0.1, 0.046, 0.08),
+                ],
+                0.003,
+                8,
+            );
+            scene.add_to(j6, Node::mesh(hose, p.rubber.clone()));
         }
         let screws = Geometry::merge(
             [-0.1f32, -0.05, 0.05, 0.1]
@@ -1030,47 +1167,23 @@ impl Arm {
             )
             .at(EYE.x, EYE.y + 0.03, EYE.z + 0.036),
         );
+        // The jaws: a machined aluminium carriage on the rail and a tapered finger with
+        // pockets, cap screws, a ribbed rubber pad at the tip, the piston rod of its
+        // cylinder and a sensor cable. They are built for the jaw on +X and mirrored.
+        let jaw = finger_parts();
         let fingers = [-1.0f32, 1.0].map(|x| {
             let finger = scene.add_to(j6, Node::group());
-            scene.add_to(
-                finger,
-                Node::mesh(
-                    Geometry::rounded_box(0.03, 0.06, 0.07, 0.008, 2).translate(
-                        x * 0.015,
-                        0.0,
-                        0.155,
-                    ),
-                    p.graphite.clone(),
-                ),
-            );
-            scene.add_to(
-                finger,
-                Node::mesh(
-                    Geometry::rounded_box(0.024, 0.055, 0.12, 0.007, 2).translate(
-                        x * 0.012,
-                        0.0,
-                        0.215,
-                    ),
-                    p.graphite.clone(),
-                ),
-            );
-            scene.add_to(
-                finger,
-                Node::mesh(
-                    Geometry::rounded_box(0.008, 0.05, 0.06, 0.003, 1).translate(
-                        -x * 0.003,
-                        0.0,
-                        0.245,
-                    ),
-                    p.rubber.clone(),
-                ),
-            );
-            let bolts = Geometry::merge(
-                [0.14f32, 0.17]
-                    .iter()
-                    .map(|z| rod(0.005, 0.004, vec3(x * 0.031, 0.0, *z), Vec3::X * x, 6)),
-            );
-            scene.add_to(finger, Node::mesh(bolts, p.chrome.clone()));
+            for (geometry, material) in [
+                (&jaw.metal, &p.aluminium),
+                (&jaw.pockets, &p.graphite),
+                (&jaw.steel, &p.chrome),
+                (&jaw.rubber, &p.rubber),
+            ] {
+                scene.add_to(
+                    finger,
+                    Node::mesh(geometry.clone().scale(x, 1.0, 1.0), material.clone()),
+                );
+            }
             finger
         });
 

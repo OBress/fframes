@@ -52,8 +52,11 @@ impl FactorySet {
     /// `ARRIVAL` on.
     fn night(&self, t: f32, camera: &Camera, shadow_bounds: Aabb) -> Scene {
         let mut scene = self.scene.clone();
-        // The warm light comes in, then gathers into the line at the end of the shot.
-        let warm = smoothstep(ARRIVAL, ARRIVAL + 1.2, t) * (1.0 - 0.6 * smoothstep(5.8, 8.0, t));
+        // The warm light comes in, then dims a little as the camera comes down to the line.
+        let warm = smoothstep(ARRIVAL, ARRIVAL + 1.2, t) * (1.0 - 0.3 * smoothstep(5.8, 8.0, t));
+        // At the end the air over the floor glows with the light of the line, so the arms
+        // stand dark against it.
+        let glow_air = smoothstep(4.5, 7.5, t);
         scene[self.sun].object = Object::Light(
             Light::directional(WARM, 2.2 * warm, vec3(0.0, 0.07, -1.0)).with_shadow(Shadow {
                 map_size: 4096,
@@ -68,7 +71,7 @@ impl FactorySet {
             base: 1.0,
             falloff: 0.05,
             anisotropy: 0.65,
-            ambient: Rgb::hex(0x0c1a30),
+            ambient: Rgb::hex(0x0c1a30).lerp(Rgb::hex(0x6a3a14), glow_air),
             noise: 0.5,
             noise_size: 8.0,
             offset: vec3(0.3, 0.05, 0.2) * t,
@@ -95,7 +98,7 @@ impl FactorySet {
         let flash = smoothstep(ARRIVAL - 0.05, ARRIVAL + 0.1, t)
             * (1.0 - 0.8 * smoothstep(ARRIVAL + 0.1, ARRIVAL + 1.4, t));
         self.hall
-            .light_glass(&mut scene, Rgb::hex(WARM) * (0.05 * warm + 0.9 * flash));
+            .light_glass(&mut scene, Rgb::hex(WARM) * (0.08 * warm + 0.9 * flash));
         // Outside, the light of the line glows over the desert, low behind the middle of
         // the glass wall. It is the source of the warm light in the hall.
         let glow = vec3(0.0, 2.0, hall::Z_FAR - 50.0);
@@ -303,20 +306,23 @@ impl FactorySet {
 
     /// The camera of shot 7. It stands low in the hall and looks past the working arms at the
     /// glass wall. The light comes through the wall and runs toward the camera, and the arms
-    /// turn to it. As the light passes, the camera turns with it, goes down to the floor and
-    /// frames the line across the picture with a long lens.
+    /// turn to it. Then the camera goes down to the floor beside the line and turns 30
+    /// degrees off the axis of the hall: the line lies across the picture, and the turned
+    /// arms stand over it against the warm glass wall.
     fn wave_camera(&self, t: f32) -> Camera {
         let z0 = hall::Z_FAR;
         let start = vec3(2.9, 0.85, z0 + 40.0) + vec3(0.0, -0.1, -2.5) * smoothstep(0.0, 3.6, t);
-        let floor = vec3(2.8, 0.03, z0 + 37.0);
-        let down = smoothstep(4.0, 7.6, t);
+        // the end, with a slow drift along the line
+        let floor = vec3(3.4, 0.05, z0 + 36.6 - 0.5 * smoothstep(6.0, 8.5, t));
+        let down = smoothstep(3.6, 7.2, t);
         let position = start.lerp(floor, down);
-        // The view turns from the glass wall to the line beside the camera.
+        // The view turns from the glass wall to the point of the line ahead of the camera.
+        let across = vec3(-0.866, 0.0, -0.5);
+        let line = floor + across * (floor.x / 0.866);
         let glass = (vec3(-0.5, 2.4, z0) - start).normalize();
-        let line = (vec3(0.0, 0.006, z0 + 37.0) - floor).normalize();
-        let turn = smoothstep(3.3, 6.4, t);
-        let look = glass.slerp(line, turn);
-        let mm = 28.0 + 107.0 * smoothstep(5.6, 8.0, t);
+        let ahead = (vec3(line.x, 0.006, line.z) - floor).normalize();
+        let look = glass.slerp(ahead, smoothstep(3.8, 7.0, t));
+        let mm = 30.0 + 10.0 * smoothstep(4.5, 7.4, t);
         let shake = 0.003 * (1.0 - smoothstep(6.0, 8.0, t));
         let mut camera = lens(mm)
             .position(position)
@@ -324,9 +330,10 @@ impl FactorySet {
             .shake(t * 0.4, shake, 21);
         camera.near = 0.02;
         camera.far = 3000.0;
-        // The focus follows the front of the wave to the camera, then rests on the line.
+        // The focus follows the front of the wave to the camera, then rests on the line. The
+        // blur stays low, so the arms behind the line stay clear.
         let front = vec3(4.8, 1.5, front(t).clamp(z0 + 6.0, z0 + 34.0));
-        let focus = front.lerp(vec3(0.0, 0.006, z0 + 37.0), smoothstep(3.6, 6.0, t));
-        camera.focus_on(focus, 4.0 + 10.0 * smoothstep(5.6, 8.0, t))
+        let focus = front.lerp(vec3(line.x, 0.006, line.z), smoothstep(3.6, 6.0, t));
+        camera.focus_on(focus, 4.0 - 1.5 * smoothstep(5.6, 8.0, t))
     }
 }
