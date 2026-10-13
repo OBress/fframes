@@ -19,9 +19,9 @@ use std::sync::Arc;
 
 use fframes::{
     AudioMap,
-    AudioTimestamp::{Eof, Second},
-    AudioTrack, Color, Ducking, Duration, FFramesContext, Frame, Scene, Scenes, Svgr, Video,
-    include_media_dir, svgr,
+    AudioTimestamp::{self, Eof, Second},
+    AudioTrack, Color, Ducking, Duration, FFramesContext, FadeCurve, Frame, Scene, Scenes, Svgr,
+    Video, include_media_dir, svgr,
 };
 
 use assets::Assets;
@@ -171,123 +171,189 @@ impl Video for TheWhy {
 
     /// The sound of the film, made by `make-soundtrack.sh`: one score composed to the cut,
     /// the narration and the sound effects, at the times of SCRIPT.md.
+    ///
+    /// Every sound effect is mastered to -24 LUFS, so a gain is a level relative to the
+    /// others: with the master gain of 1.5 dB a bed plays at `gain - 22.5` LUFS. The voice
+    /// plays at about -15.5 LUFS and the beds stay 6 to 10 LU under it.
     fn audio(&self) -> AudioMap<'_> {
+        // The steps of the walk (see the footfalls below): ten cut from one take, three pitched.
+        const FOOTSTEPS: [&str; 13] = [
+            "sfx_foot_1.wav",
+            "sfx_foot_2.wav",
+            "sfx_foot_3.wav",
+            "sfx_foot_4.wav",
+            "sfx_foot_5.wav",
+            "sfx_foot_6.wav",
+            "sfx_foot_7.wav",
+            "sfx_foot_8.wav",
+            "sfx_foot_9.wav",
+            "sfx_foot_10.wav",
+            "sfx_foot_11.wav",
+            "sfx_foot_12.wav",
+            "sfx_foot_13.wav",
+        ];
         let score = Ducking {
-            depth_db: -7.0,
+            depth_db: -6.0,
             attack: 0.4,
             hold: 0.4,
             release: 1.2,
             ..Default::default()
         };
-        let say = |file, at: f32| AudioTrack::new(file, Second(at)..Eof).voice().gain_db(1.0);
+        // Beds and effects that play under a line of the narration give way a little.
+        let under_voice = Ducking {
+            depth_db: -5.0,
+            attack: 0.3,
+            hold: 0.3,
+            release: 1.0,
+            ..Default::default()
+        };
+        let say = |file, at: f32| AudioTrack::new(file, Second(at)..Eof).voice().gain_db(5.0);
         let sound = |file, at: f32, gain: f32| AudioTrack::new(file, Second(at)..Eof).gain_db(gain);
+        let until = |file, at: f32, end: f32, gain: f32| {
+            AudioTrack::new(file, Second(at)..Second(end)).gain_db(gain)
+        };
+        let score_part = |from: f32, to: AudioTimestamp<'static>, gain: f32| {
+            AudioTrack::new("score.wav", Second(from)..to)
+                .offset(from)
+                .gain_db(gain)
+                .duck(score)
+                .fade_in(if from > 0.0 { 0.5 } else { 0.0 })
+                .fade_out(0.5)
+                .fade_curve(FadeCurve::Linear)
+        };
         let mut tracks = vec![
-            AudioTrack::new("score.mp3", Second(0.0)..Eof)
-                .gain_db(-4.0)
-                .duck(score),
-            say("voice_how.mp3", 10.0),
-            say("voice_better.mp3", 21.5),
-            say("voice_anything.mp3", 32.0),
-            say("voice_worth.mp3", 37.0),
-            say("voice_theirs.mp3", 61.0),
-            say("voice_quote_a.mp3", 84.0),
-            say("voice_quote_b.mp3", 86.4),
-            // the cursor: the hum of the screen in a quiet room, the typed question, the flood
-            // of answers, the flash into the arc
-            sound("sfx_screens.mp3", 0.0, -30.0)
+            // The score in three parts that cross over in 0.5 s: the sunrise 1.5 dB lower,
+            // under the quote, and the last bars louder, the piano line under the title.
+            score_part(0.0, Second(82.25), 8.3),
+            score_part(81.75, Second(91.5), 6.8),
+            score_part(91.0, Eof, 13.5).fade_out(1.0),
+            say("voice_how.wav", 10.0),
+            say("voice_better.wav", 21.5),
+            say("voice_anything.wav", 32.0),
+            say("voice_worth.wav", 37.0),
+            say("voice_theirs.wav", 61.0),
+            say("voice_quote_a.wav", 84.0),
+            say("voice_quote_b.wav", 86.4).gain_db(6.5),
+            // The cursor: the hum of the screen in a quiet room, the typed question, the flood
+            // of answers, the thousands of screens, the rush into the white of the arc.
+            until("sfx_screens.wav", 0.0, 3.0, -17.5)
                 .fade_in(1.0)
                 .fade_out(1.2),
-            sound("sfx_keys.mp3", 1.4, -12.0),
-            sound("sfx_flood.mp3", 3.6, -13.0).fade_in(0.8),
-            sound("sfx_screens.mp3", 4.2, -20.0)
+            sound("sfx_keys.wav", 1.4, -11.5),
+            sound("sfx_flood.wav", 3.6, 3.5).fade_in(0.8),
+            sound("sfx_screens.wav", 4.2, -7.5)
                 .fade_in(0.8)
                 .fade_out(0.6),
-            sound("sfx_flash.mp3", 5.6, -9.0),
-            // a low hit under the cuts into a new world
-            sound("sfx_sub.mp3", 7.0, -9.0),
-            sound("sfx_sub.mp3", 29.0, -12.0),
-            // the factory: the arc on the cut, the hall, the watcher turns, the eye, the dive
-            sound("sfx_arc.mp3", 7.0, -6.0),
-            sound("sfx_factory.mp3", 7.0, -15.0)
+            sound("sfx_flash.wav", 6.7, 3.5),
+            // A low hit under the cuts into a new world.
+            sound("sfx_sub.wav", 7.0, 5.5),
+            sound("sfx_sub.wav", 29.0, 0.0),
+            // The factory: the arc on the cut, the hall, the watcher turns, the eye, the dive.
+            sound("sfx_arc.wav", 7.0, 0.5),
+            sound("sfx_factory.wav", 7.0, -2.5)
                 .fade_in(0.4)
-                .fade_out(2.0),
-            sound("sfx_servo.mp3", 16.9, -9.0),
-            sound("sfx_hud.mp3", 19.0, -12.0),
-            sound("sfx_hud_type.mp3", 21.4, -14.0),
-            sound("sfx_chip.mp3", 26.25, -12.0),
-            sound("sfx_dive.mp3", 27.0, -8.0),
-            // the city, the desert, the line
-            sound("sfx_city.mp3", 29.0, -17.0)
-                .fade_in(1.0)
+                .fade_out(2.0)
+                .duck(under_voice),
+            sound("sfx_servo.wav", 16.9, 3.5),
+            sound("sfx_hud.wav", 19.0, -7.5),
+            sound("sfx_hud_type.wav", 21.4, -10.5),
+            sound("sfx_chip.wav", 26.25, 1.5),
+            sound("sfx_dive.wav", 27.0, 3.5),
+            // The city: no people, a hum, the rush past the Empire State Building, a crane.
+            sound("sfx_city.wav", 29.0, -5.5).fade_in(1.0).fade_out(1.5),
+            sound("sfx_streak.wav", 30.9, -4.5),
+            sound("sfx_crane.wav", 34.0, -10.5).pan(-0.4).fade_out(1.0),
+            // The desert: the low wind and its air, wide, from the stars to the end of the
+            // line.
+            until("sfx_wind.wav", 42.0, 58.5, -6.0)
+                .fade_in(1.5)
                 .fade_out(1.5),
-            // the rush past the Empire State Building
-            sound("sfx_streak.mp3", 30.9, -15.0),
-            sound("sfx_crane.mp3", 34.0, -18.0).fade_out(1.0),
-            sound("sfx_wind.mp3", 42.0, 3.0).fade_in(1.5).fade_out(1.0),
-            // the knee on the ground, the finger in the dust, the embers of the line
-            sound("sfx_step_3.mp3", 52.37, -8.0),
-            sound("sfx_scrape.mp3", 52.95, 8.0).fade_out(0.4),
-            sound("sfx_ignite.mp3", 54.3, -10.0),
-            sound("sfx_embers.mp3", 54.6, 6.0)
+            until("sfx_air.wav", 42.0, 58.5, -3.0)
+                .fade_in(1.5)
+                .fade_out(1.5),
+            // The knee in the dust and the finger that draws: close and soft.
+            sound("sfx_knee.wav", 52.37, -14.0),
+            sound("sfx_finger.wav", 52.95, -9.5).fade_out(0.4),
+            // The line begins to glow: its spark, its embers, its hum; then its light runs
+            // across the desert into the factory.
+            sound("sfx_ignite.wav", 54.3, -3.5),
+            sound("sfx_embers.wav", 54.6, -13.5)
                 .fade_in(0.5)
                 .fade_out(1.0),
-            sound("sfx_hum.mp3", 54.8, -9.0).fade_in(0.8),
-            sound("sfx_streak.mp3", 56.6, -7.0),
-            // the wave, the builds, the sunrise
-            sound("sfx_swell.mp3", 59.25, -11.0).fade_out(1.0),
-            sound("sfx_wave.mp3", 60.3, -9.0),
-            // the Golden Gate: the bay at night, derricks, spinning wheels, cables, welders,
-            // the deck, the first car
-            sound("sfx_foghorn.mp3", 67.3, -19.0).fade_out(1.5),
-            sound("sfx_crane.mp3", 67.75, -18.0).fade_out(1.0),
-            sound("sfx_spin.mp3", 68.65, -16.0).fade_out(0.5),
-            sound("sfx_cables.mp3", 68.97, -11.0),
-            sound("sfx_arc.mp3", 69.15, -18.0).fade_out(0.6),
-            sound("sfx_deck.mp3", 69.9, -5.0),
-            sound("sfx_streak.mp3", 70.14, -14.0),
-            // the wind farm, the school, the water
-            sound("sfx_spin.mp3", 71.2, -19.0).fade_out(0.5),
-            sound("sfx_village.mp3", 71.4, -16.0).fade_out(0.8),
-            sound("sfx_servo.mp3", 71.96, -14.0).fade_out(0.5),
-            sound("sfx_flood.mp3", 73.5, -14.0)
+            sound("sfx_hum.wav", 54.8, -3.5).fade_in(0.8).fade_out(1.0),
+            sound("sfx_streak_low.wav", 56.6, 0.5),
+            // The wave: the glass wall sings, the arms stop one after another.
+            sound("sfx_swell.wav", 59.25, 0.5)
+                .fade_out(1.0)
+                .duck(under_voice),
+            sound("sfx_wave.wav", 60.3, 1.5).duck(under_voice),
+            // The Golden Gate: the bay at night, derricks, spinning wheels, cables, welders,
+            // the deck, the headlights of the first car on the cut.
+            sound("sfx_foghorn.wav", 67.3, -4.5).pan(-0.3).fade_out(1.5),
+            sound("sfx_crane.wav", 67.75, -9.5).pan(0.4).fade_out(1.0),
+            sound("sfx_spin.wav", 68.65, -2.5).fade_out(0.5),
+            sound("sfx_cables.wav", 68.97, -4.5),
+            sound("sfx_arc.wav", 69.15, -7.5).pan(0.3).fade_out(0.6),
+            sound("sfx_deck.wav", 69.9, -3.5),
+            sound("sfx_streak_high.wav", 70.26, -2.5),
+            // The wind farm, the school, the water.
+            sound("sfx_spin_low.wav", 71.0, -4.5).fade_out(0.5),
+            sound("sfx_village.wav", 71.4, -8.5).pan(-0.3).fade_out(0.8),
+            sound("sfx_servo_high.wav", 71.96, -1.5).fade_out(0.5),
+            until("sfx_water.wav", 73.2, 74.6, -0.5)
                 .fade_in(0.2)
-                .fade_out(0.7),
-            // the greenhouse: the pen, the glass, the plants, the spark and the whip
-            sound("sfx_ignite.mp3", 74.24, -16.0),
-            sound("sfx_drones.mp3", 75.7, -17.0)
+                .fade_out(0.5),
+            // The greenhouse: the pen, the drones, the glass, the plants, the whip pan.
+            sound("sfx_ignite.wav", 74.24, -6.5),
+            sound("sfx_drones.wav", 75.7, -5.5)
                 .fade_in(0.4)
                 .fade_out(1.0),
-            sound("sfx_glass.mp3", 76.03, -11.0),
-            sound("sfx_bloom.mp3", 76.54, 4.0).fade_out(0.8),
-            sound("sfx_streak.mp3", 77.49, -10.0),
-            // the launch: rollout, the crane, the deluge, the igniters, ignition, the flare
-            sound("sfx_servo.mp3", 77.95, -17.0).fade_out(0.6),
-            sound("sfx_crane.mp3", 78.24, -18.0).fade_out(0.6),
-            sound("sfx_deluge.mp3", 78.9, -12.0).fade_out(1.0),
-            sound("sfx_ignite.mp3", 79.08, -14.0),
-            sound("sfx_rocket.mp3", 79.24, -7.0).fade_out(1.0),
-            sound("sfx_sun.mp3", 81.55, -9.0),
-            sound("sfx_breeze.mp3", 82.6, 10.0)
+            sound("sfx_glass.wav", 76.03, -4.5),
+            until("sfx_bloom.wav", 75.4, 77.85, -7.5).fade_out(0.6),
+            sound("sfx_streak.wav", 77.35, -0.5),
+            // The launch: rollout, the crane, the deluge, the igniters, ignition, and the
+            // flare that becomes the sun on the cut.
+            sound("sfx_servo_low.wav", 77.95, -3.5).fade_out(0.6),
+            sound("sfx_crane.wav", 78.24, -10.5).pan(-0.2).fade_out(0.6),
+            sound("sfx_deluge.wav", 78.9, -4.0).fade_out(1.0),
+            sound("sfx_ignite.wav", 79.08, -6.5),
+            until("sfx_rocket.wav", 79.24, 83.0, -0.5).fade_out(1.2),
+            sound("sfx_sun.wav", 80.85, -2.0),
+            // The sunrise: the morning air and the first birds, then the hit of the title.
+            sound("sfx_breeze.wav", 82.6, -9.5)
                 .fade_in(2.0)
                 .fade_out(2.0),
-            sound("sfx_birds.mp3", 84.5, -17.0)
+            sound("sfx_birds.wav", 84.5, -13.5)
                 .fade_in(2.0)
-                .fade_out(2.0),
-            sound("sfx_boom.mp3", 92.4, -12.0),
+                .fade_out(2.0)
+                .duck(under_voice),
+            sound("sfx_boom.wav", 92.4, -3.5),
         ];
-        // The footfalls of the walk. Four takes, leveled to the same peak, and louder as he
-        // comes closer to the camera.
-        let steps = [
-            ("sfx_step_1.mp3", 16.0),
-            ("sfx_step_2.mp3", 20.0),
-            ("sfx_step_3.mp3", 4.0),
-            ("sfx_step_4.mp3", 15.0),
-        ];
+        // The footfalls of the walk. He is 20 m away when the shot opens and 3 m away when he
+        // kneels. A step is 17 dB under the wind far away and 11 dB under it close by (the
+        // level follows the distance, compressed), varies a little from step to step, and
+        // pans with him from left of the centre of the frame to the centre. The last one is
+        // the heavy step into the kneel.
         let walk_start = 42.0;
-        for (i, t) in desert::footfalls().into_iter().enumerate() {
-            let (file, level) = steps[i % steps.len()];
-            let near = (t / 8.3).clamp(0.0, 1.0);
-            tracks.push(sound(file, walk_start + t, level - 24.0 + 16.0 * near));
+        // The level of a step that is as loud as the wind and its air (about -26 LUFS): the
+        // energy of a step lies in 150 ms, so it measures 4.5 dB louder than its mastered
+        // loudness.
+        let wind = -8.0;
+        let footfalls = desert::footfalls();
+        let kneel = footfalls.len() - 1;
+        for (i, t) in footfalls.into_iter().enumerate() {
+            // He walks at 1 m/s and stops at 8.5 s.
+            let near = (t / 8.5).clamp(0.0, 1.0);
+            let distance = 20.0 - 17.0 * near;
+            let under = 11.0 + 6.0 * (distance / 3.0).log10() / (20.0_f32 / 3.0).log10();
+            let vary = 2.4 * fframes_3d::math::hash(i as u32 + 7) - 1.2;
+            // Five steps apart in the list: the same step never comes twice in a row.
+            let file = if i == kneel {
+                "sfx_foot_11.wav"
+            } else {
+                FOOTSTEPS[i * 5 % FOOTSTEPS.len()]
+            };
+            tracks.push(sound(file, walk_start + t, wind - under + vary).pan(-0.25 * (1.0 - near)));
         }
         AudioMap::from(tracks)
     }

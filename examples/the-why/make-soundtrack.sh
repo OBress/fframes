@@ -1,7 +1,8 @@
 #!/bin/sh
 # Makes the sound of the film with the ElevenLabs API: the narration, the score and the sound
-# effects of SCRIPT.md, into dynamic_media/play/. Files that exist are kept, so delete a file
-# to make it again.
+# effects of SCRIPT.md, into dynamic_media/play/. Then it masters the raw takes with ffmpeg
+# into the sounds that `fn audio` in src/lib.rs plays (the last part of this file). Files
+# that exist are kept, so delete a file to make it again (REMASTER=1 makes all masters again).
 #
 # The API key comes from $ELEVENLABS_API_KEY or from ~/.config/fframes/elevenlabs_key.
 # VOICE_ID chooses the narrator (default: Brian, a deep, calm voice).
@@ -15,10 +16,6 @@ key="${ELEVENLABS_API_KEY:-}"
 if [ -z "$key" ] && [ -f "$HOME/.config/fframes/elevenlabs_key" ]; then
     key="$(cat "$HOME/.config/fframes/elevenlabs_key")"
 fi
-if [ -z "$key" ]; then
-    echo "No API key: set ELEVENLABS_API_KEY or write it to ~/.config/fframes/elevenlabs_key" >&2
-    exit 1
-fi
 voice="${VOICE_ID:-nPczCjzI2devNBz1zQrb}"
 api=https://api.elevenlabs.io/v1
 
@@ -27,6 +24,10 @@ post() {
     if [ -s "$2" ]; then
         echo "keep $2"
         return
+    fi
+    if [ -z "$key" ]; then
+        echo "No API key to make $2: set ELEVENLABS_API_KEY or write it to ~/.config/fframes/elevenlabs_key" >&2
+        exit 1
     fi
     echo "make $2"
     status=$(curl -sS -o "$2.part" -w '%{http_code}' -X POST "$api/$1" \
@@ -141,5 +142,148 @@ sound sfx_bloom "Water mist sprinklers hiss softly and plants unfold in a greenh
 sound sfx_deluge "A massive water deluge roars at a rocket launch pad and steam billows out: a huge hiss" 4
 sound sfx_sub "A deep cinematic sub bass hit, soft and huge, short tail" 2.5
 sound sfx_breeze "A soft desert morning breeze, very gentle and calm, faint sand drifting" 9
+# The wind above is only a low rumble: nothing in it masks the steps. This is the air of it.
+sound sfx_air "Cold night wind over a wide flat desert plateau: a steady airy whoosh with slow gentle gusts, fine sand hissing along the ground, open and lonely, no rumble, no microphone buffeting, no voices" 22
+
+
+# ---- Mastering. The takes above are raw: their levels differ by 50 dB, some are mono and
+# some carry hiss and clicks. Each sound of the mix is made from them here, cleaned, made
+# wide where it helps, and normalised to the same loudness, REF. So a gain in `fn audio` is
+# the level of the sound relative to the others. 32-bit float WAV keeps the peaks of quiet
+# takes that go above 0 dBFS after the normalisation; the gains of the mix bring them down.
+REF=-24
+
+# loudness <file>: the integrated loudness in LUFS. The padding lets a sound shorter than
+# the 400 ms block of the meter be measured.
+loudness() {
+    ffmpeg -nostats -i "$1" -af "apad=pad_dur=0.5,ebur128" -f null - 2>&1 |
+        awk '$1 == "I:" { v = $2 } END { print v }'
+}
+
+# The rumble below 25 Hz only costs headroom.
+clean="highpass=f=25"
+
+# master <name> <filter graph from [0:a] (and [1:a]...) to [a]> <takes...>: makes
+# $out/<name>.wav.
+master() {
+    dst="$out/$1.wav"
+    graph=$2
+    shift 2
+    if [ -s "$dst" ] && [ -z "${REMASTER:-}" ]; then
+        echo "keep $dst"
+        return
+    fi
+    echo "master $dst"
+    inputs=""
+    for take in "$@"; do inputs="$inputs -i $out/$take"; done
+    # shellcheck disable=SC2086
+    ffmpeg -v error -y $inputs -filter_complex "$graph" -map '[a]' -c:a pcm_f32le "$dst.part.wav"
+    gain=$(awk -v ref="$REF" -v level="$(loudness "$dst.part.wav")" 'BEGIN { print ref - level }')
+    ffmpeg -v error -y -i "$dst.part.wav" -af "volume=${gain}dB" -c:a pcm_f32le "$dst"
+    rm "$dst.part.wav"
+}
+
+# plain <name>: the take as it is.
+plain() {
+    master "$1" "[0:a]$clean[a]" "$1.mp3"
+}
+# wider <name> <factor>: a stereo take with its side (L - R) raised by <factor>.
+wider() {
+    master "$1" "[0:a]$clean,extrastereo=m=$2[a]" "$1.mp3"
+}
+# spread <name> <side gain dB>: a mono take made wide. The side is the mid through 30 ms of
+# white noise: it sounds like the mid but does not correlate with it, and it cancels in a
+# mono downmix. The gain sets its level (each take needs its own).
+spread() {
+    master "$1" "[0:a]$clean,pan=mono|c0=0.5*c0+0.5*c1,asplit[m][d];
+        anoisesrc=d=0.03:c=white:seed=3:r=44100,afade=t=out:d=0.03:curve=exp[ir];
+        [d][ir]afir=irnorm=-1:irgain=1,highpass=f=150,volume=$2dB[s];
+        [m][s]amerge=inputs=2,pan=stereo|c0=c0+c1|c1=c0-c1[a]" "$1.mp3"
+}
+
+# The narration: no rumble, and its peaks 3 dB lower (a soft compressor, then a limiter), so
+# the master limiter of the mix does not touch the voice.
+for name in voice_how voice_better voice_anything voice_worth voice_theirs voice_quote_a \
+    voice_quote_b; do
+    master "$name" "[0:a]highpass=f=70,
+        acompressor=threshold=0.1:ratio=2.5:attack=3:release=80:knee=4,
+        alimiter=limit=0.35:attack=2:release=40:level=0[a]" "$name.mp3"
+done
+
+# The score: its loudest peaks 3 to 4 dB lower, so the climax with the launch stays under
+# the ceiling of the master limiter (-1 dBTP) without the limiter.
+master score "[0:a]$clean,alimiter=limit=0.63:attack=5:release=120:level=0[a]" score.mp3
+
+# The beds of the places, wide.
+# The wind take is the buffeting of a microphone more than wind: cut its lowest rumble and
+# hold down its thumps.
+master sfx_wind "[0:a]highpass=f=50,highpass=f=50,
+    acompressor=threshold=0.05:ratio=4:attack=2:release=150:knee=6,
+    alimiter=limit=0.07:attack=3:release=150:level=0[a]" sfx_wind.mp3
+master sfx_air "[0:a]highpass=f=120,highpass=f=120,equalizer=f=700:t=o:w=2:g=12,equalizer=f=2500:t=o:w=1.5:g=5[a]" sfx_air.mp3
+wider sfx_factory 1.15
+plain sfx_city
+plain sfx_breeze
+spread sfx_screens -15
+spread sfx_birds -2
+spread sfx_village -15
+# Big events, a little wide.
+spread sfx_rocket -10
+spread sfx_wave -23
+spread sfx_swell -9
+spread sfx_embers -23
+spread sfx_bloom -21
+spread sfx_flood -24
+spread sfx_foghorn -16
+spread sfx_deck -11
+for name in sfx_arc sfx_boom sfx_cables sfx_chip sfx_crane sfx_deluge sfx_dive sfx_drones \
+    sfx_flash sfx_glass sfx_hud sfx_hud_type sfx_hum sfx_ignite sfx_keys sfx_servo sfx_spin \
+    sfx_sub sfx_sun; do
+    plain "$name"
+done
+# The whoosh of light plays four times: two of them pitched, so it does not repeat.
+plain sfx_streak
+master sfx_streak_low "[0:a]$clean,asetrate=44100*0.8,aresample=44100[a]" sfx_streak.mp3
+master sfx_streak_high "[0:a]$clean,asetrate=44100*1.12,aresample=44100[a]" sfx_streak.mp3
+# Other machines of the montage, from the same takes: the rotors of the wind farm, the gantry
+# of the school, the rollout of the rocket, and the water that runs down the canal.
+pitched() {
+    master "$1" "[0:a]$clean,asetrate=44100*$3,aresample=44100$4[a]" "$2.mp3"
+}
+pitched sfx_spin_low sfx_spin 0.7 ""
+pitched sfx_servo_high sfx_servo 1.15 ""
+pitched sfx_servo_low sfx_servo 0.85 ""
+pitched sfx_water sfx_deluge 0.8 ",lowpass=f=2500"
+
+# The footfalls of the walk: single steps cut from the take of the slow walk (the four short
+# step takes hold more hiss than step). A soft crunch of dry ground: no rumble, no hiss above
+# 4 kHz, no clicks, softer attacks. Mono, the mix pans them.
+foot="highpass=f=80,highpass=f=80,lowpass=f=3800,lowpass=f=3800,adeclick,
+    acompressor=threshold=0.06:ratio=3:attack=0.2:release=60:knee=4,
+    afade=t=in:d=0.004,afade=t=out:st=0.2:d=0.3:curve=exp"
+# step <name> <start in the take> <rate>: one footfall; a rate below 1 makes it lower and
+# slower, a heavier step.
+step() {
+    master "$1" "[0:a]atrim=start=$2:duration=0.5,asetpts=N/SR/TB,pan=mono|c0=0.5*c0+0.5*c1,
+        asetrate=44100*$3,aresample=44100,$foot[a]" sfx_steps.mp3
+}
+n=1
+for start in 0.527 1.280 2.030 2.778 3.533 4.282 5.031 5.786 6.530 7.287; do
+    step "sfx_foot_$n" "$start" 1
+    n=$((n + 1))
+done
+step sfx_foot_11 2.778 0.89
+step sfx_foot_12 4.282 1.07
+step sfx_foot_13 5.786 0.94
+# The knee into the dust: the heaviest footfall, lower and slower, over the soft shift of
+# sand of a step take.
+master sfx_knee "[0:a]atrim=start=2.030:duration=0.5,asetpts=N/SR/TB,pan=mono|c0=0.5*c0+0.5*c1,
+    asetrate=44100*0.75,aresample=44100,$foot,lowpass=f=2500[k];
+    [1:a]pan=mono|c0=0.5*c0+0.5*c1,highpass=f=120,lowpass=f=3000,lowpass=f=3000,
+    afade=t=out:st=0.3:d=0.5,volume=0.5[s];
+    [k][s]amix=inputs=2:duration=longest:normalize=0[a]" sfx_steps.mp3 sfx_step_1.mp3
+# The finger in the dust: the scrape without its clicks and its hiss.
+master sfx_finger "[0:a]pan=mono|c0=0.5*c0+0.5*c1,adeclick,highpass=f=150,
+    lowpass=f=6000,lowpass=f=6000[a]" sfx_scrape.mp3
 
 echo "done: $out"
