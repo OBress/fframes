@@ -74,10 +74,16 @@ pub(super) fn figure_style() -> FigureStyle {
         |color: u32, roughness: f32| Material::standard(color).roughness(roughness).rim(rim, 3.0);
     FigureStyle {
         // Little light of the sky reaches the face, so it stays dark.
-        skin: cloth(0x5c4a42, 0.5).env_intensity(0.4),
-        jacket: cloth(0x2a3038, 0.85),
-        trousers: cloth(0x23262b, 0.9),
-        boots: cloth(0x2a1e16, 0.75).env_intensity(0.5),
+        skin: cloth(0x5c4a42, 0.6).env_intensity(0.4),
+        // Cloth is matte: little of the sky reflects from it at grazing angles.
+        jacket: cloth(0x2a3038, 0.85).env_intensity(0.5),
+        // The legs have no rim: in the close views of shot 6 it outlines them.
+        trousers: Material::standard(0x2c2924)
+            .roughness(0.9)
+            .env_intensity(0.5),
+        boots: Material::standard(0x2a1e16)
+            .roughness(0.75)
+            .env_intensity(0.5),
         hair: cloth(0x0d0b0a, 0.75),
     }
 }
@@ -251,6 +257,10 @@ impl DesertSet {
         if let Object::Particles(meteor) = &mut scene[self.meteor].object {
             meteor.items = meteor_at(camera.position, t);
         }
+        // The glow of the factory behind him rims his outline: the hair, the shoulders and
+        // the arms. The close views of shot 6 keep the thin rim of the style.
+        self.night_figure
+            .set_rim(&mut scene, Rgb::hex(0xb8ccf0) * 0.32, 4.0);
         let rate = (story_time(t + 0.01) - story_time(t)) / 0.01;
         self.night_air(&mut scene, tau, rate, camera.position);
         hide_dark_lights(&mut scene);

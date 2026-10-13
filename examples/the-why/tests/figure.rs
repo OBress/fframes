@@ -391,3 +391,23 @@ fn detail_shots() {
         .save(out_dir().join("detail_rail.png"))
         .unwrap();
 }
+
+/// Macro frames of the hand that draws, as in shot 6: 0.3 m from the index finger, from the
+/// back of the hand and from the side of the thumb.
+#[test]
+fn hand_macro() {
+    let renderer = Renderer::new(1280, 640).cpu();
+    for (name, (scene, figure)) in [("clay", studio()), ("night", night())] {
+        let mut tiles = Vec::new();
+        for (t, azimuth, elevation) in [(0.3, -40.0, 25.0), (0.6, 20.0, 15.0), (0.6, 120.0, 30.0)] {
+            let pose = Pose::draw(t, 0.0, 0.0);
+            let mut s = scene.clone();
+            figure.apply(&mut s, &pose);
+            let tip = figure.fingertip(&s);
+            let camera =
+                Camera::perspective(24.0).orbit(tip + Vec3::Y * 0.05, 0.32, azimuth, elevation);
+            tiles.push(render(&renderer, &scene, &figure, &pose, &camera));
+        }
+        save_sheet(&format!("hand_macro_{name}"), &tiles, 1);
+    }
+}

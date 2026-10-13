@@ -101,7 +101,7 @@ impl DesertSet {
         let ground = terrain.meshes(assets);
 
         let mut night = Scene::new();
-        ground.add_to(&mut night, Rgb::WHITE);
+        ground.add_to(&mut night);
         let factory = factory(&mut night, assets, ahead() * FACTORY_DISTANCE, -ahead());
         let night_figure = Figure::build(&mut night, None, &walk::figure_style());
         let stars = night.add(crate::stars::stars().scaled(STAR_SCALE));
@@ -112,7 +112,7 @@ impl DesertSet {
 
         let mut dawn = Scene::new();
         // the sand at sunrise is seen against the sun, so it looks darker
-        ground.add_to(&mut dawn, Rgb::linear(0.15, 0.125, 0.1));
+        ground.add_dawn_to(&mut dawn, Rgb::linear(0.15, 0.125, 0.1));
         let landmarks = sunrise::landmarks(&mut dawn, &terrain);
         let dawn_figure = Figure::build(&mut dawn, None, &sunrise::figure_style());
         let dawn_dust = dawn.add(Node::particles(Vec::new(), Blending::Additive));

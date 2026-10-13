@@ -29,6 +29,10 @@ pub(super) struct Terrain {
 /// The meshes and the materials of the ground, shared by the night and the dawn scenes.
 pub(super) struct Ground {
     sand: (Arc<Geometry>, Material),
+    /// The sand of the sunrise, with wind ripples, see [`dawn_sand`].
+    dawn_sand: Material,
+    /// The canyon of the sunrise.
+    canyon: (Arc<Geometry>, Material),
     playa: (Arc<Geometry>, Material),
     /// Rocks and dry shrubs. Each shape is one instanced mesh.
     scatter: Vec<(Arc<Geometry>, Material, Arc<Instances>)>,
@@ -108,6 +112,11 @@ impl Terrain {
         let playa = dirt(assets).transparent();
         let rock = assets.rock.material(0xb89a80, 0.95, 0.0);
         Ground {
+            dawn_sand: dawn_sand(assets, &sand),
+            canyon: (
+                Arc::new(self.canyon_mesh()),
+                rock.clone().env_intensity(0.6),
+            ),
             sand: (Arc::new(self.sand_mesh()), sand),
             playa: (Arc::new(self.playa_mesh()), playa),
             scatter: [self.rocks(&rock), self.shrubs()].concat(),
@@ -116,6 +125,91 @@ impl Terrain {
                 rock.color(0x9a9aa4).normal_scale(0.6),
             ),
         }
+    }
+
+    /// How far the sand mesh lies below the ground at `p` (x, z), in meters: 4 m inside the
+    /// canyon mesh, and 0 at its edge.
+    fn under_canyon(&self, p: Vec2) -> f32 {
+        let (s, a) = self.sunward(p);
+        let d = (a - canyon_center(s)).abs() - canyon_rim(s);
+        let inside = smoothstep(CANYON_FROM, CANYON_FROM + 40.0, s)
+            * (1.0 - smoothstep(CANYON_TO - 200.0, CANYON_TO, s))
+            * (1.0 - smoothstep(0.3, 1.0, d / canyon_margin(s)));
+        4.0 * inside
+    }
+
+    /// The canyon below the plateau of the sunrise, with its own vertices: the sand mesh
+    /// is too coarse for its cliffs. The columns are closer in the walls. The colors are
+    /// bands of red and pale rock by height, with sand on the ledges. The UVs are in
+    /// meters: U goes along the canyon, V across and down, so the cliffs do not stretch
+    /// the texture.
+    fn canyon_mesh(&self) -> Geometry {
+        let mut rows = Vec::new();
+        let mut s = CANYON_FROM;
+        while s < CANYON_TO {
+            rows.push(s);
+            s += 2.0 + 0.004 * s;
+        }
+        // The columns on one side: 0 to 1 is the floor, 1 to 2 the wall, 2 to 3 the plain
+        // beyond the rim.
+        let floor = (0..17).map(|k| k as f32 / 17.0);
+        let wall = (0..=72).map(|k| 1.0 + k as f32 / 72.0);
+        let plain = (1..=12).map(|k| 2.0 + k as f32 / 12.0);
+        let side: Vec<f32> = floor.chain(wall).chain(plain).collect();
+        let columns: Vec<f32> = side
+            .iter()
+            .rev()
+            .map(|d| -d)
+            .chain(side.iter().skip(1).copied())
+            .collect();
+        let offset = |s: f32, c: f32| {
+            let rim = canyon_rim(s);
+            let d = c.abs();
+            let meters = if d < 1.0 {
+                (rim - WALL) * d
+            } else if d <= 2.0 {
+                rim - WALL + WALL * (d - 1.0)
+            } else {
+                rim + canyon_margin(s) * (d - 2.0)
+            };
+            meters * c.signum()
+        };
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        let mut colors = Vec::new();
+        for &s in &rows {
+            for &c in &columns {
+                let a = canyon_center(s) + offset(s, c);
+                let p = self.sunward_point(s, a);
+                let h = self.height(p.x, p.y);
+                let n = self.normal(p.x, p.y, 0.4);
+                positions.push(vec3(p.x, h, p.y));
+                normals.push(n);
+                uvs.push(vec2(s, offset(s, c).abs() - h));
+                // Layers of rock: red and pale bands, thick and thin.
+                let layer =
+                    0.6 * noise2(vec2(h / 5.5, 0.5), 51) + 0.4 * noise2(vec2(h / 1.7, 0.5), 52);
+                let red = vec3(0.66, 0.38, 0.26);
+                let pale = vec3(0.86, 0.72, 0.56);
+                let rock = red.lerp(pale, smoothstep(0.3, 0.7, layer)) * (0.85 + 0.2 * layer);
+                let sand = vec3(0.9, 0.78, 0.62) * (0.82 + 0.3 * fbm(p / 40.0, 3, 11));
+                // the ledges and the floor hold sand, the cliffs are bare
+                let color = sand.lerp(rock, smoothstep(0.3, 0.6, 1.0 - n.y));
+                colors.push(color.extend(1.0));
+            }
+        }
+        let width = columns.len() as u32;
+        let mut indices = Vec::new();
+        for r in 0..rows.len() as u32 - 1 {
+            for c in 0..width - 1 {
+                let (a, b) = (r * width + c, r * width + c + 1);
+                indices.extend([a, a + width, b, b, a + width, b + width]);
+            }
+        }
+        let mut geometry = Geometry::new(positions, normals, uvs, indices);
+        geometry.colors = colors;
+        geometry
     }
 
     /// The sand to the horizon: rings around the origin that get wider with the distance,
@@ -130,7 +224,7 @@ impl Terrain {
         radii.push(RADIUS);
         polar_grid(&radii, |p| {
             let r = p.length();
-            let h = self.height(p.x, p.y);
+            let h = self.height(p.x, p.y) - self.under_canyon(p);
             let n = self.normal(p.x, p.y, (r * 0.015).max(0.05));
             // Large patches of lighter and darker sand hide the repeat of the texture.
             let tone = 0.82 + 0.3 * fbm(p / 40.0, 3, 11) + 0.08 * fbm(p / 4.0, 2, 12);
@@ -349,13 +443,41 @@ pub(super) fn canyon_width(s: f32) -> f32 {
     100.0 + 0.07 * s.max(0.0)
 }
 
+/// The width of the walls of the canyon from the rim to the floor, in meters.
+const WALL: f32 = 34.0;
+/// The number of cliffs in a wall. A ledge lies between two cliffs.
+const CLIFFS: f32 = 4.0;
+
+/// The distance from the middle of the canyon to its rim at the distance `s` toward the
+/// sun. Spurs of rock stand out of the walls, and gullies cut into them.
+fn canyon_rim(s: f32) -> f32 {
+    0.5 * canyon_width(s)
+        + 8.0 * fbm(vec2(s / 45.0, 3.0), 3, 7)
+        + 7.0 * fbm(vec2(s / 38.0, 9.0), 2, 8)
+}
+
 /// The depth of the canyon at the distance `s` toward the sun and `a` to the right. It
-/// begins on the plain below the escarpment.
+/// begins on the plain below the escarpment. Each wall goes down in [`CLIFFS`] steps: a
+/// cliff of hard rock, then a ledge of scree, as layers of rock erode.
 fn canyon_depth(s: f32, a: f32) -> f32 {
-    let rim = 0.5 * canyon_width(s) + 8.0 * fbm(vec2(s / 45.0, 3.0), 3, 7);
     let d = (a - canyon_center(s)).abs();
-    let wall = 1.0 - smoothstep(rim - 22.0, rim, d);
-    CANYON_DEPTH * wall * smoothstep(160.0, 300.0, s)
+    let x = ((canyon_rim(s) - d) / WALL).clamp(0.0, 1.0) * CLIFFS;
+    let step = x.floor();
+    let cliff = smoothstep(0.0, 0.3, x - step);
+    let ledge = 0.12 * (x - step);
+    let fall = ((step + cliff * 0.88 + ledge) / CLIFFS).min(1.0);
+    CANYON_DEPTH * fall * smoothstep(160.0, 300.0, s)
+}
+
+/// The canyon mesh begins at this distance toward the sun, in meters.
+const CANYON_FROM: f32 = 170.0;
+/// The canyon mesh ends at this distance toward the sun, in meters.
+const CANYON_TO: f32 = 2600.0;
+
+/// How far the canyon mesh goes beyond the rim at the distance `s` toward the sun, in
+/// meters. Far away the sand mesh is coarse, so the canyon mesh must cover more.
+fn canyon_margin(s: f32) -> f32 {
+    30.0 + 0.05 * s
 }
 
 /// A mesh of rings around the origin. `vertex(p)` gives the height, the normal and the
@@ -552,11 +674,31 @@ fn mesa(center: Vec2, radius: f32, height: f32, seed: u32) -> Geometry {
 }
 
 impl Ground {
-    /// Adds the ground to `scene`. `tint` multiplies the color of the sand and the mud.
-    pub fn add_to(&self, scene: &mut Scene, tint: Rgb) {
-        let tinted = |m: &Material| m.clone().color(m.color * tint);
-        scene.add(Node::mesh(self.sand.0.clone(), tinted(&self.sand.1)).shadows(false, true));
-        scene.add(Node::mesh(self.playa.0.clone(), tinted(&self.playa.1)).shadows(false, true));
+    /// Adds the ground of the night to `scene`: the sand, the pan of mud, the rocks, the
+    /// shrubs and the mesas.
+    pub fn add_to(&self, scene: &mut Scene) {
+        scene.add(Node::mesh(self.sand.0.clone(), self.sand.1.clone()).shadows(false, true));
+        scene.add(Node::mesh(self.playa.0.clone(), self.playa.1.clone()).shadows(false, true));
+        self.add_scatter(scene);
+    }
+
+    /// Adds the ground of the sunrise to `scene`. The sand has wind ripples and no pan of
+    /// mud: the cracks of the mud and the fine grain of the sand flicker in the low sun.
+    /// `tint` multiplies the color of the sand.
+    pub fn add_dawn_to(&self, scene: &mut Scene, tint: Rgb) {
+        let sand = self.dawn_sand.clone();
+        let sand = sand.clone().color(sand.color * tint);
+        scene.add(Node::mesh(self.sand.0.clone(), sand).shadows(false, true));
+        let (canyon, rock) = &self.canyon;
+        scene.add(
+            Node::mesh(canyon.clone(), rock.clone().color(rock.color * tint * 4.0))
+                .shadows(false, true),
+        );
+        self.add_scatter(scene);
+    }
+
+    /// Adds the rocks, the shrubs and the mesas.
+    fn add_scatter(&self, scene: &mut Scene) {
         for (geometry, material, instances) in &self.scatter {
             scene.add(Node::instanced(
                 geometry.clone(),
@@ -567,3 +709,77 @@ impl Ground {
         scene.add(Node::mesh(self.mesas.0.clone(), self.mesas.1.clone()).shadows(false, true));
     }
 }
+
+/// The sand of the sunrise: the sand texture with wind ripples and a weaker grain.
+///
+/// In a low sun the fine grain of the sand texture makes strong light and dark specks that
+/// crawl when the camera moves. Here the grain is at 40 % of its depth. Ripples of 0.9 to
+/// 1.6 m show the wind instead: they are large enough to stay still in the picture. Their
+/// crests turn and split, and in some patches the wind has smoothed them away. The map
+/// repeats every [`DAWN_TILE`] meters.
+fn dawn_sand(assets: &Assets, sand: &Material) -> Material {
+    const SIZE: u32 = 2048;
+    let texel = DAWN_TILE / SIZE as f32;
+    // Smooth noise that repeats `n` times over the tile, in -1..1.
+    let wave = |p: Vec2, n: f32, seed: u32| {
+        let q = p / DAWN_TILE * n;
+        let cell = q.floor();
+        let f = q - cell;
+        let u = f * f * (3.0 - 2.0 * f);
+        let at = |i: f32, j: f32| {
+            let (i, j) = (
+                (cell.x + i).rem_euclid(n) as u32,
+                (cell.y + j).rem_euclid(n) as u32,
+            );
+            hash(i * 7919 + j * 104_729 + seed * 31) * 2.0 - 1.0
+        };
+        let a = at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * u.x;
+        let b = at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * u.x;
+        a + (b - a) * u.y
+    };
+    // The height of the ripples in meters at `p` (x, z) in meters. The crests run across
+    // the sunrise view. A whole number of waves fits the tile, so the map has no seam.
+    let ripples = |p: Vec2| {
+        let train = |k: Vec2, seed: u32| {
+            let bend = 4.0 * wave(p, 2.0, seed)
+                + 1.6 * wave(p, 5.0, seed + 1)
+                + 0.5 * wave(p, 13.0, seed + 2);
+            let phase = p.dot(k * TAU / DAWN_TILE) + bend;
+            // The slope on the wind side is long and the lee side is short.
+            0.5 + 0.5 * (phase + 0.5 * phase.sin()).sin()
+        };
+        // Two trains of ripples meet in patches. Where they meet, crests split and end.
+        let mix = smoothstep(-0.35, 0.35, wave(p, 3.0, 20));
+        let crest = train(vec2(-1.0, -9.0), 10) * (1.0 - mix) + train(vec2(-3.0, -10.0), 30) * mix;
+        // In some patches the wind has smoothed the ripples away.
+        let calm = smoothstep(-0.7, 0.5, wave(p, 2.0, 40) + 0.5 * wave(p, 6.0, 41));
+        (0.003 + 0.011 * calm) * crest * crest
+    };
+    let grain = &assets.sand.normal;
+    let mut data = vec![[0u8; 4]; (SIZE * SIZE) as usize];
+    std::thread::scope(|scope| {
+        for (row, chunk) in data.chunks_mut((SIZE * 64) as usize).enumerate() {
+            scope.spawn(move || {
+                for (i, out) in chunk.iter_mut().enumerate() {
+                    let i = row * (SIZE * 64) as usize + i;
+                    let (x, y) = ((i as u32 % SIZE) as f32, (i as u32 / SIZE) as f32);
+                    let p = vec2(x + 0.5, y + 0.5) * texel;
+                    let dx = (ripples(p + vec2(texel, 0.0)) - ripples(p - vec2(texel, 0.0)))
+                        / (2.0 * texel);
+                    let dy = (ripples(p + vec2(0.0, texel)) - ripples(p - vec2(0.0, texel)))
+                        / (2.0 * texel);
+                    let fine = grain.sample(p).truncate() * 2.0 - 1.0;
+                    let n = vec3(fine.x * 0.4 - dx, fine.y * 0.4 + dy, fine.z).normalize();
+                    let n = n * 0.5 + 0.5;
+                    *out = [n.x, n.y, n.z, 1.0].map(|c| (c * 255.0).round() as u8);
+                }
+            });
+        }
+    });
+    let normal = Texture::from_rgba8(SIZE, SIZE, data.as_flattened(), false)
+        .repeat(1.0 / DAWN_TILE, 1.0 / DAWN_TILE);
+    sand.clone().normal_map(Arc::new(normal))
+}
+
+/// The size of one repeat of the ripples of [`dawn_sand`], in meters.
+const DAWN_TILE: f32 = 10.0;

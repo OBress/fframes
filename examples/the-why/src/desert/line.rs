@@ -21,6 +21,8 @@ use crate::look;
 
 /// Half the width of the groove from lip to lip, in meters.
 const HALF_WIDTH: f32 = 0.014;
+/// The size of a cell of the grid of [`DesertSet::heat_shimmer`], in pixels.
+const CELL: usize = 8;
 /// The number of lamps along the line.
 const LAMPS: usize = 6;
 /// The number of dust grains near the line. The finger pushes aside those in its path.
@@ -230,6 +232,124 @@ impl DesertSet {
         }
         hide_dark_lights(&mut scene);
         (scene, camera)
+    }
+
+    /// Heat shimmer: the hot air over the glowing line bends the light, so the picture
+    /// above the line wavers. `pixels` is the picture of shot 6 at `t`. The engine has no
+    /// refraction, so this moves the pixels in the region over the line. Each pixel moves
+    /// at most 2 pixels of a 1080 line picture, along a field of noise that rises with
+    /// the hot air.
+    pub fn heat_shimmer(&self, t: f32, pixels: &mut Pixels) {
+        let glow = glow_level(t);
+        let length = self.line_length();
+        let glowing = length * lit(t);
+        if glow <= 0.0 || glowing < 0.004 {
+            return;
+        }
+        let (_, camera) = self.moment_line(t);
+        let (w, h) = (pixels.width as usize, pixels.height as usize);
+        let scale = h as f32 / 804.0;
+        // The strength of the shimmer on a coarse grid of cells: a soft column of hot air
+        // over each glowing part of the line.
+        let (gw, gh) = (w / CELL + 2, h / CELL + 2);
+        let mut grid = vec![0.0f32; gw * gh];
+        let samples = 48;
+        for k in 0..samples {
+            let s = (k as f32 + 0.5) / samples as f32 * glowing;
+            let base = self.on_line(s / length);
+            let heat = glow.min(1.4) * seep(s, t);
+            let (Some(a), Some(b)) = (
+                camera.project(base, w as f32, h as f32),
+                camera.project(base + Vec3::Y * 0.1, w as f32, h as f32),
+            ) else {
+                continue;
+            };
+            // the width of the column on the screen: 2 cm at the line
+            let side = camera.project(base + self.across(s / length) * 0.02, w as f32, h as f32);
+            let radius = side.map_or(4.0, |p| {
+                p.truncate().distance(a.truncate()).max(3.0 * scale)
+            });
+            let (a, b) = (a.truncate(), b.truncate());
+            let reach = radius + a.distance(b);
+            let (x0, x1) = ((a.x.min(b.x) - reach) as i32, (a.x.max(b.x) + reach) as i32);
+            let (y0, y1) = ((a.y.min(b.y) - reach) as i32, (a.y.max(b.y) + reach) as i32);
+            for cy in (y0 / CELL as i32).max(0)..=(y1 / CELL as i32).min(gh as i32 - 1) {
+                for cx in (x0 / CELL as i32).max(0)..=(x1 / CELL as i32).min(gw as i32 - 1) {
+                    let q = vec2(
+                        (cx as f32 + 0.5) * CELL as f32,
+                        (cy as f32 + 0.5) * CELL as f32,
+                    );
+                    let ab = b - a;
+                    let along = ((q - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                    let d = q.distance(a + ab * along) / radius;
+                    // strongest just over the groove, and it thins out as it rises
+                    let v = heat * (-d * d).exp() * (1.0 - 0.7 * along);
+                    let cell = &mut grid[cy as usize * gw + cx as usize];
+                    *cell = cell.max(v);
+                }
+            }
+        }
+        if grid.iter().all(|&v| v < 1e-3) {
+            return;
+        }
+        let source = pixels.rgba.clone();
+        let at = |x: f32, y: f32| {
+            let (x, y) = (
+                x.clamp(0.0, w as f32 - 1.001),
+                y.clamp(0.0, h as f32 - 1.001),
+            );
+            let (i, j) = (x as usize, y as usize);
+            let (fx, fy) = (x - i as f32, y - j as f32);
+            let texel = |i: usize, j: usize| {
+                let o = (j * w + i) * 4;
+                Vec4::new(
+                    f32::from(source[o]),
+                    f32::from(source[o + 1]),
+                    f32::from(source[o + 2]),
+                    f32::from(source[o + 3]),
+                )
+            };
+            let top = texel(i, j).lerp(texel(i + 1, j), fx);
+            let bottom = texel(i, j + 1).lerp(texel(i + 1, j + 1), fx);
+            top.lerp(bottom, fy)
+        };
+        let strength = |x: f32, y: f32| {
+            let (gx, gy) = (x / CELL as f32 - 0.5, y / CELL as f32 - 0.5);
+            let (i, j) = (gx.max(0.0) as usize, gy.max(0.0) as usize);
+            let (i, j) = (i.min(gw - 2), j.min(gh - 2));
+            let (fx, fy) = (
+                (gx - i as f32).clamp(0.0, 1.0),
+                (gy - j as f32).clamp(0.0, 1.0),
+            );
+            let g = |i: usize, j: usize| grid[j * gw + i];
+            let top = g(i, j) + (g(i + 1, j) - g(i, j)) * fx;
+            let bottom = g(i, j + 1) + (g(i + 1, j + 1) - g(i, j + 1)) * fx;
+            top + (bottom - top) * fy
+        };
+        // The cells of hot air rise at about 25 pixels a second and change as they rise.
+        let amplitude = 2.0 * scale;
+        for y in 0..h {
+            for x in 0..w {
+                let k = strength(x as f32, y as f32);
+                if k < 1e-3 {
+                    continue;
+                }
+                let (fx, fy) = (
+                    x as f32 / (14.0 * scale),
+                    y as f32 / (9.0 * scale) + t * 2.8,
+                );
+                let dx = super::noise2(vec2(fx, fy), 401) * 2.0 - 1.0;
+                let dy = super::noise2(vec2(fx + 31.0, fy * 1.3), 402) * 2.0 - 1.0;
+                let c = at(
+                    x as f32 + dx * amplitude * k,
+                    y as f32 + 0.6 * dy * amplitude * k,
+                );
+                let o = (y * w + x) * 4;
+                for (out, v) in pixels.rgba[o..o + 4].iter_mut().zip(c.to_array()) {
+                    *out = v.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
     }
 
     /// The point at the part `u` of the line on the mud, in world space.

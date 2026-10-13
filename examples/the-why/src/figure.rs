@@ -308,6 +308,8 @@ pub struct Figure {
     joints: [NodeId; JOINTS],
     /// The three joints of each finger, see [`Pose::fingers`].
     fingers: [[[NodeId; 3]; 5]; 2],
+    /// The meshes of the skin and the nails.
+    bare: Vec<NodeId>,
 }
 
 impl Figure {
@@ -343,7 +345,7 @@ impl Figure {
             if let Some(mesh) = node.mesh_mut() {
                 mesh.skin = Some(skin.clone());
             }
-            scene.add_to(root, node);
+            scene.add_to(root, node)
         };
         // A rigid part, given in root space in the rest pose, moves with its joint.
         let rigid = |scene: &mut Scene, joint: Joint, geometry: Geometry, material: &Material| {
@@ -352,7 +354,7 @@ impl Figure {
             scene.add_to(
                 joints[joint as usize],
                 Node::mesh(geometry, material.clone()),
-            );
+            )
         };
 
         // Woven cloth, hair strands, a rubber sole and nails. A material that has its own
@@ -392,13 +394,15 @@ impl Figure {
         // The seams and the zip are dark lines on the jacket, as a shadow in a groove. They
         // are unlit, because a thin lit ridge flickers and escapes the shadow of the body.
         let seam = Material::unlit(style.jacket.color * 0.12);
-        for (part, material) in [(loft(&JACKET, 40, 0.02), &jacket_cloth), (seams(), &seam)] {
+        let jacket = crumpled(loft(&JACKET, 72, 0.01), Vec2::ZERO, 0.0018, 1);
+        for (part, material) in [(jacket, &jacket_cloth), (seams(), &seam)] {
             let weights = chain_weights(
                 &part,
                 Vec3::Y,
                 &[Pelvis, Spine, Chest],
                 &[(rest(Spine), 0.08), (rest(Chest), 0.08)],
             );
+            let weights = hem_follows_legs(&part, weights);
             skinned(scene, part, weights, material);
         }
         rigid(scene, Chest, collar(), &jacket_cloth);
@@ -410,13 +414,16 @@ impl Figure {
             &[Chest, Neck, Head],
             &[(rest(Neck), 0.03), (rest(Head), 0.03)],
         );
-        skinned(scene, neck, weights, &skin_material);
-        rigid(scene, Head, head(), &skin_material);
+        // The skin: the rim of [`Figure::set_rim`] does not change it.
+        let mut bare = vec![
+            skinned(scene, neck, weights, &skin_material),
+            rigid(scene, Head, head(), &skin_material),
+        ];
         rigid(scene, Head, hair(), &hair_material);
         rigid(scene, Pelvis, loft(&SEAT, 40, 0.02), &denim);
 
         for i in [LEFT, RIGHT] {
-            let [clavicle, shoulder, elbow, wrist] = ARMS[i];
+            let [clavicle, shoulder, elbow, _] = ARMS[i];
             let at = rest(shoulder);
             // Folds at the inside of the elbow.
             let elbow_folds = Fold {
@@ -425,9 +432,14 @@ impl Figure {
                 width: 0.07,
                 depth: 0.004,
             };
-            let mut sleeve = folded(
-                loft(&SLEEVE, 28, FOLD_PERIOD / 4.0).translate(at.x, 0.0, at.z),
-                &[elbow_folds],
+            let mut sleeve = crumpled(
+                folded(
+                    loft(&SLEEVE, 28, FOLD_PERIOD / 4.0).translate(at.x, 0.0, at.z),
+                    &[elbow_folds],
+                ),
+                vec2(at.x, at.z),
+                0.0022,
+                3 + i as u32,
             );
             // The opening of the cuff around the wrist is in shadow.
             for (p, color) in sleeve.positions.iter().zip(&mut sleeve.colors) {
@@ -449,13 +461,26 @@ impl Figure {
 
             let [hip, knee, ankle, toe] = LEGS[i];
             let at = rest(hip);
-            // Folds behind the knee, and where the trousers break on the boot.
+            // Folds behind the knee, above and below the knee in front, and where the
+            // trousers break on the boot.
             let leg_folds = [
                 Fold {
                     center: vec3(at.x, rest(knee).y + 0.02, at.z),
                     side: Vec3::NEG_Z,
-                    width: 0.08,
-                    depth: 0.006,
+                    width: 0.11,
+                    depth: 0.009,
+                },
+                Fold {
+                    center: vec3(at.x, rest(knee).y + 0.09, at.z),
+                    side: Vec3::Z,
+                    width: 0.04,
+                    depth: 0.004,
+                },
+                Fold {
+                    center: vec3(at.x, rest(knee).y - 0.08, at.z),
+                    side: Vec3::Z,
+                    width: 0.035,
+                    depth: 0.003,
                 },
                 Fold {
                     center: vec3(at.x, 0.17, at.z),
@@ -464,9 +489,18 @@ impl Figure {
                     depth: 0.003,
                 },
             ];
-            let leg = folded(
-                loft(&LEG, 28, FOLD_PERIOD / 4.0).translate(at.x, 0.0, at.z),
-                &leg_folds,
+            let leg = worn(
+                crumpled(
+                    folded(
+                        loft(&LEG, 28, FOLD_PERIOD / 4.0).translate(at.x, 0.0, at.z),
+                        &leg_folds,
+                    ),
+                    vec2(at.x, at.z),
+                    0.003,
+                    5 + i as u32,
+                ),
+                vec2(at.x, at.z),
+                i as u32,
             );
             let weights = chain_weights(
                 &leg,
@@ -475,7 +509,7 @@ impl Figure {
                 &[(at + Vec3::Y * 0.03, 0.06), (rest(knee), 0.05)],
             );
             skinned(scene, leg, weights, &denim);
-            let cap = Geometry::sphere(0.056, 20, 12).translate(at.x, rest(knee).y, 0.006);
+            let cap = knee_cap().translate(at.x, rest(knee).y, 0.006);
             rigid(scene, knee, cap, &denim);
 
             let at = rest(ankle);
@@ -494,11 +528,6 @@ impl Figure {
                 &[(at + Vec3::Y * 0.01, 0.03)],
             );
             skinned(scene, shaft, weights, &leather);
-
-            scene.add_to(
-                joints[wrist as usize],
-                Node::mesh(palm(SIDE[i]), skin_material.clone()),
-            );
         }
 
         let mut fingers = [[[root; 3]; 5]; 2];
@@ -512,24 +541,32 @@ impl Figure {
                     let node = Node::group().with_position(offset).with_rotation(rotation);
                     parent = scene.add_to(parent, node);
                     fingers[i][f][k] = parent;
-                    let [r0, r1] = finger.radius;
-                    let segment = finger_segment(
-                        finger.lengths[k],
-                        r0 + (r1 - r0) * k as f32 / 3.0,
-                        r0 + (r1 - r0) * (k + 1) as f32 / 3.0,
-                        k == 2,
-                    );
-                    scene.add_to(parent, Node::mesh(segment, skin_material.clone()));
-                    if k == 2 {
-                        // The nail on the back of the last segment.
-                        let (length, tip) = (finger.lengths[2], finger.radius[1]);
-                        let shell = Geometry::sphere(1.0, 12, 8)
-                            .scale(0.15 * tip, 0.38 * length, 0.62 * tip)
-                            .translate(side * 0.74 * tip, -0.66 * length, 0.0);
-                        scene.add_to(parent, Node::mesh(shell, nail.clone()));
-                    }
                     offset = vec3(0.0, -finger.lengths[k], 0.0);
                 }
+            }
+            // The palm and the fingers are one skinned mesh, so the skin bends smoothly at
+            // the knuckles. The nails are a second mesh on the same joints.
+            let wrist_rest = rest(ARMS[i][3]);
+            let binds = finger_binds(side, wrist_rest);
+            let mut hand_joints = vec![wrist];
+            let mut inverse = vec![Mat4::from_translation(-wrist_rest)];
+            for (f, chain) in binds.iter().enumerate() {
+                for (k, bind) in chain.iter().enumerate() {
+                    hand_joints.push(fingers[i][f][k]);
+                    inverse.push(bind.inverse());
+                }
+            }
+            let hand_skin = Skin {
+                joints: hand_joints,
+                inverse_bind_matrices: Arc::new(inverse),
+            };
+            let (skin_part, nails) = hand(side, wrist_rest, &binds);
+            for (geometry, material) in [(skin_part, &skin_material), (nails, &nail)] {
+                let mut node = Node::mesh(geometry, material.clone());
+                if let Some(mesh) = node.mesh_mut() {
+                    mesh.skin = Some(hand_skin.clone());
+                }
+                bare.push(scene.add_to(root, node));
             }
         }
 
@@ -537,6 +574,24 @@ impl Figure {
             root,
             joints,
             fingers,
+            bare,
+        }
+    }
+
+    /// Sets the rim light of the clothes and the hair that have one in the [`FigureStyle`]:
+    /// `color` and the falloff `power`. A shot uses it when the light behind the figure
+    /// changes. The skin keeps its rim: on the nose and the chin a strong rim draws lines.
+    pub fn set_rim(&self, scene: &mut Scene, color: Rgb, power: f32) {
+        for id in scene.descendants(self.root) {
+            if self.bare.contains(&id) {
+                continue;
+            }
+            if let Some(material) = scene[id].material_mut()
+                && material.rim != Rgb::BLACK
+            {
+                material.rim = color;
+                material.rim_power = power;
+            }
         }
     }
 
@@ -1475,6 +1530,31 @@ fn chain_weights(
     weights
 }
 
+/// Lets the hem of the jacket follow the thighs a little: the lowest 10 cm in front and
+/// on the sides move up to 22 % with the hip joint of their side. So the hem swings and
+/// lifts with each step, and the jacket does not move as one rigid block.
+fn hem_follows_legs(geometry: &Geometry, mut weights: SkinWeights) -> SkinWeights {
+    for ((p, joints), w) in geometry
+        .positions
+        .iter()
+        .zip(&mut weights.joints)
+        .zip(&mut weights.weights)
+    {
+        let low = smoothstep(0.98, 0.87, p.y);
+        let side = (p.x.abs() / 0.12).min(1.0) * smoothstep(-0.06, 0.04, p.z);
+        let hip = 0.22 * low * side;
+        if hip <= 0.0 {
+            continue;
+        }
+        for v in &mut w[..2] {
+            *v *= 1.0 - hip;
+        }
+        joints[2] = if p.x > 0.0 { HipL } else { HipR } as u16;
+        w[2] = hip;
+    }
+    weights
+}
+
 /// A smooth closed tube through elliptic cross-sections stacked along Y.
 ///
 /// Each ring is `[y, half width along X, half depth along Z, center on Z]`. A ring of zero
@@ -1636,6 +1716,59 @@ fn folded(geometry: Geometry, folds: &[Fold]) -> Geometry {
     out
 }
 
+/// Smooth value noise in `0..1` on a grid of cells of size 1.
+fn noise2(p: Vec2, seed: u32) -> f32 {
+    let cell = p.floor();
+    let f = p - cell;
+    let u = f * f * (3.0 - 2.0 * f);
+    let at = |i: f32, j: f32| {
+        let (x, y) = ((cell.x + i) as i32 as u32, (cell.y + j) as i32 as u32);
+        hash(x.wrapping_mul(7919) ^ y.wrapping_mul(104_729) ^ seed.wrapping_mul(0x9e37_79b9))
+    };
+    let a = at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * u.x;
+    let b = at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * u.x;
+    a + (b - a) * u.y
+}
+
+/// Presses soft wrinkles into cloth around the vertical axis `axis` (x, z): long diagonal
+/// creases 5 to 12 cm long, at most `depth` meters deep. Cloth is never a smooth tube. The
+/// wrinkles only go in, and the creases are a little darker in the vertex colors.
+fn crumpled(geometry: Geometry, axis: Vec2, depth: f32, seed: u32) -> Geometry {
+    let mut positions = geometry.positions;
+    let mut colors = if geometry.colors.is_empty() {
+        vec![Vec4::ONE; positions.len()]
+    } else {
+        geometry.colors
+    };
+    for ((p, n), color) in positions.iter_mut().zip(&geometry.normals).zip(&mut colors) {
+        let arc = 0.1 * (p.x - axis.x).atan2(p.z - axis.y);
+        let q = vec2(arc + 0.5 * p.y, p.y - 0.4 * arc) * vec2(1.0 / 0.05, 1.0 / 0.11);
+        // a ridge where the noise crosses its middle is a crease
+        let crease = |q: Vec2, k: u32| 1.0 - (2.0 * noise2(q, seed * 13 + k) - 1.0).abs();
+        let c = 0.65 * crease(q, 0).powi(3) + 0.35 * crease(q * 2.1 + 7.0, 1).powi(3);
+        *p -= *n * depth * c;
+        *color = (color.truncate() * (1.0 - 0.25 * c)).extend(1.0);
+    }
+    let normals = smooth_normals(&positions, &geometry.indices);
+    let mut out = Geometry::new(positions, normals, geometry.uvs, geometry.indices);
+    out.colors = colors;
+    out
+}
+
+/// Wear on a trouser leg around the axis `axis` (x, z): long streaks where the cloth is
+/// lighter or darker, and a darker hem with dust. It multiplies the vertex colors.
+fn worn(mut geometry: Geometry, axis: Vec2, seed: u32) -> Geometry {
+    for (p, color) in geometry.positions.iter().zip(&mut geometry.colors) {
+        let angle = (p.x - axis.x).atan2(p.z - axis.y);
+        let streak =
+            noise1(80 + seed, 5.0 * angle + 2.0 * p.y) + 0.5 * noise1(90 + seed, 13.0 * angle);
+        let hem = 1.0 - 0.25 * (1.0 - smoothstep(0.1, 0.3, p.y));
+        let tone = (1.0 + 0.09 * streak) * hem;
+        *color = (color.truncate() * tone).extend(1.0);
+    }
+    geometry
+}
+
 /// The jacket from the hem to the collar, in root space.
 const JACKET: [[f32; 4]; 14] = [
     [0.86, 0.0, 0.0, -0.01],
@@ -1647,10 +1780,10 @@ const JACKET: [[f32; 4]; 14] = [
     [1.16, 0.168, 0.12, 0.008],
     [1.25, 0.18, 0.126, 0.012],
     [1.33, 0.19, 0.124, 0.008],
-    [1.39, 0.198, 0.112, -0.002],
-    [1.43, 0.172, 0.095, -0.01],
-    [1.46, 0.12, 0.08, -0.015],
-    [1.48, 0.07, 0.066, -0.018],
+    [1.38, 0.212, 0.116, 0.0],
+    [1.405, 0.2, 0.106, -0.005],
+    [1.43, 0.165, 0.094, -0.01],
+    [1.46, 0.115, 0.08, -0.015],
     [1.49, 0.0, 0.0, -0.018],
 ];
 
@@ -1687,11 +1820,11 @@ const LEG: [[f32; 4]; 13] = [
 /// A sleeve from the top of the shoulder to the cuff. X and Z are relative to the shoulder
 /// joint.
 const SLEEVE: [[f32; 4]; 15] = [
-    [1.432, 0.0, 0.0, 0.0],
-    [1.428, 0.035, 0.038, 0.0],
-    [1.415, 0.054, 0.057, 0.0],
-    [1.39, 0.061, 0.063, 0.0],
-    [1.35, 0.06, 0.062, 0.0],
+    [1.4, 0.0, 0.0, 0.0],
+    [1.395, 0.032, 0.036, 0.0],
+    [1.382, 0.05, 0.054, 0.0],
+    [1.357, 0.058, 0.061, 0.0],
+    [1.32, 0.058, 0.06, 0.0],
     [1.26, 0.054, 0.056, 0.0],
     [1.14, 0.05, 0.052, 0.0],
     [1.03, 0.049, 0.05, 0.0],
@@ -1741,7 +1874,7 @@ const NOSE: [[f32; 4]; 6] = [
 ];
 
 /// The palm in the space of the wrist, from inside the cuff to the knuckles.
-const PALM: [[f32; 4]; 10] = [
+const PALM: [[f32; 4]; 11] = [
     [0.045, 0.0, 0.0, 0.0],
     [0.04, 0.019, 0.026, 0.0],
     [0.012, 0.018, 0.027, 0.0],
@@ -1749,10 +1882,34 @@ const PALM: [[f32; 4]; 10] = [
     [-0.035, 0.0185, 0.038, 0.0],
     [-0.06, 0.017, 0.041, 0.0],
     [-0.08, 0.0145, 0.042, 0.0],
-    [-0.092, 0.012, 0.039, 0.0],
-    [-0.1, 0.007, 0.03, 0.0],
-    [-0.103, 0.0, 0.0, 0.0],
+    [-0.09, 0.0125, 0.04, 0.0],
+    [-0.097, 0.0095, 0.035, 0.0],
+    [-0.102, 0.0055, 0.026, 0.0],
+    [-0.104, 0.0, 0.0, 0.0],
 ];
+
+/// The cloth over the knee, centered on the knee joint. The denim is pulled tight over the
+/// knee cap, so it is worn lighter there. Soft folds run out from it to the sides.
+fn knee_cap() -> Geometry {
+    let mut cap = Geometry::sphere(0.056, 40, 24);
+    let mut colors = Vec::with_capacity(cap.positions.len());
+    for p in &mut cap.positions {
+        let d = *p / 0.056;
+        // the front of the knee is +Z
+        let front = d.z.max(0.0);
+        let angle = d.y.atan2(d.x);
+        let fold = (0.5 + 0.5 * (5.0 * angle + 1.3 * (3.0 * angle).sin()).cos()).powi(3);
+        let ring = smoothstep(0.55, 0.85, 1.0 - front) * (1.0 - smoothstep(0.9, 1.0, 1.0 - front));
+        *p *= 1.0 - 0.03 * fold * ring;
+        let worn = smoothstep(0.6, 0.95, front);
+        let shade = (1.0 + 0.35 * worn) * (1.0 - 0.3 * fold * ring);
+        colors.push(vec4(shade, shade, shade * (1.0 + 0.05 * worn), 1.0));
+    }
+    let normals = smooth_normals(&cap.positions, &cap.indices);
+    let mut geometry = Geometry::new(cap.positions, normals, cap.uvs, cap.indices);
+    geometry.colors = colors;
+    geometry
+}
 
 /// The upper of a boot along the foot, in the space of the ankle: `[distance along +Z, half
 /// width, half height, depth of the center below the ankle]`. The rows are rings of a
@@ -1786,7 +1943,25 @@ const BOOT_SHAFT: [[f32; 4]; 6] = [
 /// laces.
 fn boot() -> Geometry {
     // The loft turns from +Y to +Z, and its Z (the height) to -Y.
-    let upper = loft(&BOOT, 24, 0.01).rotate_x(FRAC_PI_2);
+    let mut upper = loft(&BOOT, 48, 0.004).rotate_x(FRAC_PI_2);
+    // Dark seams of the toe cap and the heel, a row of stitches above the sole, and
+    // lighter scuffs on the toe.
+    upper.colors = upper
+        .positions
+        .iter()
+        .map(|p| {
+            let across = p.x / 0.05;
+            let toe_seam = 0.125 + 0.025 * across * across;
+            let heel_seam = -0.045 - 0.02 * (p.y + 0.03) / 0.06;
+            let line = |d: f32| (-(d / 0.0012).powi(2)).exp();
+            let seams = line(p.z - toe_seam).max(line(p.z - heel_seam));
+            let stitch = line(p.y + 0.08) * (0.5 + 0.5 * (TAU * p.z / 0.004).cos()).powi(4);
+            let scuff =
+                smoothstep(0.14, 0.21, p.z) * (0.5 + 0.5 * noise1(95, 160.0 * p.x + 90.0 * p.y));
+            let shade = (1.0 - 0.55 * seams - 0.4 * stitch) * (1.0 + 0.45 * scuff);
+            vec4(shade, shade, shade, 1.0)
+        })
+        .collect();
     // The laces cross between eyelets on the instep.
     let eyelet = |s: f32, side: f32| {
         let [_, half_width, half_height, depth] = ring_at(&BOOT, s);
@@ -1865,11 +2040,17 @@ fn head() -> Geometry {
 /// Short hair: a shell over the skull. The hairline is high on the forehead and low on the
 /// neck.
 fn hair() -> Geometry {
-    let mut cap = Geometry::sphere_partial(1.0, 40, 20, 0.0, 1.85);
+    let mut cap = Geometry::sphere_partial(1.0, 64, 32, 0.0, 1.85);
     // The hair is thick on top and thin at the hairline, so the edge does not look like a
-    // cap. The positions are on the unit sphere, so `y` is the cosine of the polar angle.
+    // cap. Short tufts make the outline uneven, so it catches the backlight in small
+    // points. The positions are on the unit sphere, so `y` is the cosine of the polar angle.
     for p in &mut cap.positions {
-        *p *= 1.012 + 0.05 * smoothstep(1.85, 1.0, p.y.acos());
+        let polar = p.y.acos();
+        let around = p.z.atan2(p.x);
+        let tufts = noise2(vec2(around * 4.0, polar * 7.0), 61) * 0.7
+            + noise2(vec2(around * 11.0, polar * 17.0), 62) * 0.3;
+        let thick = smoothstep(1.85, 1.0, polar);
+        *p *= 1.015 + 0.07 * thick + 0.12 * thick * tufts;
     }
     let normals = smooth_normals(&cap.positions, &cap.indices);
     Geometry::new(cap.positions, normals, cap.uvs, cap.indices)
@@ -1878,56 +2059,310 @@ fn hair() -> Geometry {
         .translate(0.0, 1.685, -0.008)
 }
 
-/// One segment of a finger along -Y, from its joint to the next joint. `base` and `tip`
-/// are the radii at the two joints, in meters. The joints are a little thicker than the
-/// middle, and a fold of skin at the base is darker. The round ends overlap the neighbors,
-/// so the knuckles look closed. The `last` segment ends in the pad of the fingertip.
-fn finger_segment(length: f32, base: f32, tip: f32, last: bool) -> Geometry {
-    let middle = f32::midpoint(base, tip);
-    let end = if last {
-        [
-            [-length, 0.86 * tip, 0.98 * tip, 0.0],
-            [-length - 0.45 * tip, 0.68 * tip, 0.85 * tip, 0.0],
-            [-length - 0.85 * tip, 0.0, 0.0, 0.0],
-        ]
-    } else {
-        [
-            [-length, 0.93 * tip, 1.0 * tip, 0.0],
-            [-length - 0.5 * tip, 0.72 * tip, 0.8 * tip, 0.0],
-            [-length - 0.85 * tip, 0.0, 0.0, 0.0],
-        ]
-    };
-    let mut segment = loft(
-        &[
-            [0.75 * base, 0.0, 0.0, 0.0],
-            [0.45 * base, 0.75 * base, 0.8 * base, 0.0],
-            [0.0, 0.95 * base, 1.02 * base, 0.0],
-            [-0.4 * length, 0.84 * middle, 0.92 * middle, 0.0],
-            [-0.8 * length, 0.9 * tip, 0.98 * tip, 0.0],
-            end[0],
-            end[1],
-            end[2],
-        ],
-        14,
-        0.004,
-    );
-    segment.colors = segment
-        .positions
-        .iter()
-        .map(|p| {
-            let fold = 1.0 - 0.25 * (-(p.y / 0.0025).powi(2)).exp();
-            vec4(fold, fold, fold, 1.0)
+/// The joints of the fingers of the hand of `side` in root space, with straight fingers:
+/// the bind pose of the skinned hand. `wrist` is the wrist joint in the rest pose.
+fn finger_binds(side: f32, wrist: Vec3) -> [[Mat4; 3]; 5] {
+    std::array::from_fn(|f| {
+        let finger = &FINGERS[f];
+        let rotations = finger_rotations(side, f, 0.0);
+        let mut m = Mat4::from_translation(wrist);
+        let mut offset = finger.base * vec3(side, 1.0, 1.0);
+        std::array::from_fn(|k| {
+            m *= Mat4::from_rotation_translation(rotations[k], offset);
+            offset = vec3(0.0, -finger.lengths[k], 0.0);
+            m
         })
-        .collect();
-    segment
+    })
+}
+
+/// Skin weights between two joints: `a` before `at`, `b` after it, blended over `width`
+/// on each side. `s` is the place of the vertex on the same axis.
+fn blend(s: f32, at: f32, width: f32, a: u16, b: u16) -> ([u16; 4], [f32; 4]) {
+    let w = smoothstep(at - width, at + width, s);
+    ([a, b, 0, 0], [1.0 - w, w, 0.0, 0.0])
+}
+
+/// The hand of `side` in root space with straight fingers, see [`finger_binds`]: the skin
+/// of the palm and the fingers, and the nails. Joint 0 of the skin weights is the wrist,
+/// joint `1 + 3 * f + k` is the joint `k` of finger `f`.
+fn hand(side: f32, wrist: Vec3, binds: &[[Mat4; 3]; 5]) -> (Geometry, Geometry) {
+    // `Geometry::merge` drops the skin weights, so they are joined here in the same order.
+    let palm = palm(side).translate(wrist.x, wrist.y, wrist.z);
+    let mut skin = SkinWeights {
+        joints: vec![[0; 4]; palm.positions.len()],
+        weights: vec![[1.0, 0.0, 0.0, 0.0]; palm.positions.len()],
+    };
+    let mut nail_skin = SkinWeights::default();
+    let mut parts = vec![palm];
+    let mut nails = Vec::new();
+    for (f, bind) in binds.iter().enumerate() {
+        let (finger, nail) = finger(f, side);
+        let first = 1 + 3 * f as u16;
+        let [l0, l1, _] = FINGERS[f].lengths;
+        let width = 0.35 * FINGERS[f].radius[0];
+        for (geometry, out, weights) in [
+            (finger, &mut parts, &mut skin),
+            (nail, &mut nails, &mut nail_skin),
+        ] {
+            for p in &geometry.positions {
+                let s = -p.y;
+                let (joints, w) = if s < 0.5 * l0 {
+                    blend(s, 0.0, 1.8 * width, 0, first)
+                } else if s < l0 + 0.5 * l1 {
+                    blend(s, l0, width, first, first + 1)
+                } else {
+                    blend(s, l0 + l1, width, first + 1, first + 2)
+                };
+                weights.joints.push(joints);
+                weights.weights.push(w);
+            }
+            out.push(geometry.transform(bind[0]));
+        }
+    }
+    let mut skin_part = Geometry::merge(parts);
+    skin_part.skin = Some(skin);
+    let mut nails = Geometry::merge(nails);
+    nails.skin = Some(nail_skin);
+    (skin_part, nails)
+}
+
+/// The half thickness (palm to back) and the half width of finger `f` at `s` meters from
+/// its base joint along the straight finger. The joints are a little thicker than the
+/// shafts, and the tip is round.
+fn finger_radius(f: usize, s: f32) -> (f32, f32) {
+    let finger = &FINGERS[f];
+    let [l0, l1, l2] = finger.lengths;
+    let length = l0 + l1 + l2;
+    let [r0, r1] = finger.radius;
+    let mut r = r0 + (r1 - r0) * (s / length).clamp(0.0, 1.0);
+    for joint in [0.0, l0, l0 + l1] {
+        r *= 1.0 + 0.07 * (-((s - joint) / (0.5 * r)).powi(2)).exp();
+    }
+    let e = ((s - (length - 0.2 * r1)) / (1.1 * r1)).clamp(0.0, 1.0);
+    r *= (1.0 - e * e).sqrt();
+    (0.88 * r, r)
+}
+
+/// Finger `f` of the hand of `side`, straight along -Y in the space of its base joint, and
+/// its nail. The palm side has soft pads and two creases at each joint. The back has fine
+/// wrinkles over the knuckles, which are a little red. The back of the last segment is
+/// flatter under the nail.
+fn finger(f: usize, side: f32) -> (Geometry, Geometry) {
+    let finger = &FINGERS[f];
+    let [l0, l1, l2] = finger.lengths;
+    let length = l0 + l1 + l2;
+    let (r0, tip) = (finger.radius[0], finger.radius[1]);
+    let top = 0.6 * r0;
+    let end = length + 0.9 * tip;
+    // Rings every 1.6 mm; the loft adds one ring between two.
+    let count = ((top + end) / 0.0016).ceil() as usize;
+    let mut rings: Vec<[f32; 4]> = vec![[top + 0.3 * r0, 0.0, 0.0, 0.0]];
+    for k in 0..=count {
+        let s = -top + (top + end) * k as f32 / count as f32;
+        let (rx, rz) = finger_radius(f, s.max(0.0));
+        if rx > 1e-5 {
+            rings.push([-s, rx, rz, 0.0]);
+        }
+    }
+    rings.push([-end, 0.0, 0.0, 0.0]);
+    let tube = loft(&rings, 24, 1.0);
+    let back = vec3(side, 0.0, 0.0);
+    let joints = [l0, l0 + l1];
+    let mut positions = Vec::with_capacity(tube.positions.len());
+    let mut colors = Vec::with_capacity(tube.positions.len());
+    for (&p, &n) in tube.positions.iter().zip(&tube.normals) {
+        let s = -p.y;
+        let facing = n.dot(back);
+        let (r, _) = finger_radius(f, s.clamp(0.0, length));
+        let mut out = 0.0;
+        let mut shade = 1.0f32;
+        let mut red = 0.0;
+        // Pads on the palm side, the largest at the tip.
+        let palm = (-facing).max(0.0).powf(1.5);
+        for (k, (from, len)) in [(0.0, l0), (l0, l1), (l0 + l1, l2)].into_iter().enumerate() {
+            let center = from + if k == 2 { 0.7 } else { 0.55 } * len;
+            let pad = (-((s - center) / (0.35 * len)).powi(2)).exp();
+            out += palm * pad * r * if k == 2 { 0.16 } else { 0.09 };
+        }
+        // Under the nail the back is flatter.
+        let bed = smoothstep(length - 0.65 * l2, length - 0.4 * l2, s) * facing.max(0.0).powi(2);
+        out -= 0.08 * r * bed;
+        for joint in joints {
+            let d = s - joint;
+            // Fine wrinkles over the knuckle on the back: arcs around the middle of the
+            // knuckle, deepest on top.
+            let across = p.z / r;
+            let arc = (d * d + (0.45 * r * across).powi(2)).sqrt();
+            let window = (-(arc / (0.42 * r)).powi(2)).exp() * smoothstep(0.35, 0.8, facing);
+            let wave = 0.5 + 0.5 * (TAU * arc / 0.0011).cos();
+            out -= 0.0001 * window * wave;
+            shade *= 1.0 - 0.18 * window * wave;
+            red += 0.6 * window;
+            // two creases on the palm side
+            for c in [-0.18 * r, 0.22 * r] {
+                let crease = (-((d - c) / 0.0006).powi(2)).exp() * smoothstep(0.2, 0.6, -facing);
+                out -= 0.0003 * crease;
+                shade *= 1.0 - 0.35 * crease;
+            }
+        }
+        // the base knuckle is red too, and the skin at the tip
+        red += 0.4 * (-(s / (0.8 * r)).powi(2)).exp() * facing.max(0.0);
+        red += 0.5 * smoothstep(length - 0.3 * l2, length + 0.3 * tip, s);
+        positions.push(p + n * out);
+        let red = red.min(1.0);
+        colors.push(vec4(
+            shade * (1.0 + 0.08 * red),
+            shade * (1.0 - 0.06 * red),
+            shade * (1.0 - 0.08 * red),
+            1.0,
+        ));
+    }
+    let normals = smooth_normals(&positions, &tube.indices);
+    let mut geometry = Geometry::new(positions, normals, tube.uvs, tube.indices);
+    geometry.colors = colors;
+    (geometry, nail(f, side))
+}
+
+/// The nail of finger `f` on the hand of `side`, in the space of the base joint of the
+/// straight finger. It is a thin shell 0.3 mm over the skin. Its edges sink into the skin,
+/// except the free edge at the tip. The half moon at its root is paler, and the free edge is
+/// white.
+fn nail(f: usize, side: f32) -> Geometry {
+    let [_, _, l2] = FINGERS[f].lengths;
+    let length = FINGERS[f].lengths.iter().sum::<f32>();
+    let tip = FINGERS[f].radius[1];
+    let (from, to) = (length - 0.62 * l2, length + 0.3 * tip);
+    let (rows, columns) = (14, 12);
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+    let mut uvs = Vec::new();
+    for i in 0..=rows {
+        let v = i as f32 / rows as f32;
+        let s = from + (to - from) * v;
+        for j in 0..=columns {
+            let u = j as f32 / columns as f32 * 2.0 - 1.0;
+            // The root of the nail is an arch: the sides start nearer the tip.
+            let s = s + 0.12 * l2 * u * u * (1.0 - v);
+            let (rx, rz) = finger_radius(f, s.min(length - 0.1 * tip));
+            let angle = 0.85 * u;
+            let edge = u.abs().powi(4).max((1.0 - v / 0.12).max(0.0));
+            let lift = 0.0003 * (1.0 - edge) - 0.0001;
+            // the flat bed under the nail
+            let rx = rx * (1.0 - 0.08 * smoothstep(0.0, 0.3, v));
+            positions.push(vec3(
+                side * ((rx + lift) * angle.cos()),
+                -s,
+                (rz + lift) * angle.sin(),
+            ));
+            let moon = 1.0 - smoothstep(0.1, 0.3, v);
+            let free = smoothstep(0.86, 0.95, v);
+            let c = Vec3::splat(0.8)
+                .lerp(vec3(0.95, 0.9, 0.9), moon)
+                .lerp(vec3(1.2, 1.15, 1.08), free);
+            colors.push(c.extend(1.0));
+            uvs.push(vec2(u, v));
+        }
+    }
+    let mut indices = Vec::new();
+    let w = columns + 1;
+    for i in 0..rows {
+        for j in 0..columns {
+            let a = i * w + j;
+            let quad = [a, a + w, a + 1, a + 1, a + w, a + w + 1];
+            // the shell faces out on both hands
+            if side < 0.0 {
+                indices.extend(quad);
+            } else {
+                indices.extend([quad[0], quad[2], quad[1], quad[3], quad[5], quad[4]]);
+            }
+        }
+    }
+    let normals = smooth_normals(&positions, &indices);
+    let mut geometry = Geometry::new(positions, normals, uvs, indices);
+    geometry.colors = colors;
+    geometry
+}
+
+/// Turns the elliptic rings of a [`loft`] with `segments` vertices around into rounded
+/// rectangles. `power` is 2 for an ellipse and larger for squarer corners.
+fn squared(geometry: Geometry, segments: u32, power: f32) -> Geometry {
+    let mut positions = geometry.positions;
+    let mut start = 0;
+    while start < positions.len() {
+        let y = positions[start].y;
+        let count = positions[start..].iter().take_while(|p| p.y == y).count();
+        if count == segments as usize + 1 {
+            let ring = &mut positions[start..start + count];
+            let center =
+                ring[..segments as usize].iter().map(|p| p.z).sum::<f32>() / segments as f32;
+            for (k, p) in ring.iter_mut().enumerate() {
+                let a = PI + k as f32 / segments as f32 * TAU;
+                let k = |c: f32| {
+                    if c.abs() < 1e-6 {
+                        0.0
+                    } else {
+                        c.abs().powf(2.0 / power - 1.0)
+                    }
+                };
+                p.x *= k(a.sin());
+                p.z = center + (p.z - center) * k(a.cos());
+            }
+        }
+        start += count;
+    }
+    let normals = smooth_normals(&positions, &geometry.indices);
+    Geometry::new(positions, normals, geometry.uvs, geometry.indices)
+}
+
+/// The veins on the back of the left hand, in the space of the wrist: points of (y, z).
+/// They run from the wrist to the gaps between the knuckles, and an arch joins them.
+const VEINS: [&[[f32; 2]]; 4] = [
+    &[
+        [0.04, 0.024],
+        [0.0, 0.026],
+        [-0.035, 0.022],
+        [-0.068, 0.019],
+    ],
+    &[
+        [0.04, -0.02],
+        [0.005, -0.024],
+        [-0.03, -0.022],
+        [-0.07, -0.019],
+    ],
+    &[
+        [0.04, 0.002],
+        [0.01, -0.004],
+        [-0.025, 0.004],
+        [-0.05, -0.001],
+        [-0.074, 0.0],
+    ],
+    &[
+        [-0.034, 0.022],
+        [-0.046, 0.01],
+        [-0.05, -0.001],
+        [-0.044, -0.012],
+        [-0.03, -0.022],
+    ],
+];
+
+/// The distance from (y, z) to the polyline `path`.
+fn path_distance(q: Vec2, path: &[[f32; 2]]) -> f32 {
+    path.windows(2)
+        .map(|pair| {
+            let (a, b) = (Vec2::from(pair[0]), Vec2::from(pair[1]));
+            let t = ((q - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+            q.distance(a + (b - a) * t)
+        })
+        .fold(f32::INFINITY, f32::min)
 }
 
 /// The palm and the back of the hand in the space of the wrist of `side`, from inside the
-/// cuff to the knuckles. The back is flat, with four knuckles and the tendons that run to
-/// them. The palm has the pads at the thumb and at the little finger, and it is lighter.
-/// The bone of the wrist shows on the side of the little finger.
+/// cuff to the knuckles. The cross-section is a rounded rectangle. The back is a little
+/// arched, with four knuckles, the tendons that run to them and the veins. The palm has the
+/// pads at the thumb and at the little finger, and it is lighter. The bone of the wrist
+/// shows on the side of the little finger.
 fn palm(side: f32) -> Geometry {
-    let hand = loft(&PALM, 32, 0.005);
+    let hand = squared(loft(&PALM, 160, 0.0025), 160, 2.6);
     // A round bump of `height` meters at `center`, `radius` meters wide.
     let bump = |p: Vec3, center: Vec3, radius: f32, height: f32| {
         height * (-p.distance_squared(center * vec3(side, 1.0, 1.0)) / (radius * radius)).exp()
@@ -1935,12 +2370,15 @@ fn palm(side: f32) -> Geometry {
     let mut positions = Vec::with_capacity(hand.positions.len());
     let mut colors = Vec::with_capacity(hand.positions.len());
     for (&p, &n) in hand.positions.iter().zip(&hand.normals) {
-        let back = p.x * side > 0.0;
+        let facing = n.x * side;
+        let back = facing > 0.0;
         let mut out = bump(p, vec3(-0.018, -0.04, 0.026), 0.016, 0.005)
             + bump(p, vec3(-0.016, -0.05, -0.032), 0.015, 0.003)
             + bump(p, vec3(0.008, 0.014, -0.026), 0.007, 0.0025);
         let mut knuckle = 0.0;
+        let mut vein = 0.0;
         if back {
+            let on_back = smoothstep(0.3, 0.8, facing);
             for finger in &FINGERS[INDEX..] {
                 let top = vec3(0.012, finger.base.y + 0.003, finger.base.z);
                 knuckle += bump(p, top, 0.008, 1.0);
@@ -1948,18 +2386,27 @@ fn palm(side: f32) -> Geometry {
                 let along = (p.y / (finger.base.y + 0.008)).clamp(0.0, 1.0);
                 let z = finger.base.z * (0.35 + 0.65 * along);
                 let ridge = smoothstep(0.0, 0.3, along) * (1.0 - smoothstep(0.85, 1.0, along));
-                out += 0.0008 * ridge * (-((p.z - z) / 0.0025).powi(2)).exp();
+                out += 0.0009 * ridge * on_back * (-((p.z - z) / 0.0022).powi(2)).exp();
             }
             out += 0.0035 * knuckle;
+            // The veins are soft ridges. They fade before the knuckles.
+            let q = vec2(p.y, p.z);
+            for path in VEINS {
+                let d = path_distance(q, path);
+                vein = f32::max(vein, (-(d / 0.0016).powi(2)).exp());
+            }
+            vein *= on_back * (1.0 - smoothstep(-0.07, -0.08, p.y));
+            out += 0.0011 * vein;
+            // the back is a little arched
+            out += 0.0015 * on_back * (1.0 - (p.z / 0.04).powi(2)).max(0.0);
         }
-        let flat = if back { vec3(p.x * 0.78, p.y, p.z) } else { p };
-        positions.push(flat + n * out);
-        // The palm is lighter, the knuckles a little red.
+        positions.push(p + n * out);
+        // The palm is lighter, the knuckles a little red, the veins a little blue.
         let tone = if back { 1.0 } else { 1.18 };
         colors.push(vec4(
-            tone,
-            tone * (1.0 - 0.08 * knuckle),
-            tone * (1.0 - 0.1 * knuckle),
+            tone * (1.0 - 0.1 * vein),
+            tone * (1.0 - 0.08 * knuckle - 0.04 * vein),
+            tone * (1.0 - 0.1 * knuckle + 0.02 * vein),
             1.0,
         ));
     }
@@ -2059,7 +2506,7 @@ fn detail() -> &'static Detail {
         canvas: twill(60, 2),
         denim: twill(80, 3),
         strands: Arc::new(strands()),
-        skin: grain(90.0, 0.02e-3, 0.4, 3),
+        skin: skin_lines(),
         leather: grain(40.0, 0.12e-3, 0.8, 5),
     })
 }
@@ -2116,6 +2563,37 @@ fn grain(cells: f32, depth: f32, creases: f32, seed: u32) -> [Arc<Texture>; 2] {
         // A crease is a thin valley where a coarse noise crosses 0.5.
         let crease = (1.0 - 10.0 * (noise(u, v, cells / 6.0, seed + 2) - 0.5).abs()).max(0.0);
         bumps - creases * crease * crease
+    })
+}
+
+/// The maps of the skin, one tile of [`TILE`] meters: two sets of fine lines that cross
+/// in a diamond pattern 0.9 mm wide, small pores, and soft bumps. The lines wave a little,
+/// so the pattern does not look like a grid.
+fn skin_lines() -> [Arc<Texture>; 2] {
+    // Smooth value noise in 0..1 that repeats `n` times across the tile.
+    let noise = |u: f32, v: f32, n: f32, seed: u32| {
+        let (x, y) = (u * n, v * n);
+        let (i, j) = (x.floor(), y.floor());
+        let (fx, fy) = (x - i, y - j);
+        let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+        let at = |a: f32, b: f32| {
+            hash(a.rem_euclid(n) as u32 + b.rem_euclid(n) as u32 * 4099 + seed * 7919)
+        };
+        let top = at(i, j) + (at(i + 1.0, j) - at(i, j)) * sx;
+        let bottom = at(i, j + 1.0) + (at(i + 1.0, j + 1.0) - at(i, j + 1.0)) * sx;
+        top + (bottom - top) * sy
+    };
+    surface(0.025e-3, |u, v| {
+        // A whole number of lines crosses the tile in each direction, so it has no seam.
+        // The lines fade in and out, as on real skin.
+        let wobble = 0.6 * (noise(u, v, 12.0, 1) - 0.5);
+        let fade = smoothstep(0.25, 0.75, noise(u, v, 6.0, 4));
+        let line = |a: f32, width: f32| (-((a.fract() - 0.5) / width).powi(2)).exp();
+        let first = line(u * 40.0 + v * 23.0 + wobble, 0.09);
+        let second = line(v * 38.0 - u * 25.0 - wobble, 0.07);
+        let pores = smoothstep(0.72, 0.9, noise(u, v, 110.0, 2));
+        let bumps = noise(u, v, 30.0, 3);
+        1.0 - (0.45 * first + 0.3 * second) * fade - 0.7 * pores + 0.45 * bumps
     })
 }
 

@@ -281,20 +281,26 @@ fn glow_card(width: f32, height: f32, lift: f32) -> Geometry {
 }
 
 /// The panes of the window bands: sections of lit glass of different brightness and some
-/// dark sections. White, the emissive color of the material tints it.
+/// dark sections. White, the emissive color of the material tints it. From the plateau the
+/// mullions are thinner than a pixel, so the texture has none: they only made the bands
+/// flicker. The sections fade into each other over a tenth of their width, and the top and
+/// the bottom fade too.
 fn window_texture() -> Texture {
     let sections = 48.0;
-    let mut texture = Texture::from_fn(512, 16, |u, v| {
-        let section = (u * sections) as u32;
-        let lit = hash(section * 13 + 1);
-        let level = if lit < 0.35 {
+    let level = |section: f32| {
+        let section = section.rem_euclid(sections) as u32;
+        if hash(section * 13 + 1) < 0.35 {
             0.04
         } else {
             0.25 + 0.75 * hash(section * 13 + 2).powi(2)
-        };
-        // mullions every few meters and a frame at the top and the bottom
-        let mullion = ((u * sections * 6.0).fract() < 0.12) || !(0.12..0.88).contains(&v);
-        let c = if mullion { 0 } else { (level * 255.0) as u8 };
+        }
+    };
+    let mut texture = Texture::from_fn(1024, 16, |u, v| {
+        let x = u * sections;
+        let blend = smoothstep(0.45, 0.55, x.fract());
+        let lit = level(x.floor()) + (level(x.floor() + 1.0) - level(x.floor())) * blend;
+        let frame = smoothstep(0.0, 0.2, v) * smoothstep(1.0, 0.8, v);
+        let c = (lit * frame * 255.0) as u8;
         fframes::Color::rgb(c, c, c)
     });
     texture.repeat = vec2(1.0, 1.0);

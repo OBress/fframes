@@ -238,37 +238,99 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
     );
     scene.append(Some(gate), &crate::montage::golden_gate_landmark());
 
-    // The village on the far rim: white and ochre houses with warm windows, and trees.
+    // The village on the far rim: white, ochre and rose houses with warm windows, garden
+    // walls and trees. The houses have flat roofs with a parapet and a small stair house,
+    // or tiled roofs with a chimney. Some have two floors.
     let mut houses = Vec::new();
     let mut windows = Vec::new();
-    for i in 0..70u32 {
+    let walls = [0xe8dccb, 0xe2cfb4, 0xd8a878, 0xd9b8a4, 0xf0e8dc];
+    let roofs = [0x8a4a32, 0x9a5a3a, 0x7a3e2c];
+    for i in 0..90u32 {
         let h = |n: u32| hash(i * 17 + n * 7919 + 5);
         let s = 640.0 + 420.0 * h(1);
         let rim = canyon_center(s) - canyon_width(s) * 0.5;
         let base = at(s, rim - 25.0 - 220.0 * h(2).powf(1.3));
-        if h(7) < 0.25 {
-            let tree = Geometry::cone(3.0 + 2.0 * h(3), 9.0 + 6.0 * h(4), 8);
-            houses.push(moved(tree.with_color(0x2c4a26), base + Vec3::Y * 5.0));
+        let turn = to_right * Quat::from_rotation_y((h(6) - 0.5) * 0.5);
+        if h(7) < 0.3 {
+            // a round tree, or a dark cypress
+            let tree = if h(11) < 0.6 {
+                let r = 2.5 + 2.0 * h(3);
+                Geometry::merge([
+                    Geometry::cylinder(0.3, 0.4, 3.0, 5)
+                        .translate(0.0, 1.5, 0.0)
+                        .with_color(0x3a2a1c),
+                    Geometry::icosahedron(r, 1)
+                        .scale(1.0, 0.85, 1.0)
+                        .translate(0.0, 2.5 + r * 0.8, 0.0)
+                        .with_color(0x3c5a2c),
+                ])
+            } else {
+                let height = 9.0 + 6.0 * h(4);
+                Geometry::cone(1.3 + 0.6 * h(3), height, 7)
+                    .translate(0.0, height * 0.5, 0.0)
+                    .with_color(0x23361e)
+            };
+            houses.push(moved(tree, base));
             continue;
         }
-        let (w, d, wall) = (7.0 + 7.0 * h(3), 6.0 + 6.0 * h(4), 4.0 + 5.0 * h(5));
-        let turn = to_right * Quat::from_rotation_y((h(6) - 0.5) * 0.5);
-        let tone = if h(8) < 0.6 { 0xe8dccb } else { 0xd8a878 };
-        let body = Geometry::cuboid(w, wall, d).translate(0.0, wall * 0.5, 0.0);
-        let ridge = 2.2 + 1.5 * h(9);
-        let roof = Geometry::extrude(
-            &[vec2(-w * 0.55, 0.0), vec2(w * 0.55, 0.0), vec2(0.0, ridge)],
-            d * 1.05,
-            0.0,
-        )
-        .translate(0.0, wall, 0.0);
-        let house = Geometry::merge([body.with_color(tone), roof.with_color(0x8a4a32)]);
-        houses.push(moved(house.rotate(turn), base));
-        // two windows on the side that faces the camera, lit in most houses
-        if h(10) < 0.7 {
-            for k in [-0.25f32, 0.25] {
-                let p = base + turn * vec3(k * w, wall * 0.5, d * 0.5 + 0.1);
-                windows.push(moved(Geometry::plane(1.4, 1.6).rotate(turn), p));
+        let (w, d) = (7.0 + 7.0 * h(3), 6.0 + 6.0 * h(4));
+        let floors = if h(5) < 0.35 { 2.0 } else { 1.0 };
+        let wall = 3.2 * floors + 0.6 + 0.8 * h(12);
+        let tone = walls[(h(8) * walls.len() as f32) as usize % walls.len()];
+        let mut parts = vec![
+            Geometry::cuboid(w, wall, d)
+                .translate(0.0, wall * 0.5, 0.0)
+                .with_color(tone),
+        ];
+        if h(9) < 0.55 {
+            // a flat roof with a parapet, a stair house and a water tank
+            let parapet = Geometry::cuboid(w + 0.3, 0.6, d + 0.3).translate(0.0, wall + 0.3, 0.0);
+            let stair = Geometry::cuboid(2.4, 2.4, 2.4).translate(w * 0.25, wall + 1.2, -d * 0.2);
+            let tank =
+                Geometry::cylinder(0.6, 0.6, 1.2, 8).translate(-w * 0.3, wall + 1.2, d * 0.2);
+            parts.extend([
+                parapet.with_color(tone),
+                stair.with_color(tone),
+                tank.with_color(0x6a6460),
+            ]);
+        } else {
+            let ridge = 2.2 + 1.5 * h(10);
+            let roof = Geometry::extrude(
+                &[vec2(-w * 0.55, 0.0), vec2(w * 0.55, 0.0), vec2(0.0, ridge)],
+                d * 1.05,
+                0.0,
+            )
+            .translate(0.0, wall, 0.0);
+            let chimney =
+                Geometry::cuboid(0.7, 2.0, 0.7).translate(w * 0.28, wall + ridge * 0.6, 0.0);
+            let roof_tone = roofs[(h(13) * roofs.len() as f32) as usize % roofs.len()];
+            parts.extend([roof.with_color(roof_tone), chimney.with_color(tone)]);
+        }
+        // a low annex on one side, and a garden wall
+        if h(14) < 0.5 {
+            let annex = Geometry::cuboid(w * 0.4, 2.6, d * 0.6).translate(-w * 0.7, 1.3, d * 0.1);
+            parts.push(annex.with_color(tone));
+        }
+        if h(15) < 0.6 {
+            let garden =
+                Geometry::cuboid(w * 1.6, 1.4, 0.35).translate(w * 0.1, 0.7, d * 0.5 + 4.0);
+            parts.push(garden.with_color(walls[0]));
+        }
+        houses.push(moved(Geometry::merge(parts).rotate(turn), base));
+        // windows on the two sides that face the camera, lit in most houses
+        for floor in 0..floors as u32 {
+            let y = 1.7 + 3.2 * floor as f32;
+            for k in [-0.3f32, 0.0, 0.3] {
+                if hash(i * 31 + floor * 7 + (k * 10.0) as u32 + 99) < 0.35 {
+                    continue;
+                }
+                let p = base + turn * vec3(k * w, y, d * 0.5 + 0.1);
+                windows.push(moved(Geometry::plane(1.2, 1.5).rotate(turn), p));
+            }
+            if h(16) < 0.6 {
+                let side = turn * Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+                let p = base + turn * vec3(-w * 0.5 - 0.1, y, 0.0);
+                windows.push(moved(Geometry::plane(1.2, 1.5).rotate(side), p));
             }
         }
     }

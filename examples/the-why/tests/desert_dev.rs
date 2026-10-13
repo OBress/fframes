@@ -1,8 +1,9 @@
 //! Renders review frames of the desert set (shots 5, 6 and 9) without `src/lib.rs`.
 //!
 //! `DESERT_SHOTS` selects the shots (`walk,line,sunrise`, default all). `DESERT_TIMES`
-//! gives the times in seconds (default 8 times over the shot). The PNG files and one contact
-//! sheet per shot go to `/tmp/the-why-desert/`.
+//! gives the times in seconds (default 8 times over the shot), or `a..b` for every frame
+//! from `a` to `b`. The PNG files and one contact sheet per shot go to `DESERT_OUT`
+//! (default `/home/neogoose/dev/the-why-review/desert/dev`).
 
 #![allow(clippy::unreadable_literal)]
 
@@ -34,7 +35,10 @@ use image::RgbaImage;
 const SIZE: (u32, u32) = (1920, 804);
 
 fn out_dir() -> PathBuf {
-    let dir = PathBuf::from("/tmp/the-why-desert");
+    let dir = std::env::var("DESERT_OUT").map_or_else(
+        |_| PathBuf::from("/home/neogoose/dev/the-why-review/desert/dev"),
+        PathBuf::from,
+    );
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -55,10 +59,15 @@ struct Shot<'a> {
     renderer: Renderer,
     moment: Box<dyn Fn(f32) -> (Scene, Camera) + 'a>,
     shutter: Box<dyn Fn(f32) -> usize + 'a>,
+    /// Work on the pixels after the render, as in `src/lib.rs`.
+    post: Post<'a>,
 }
 
+/// Work on the pixels of a shot at a time.
+type Post<'a> = Box<dyn Fn(f32, &mut Pixels) + 'a>;
+
 fn shots(set: &DesertSet) -> Vec<Shot<'_>> {
-    let (w, h) = SIZE;
+    let (w, h) = (SIZE.0 * supersample(), SIZE.1 * supersample());
     vec![
         Shot {
             name: "walk",
@@ -66,6 +75,7 @@ fn shots(set: &DesertSet) -> Vec<Shot<'_>> {
             renderer: DesertSet::renderer_walk(w, h),
             moment: Box::new(|t| set.moment_walk(t)),
             shutter: Box::new(|t| set.shutter_walk(t)),
+            post: Box::new(|_, _| {}),
         },
         Shot {
             name: "line",
@@ -73,6 +83,7 @@ fn shots(set: &DesertSet) -> Vec<Shot<'_>> {
             renderer: DesertSet::renderer_line(w, h),
             moment: Box::new(|t| set.moment_line(t)),
             shutter: Box::new(|t| set.shutter_line(t)),
+            post: Box::new(|t, pixels| set.heat_shimmer(t, pixels)),
         },
         Shot {
             name: "sunrise",
@@ -80,8 +91,18 @@ fn shots(set: &DesertSet) -> Vec<Shot<'_>> {
             renderer: DesertSet::renderer_sunrise(w, h),
             moment: Box::new(|t| set.moment_sunrise(t)),
             shutter: Box::new(|t| set.shutter_sunrise(t)),
+            post: Box::new(|_, _| {}),
         },
     ]
+}
+
+/// `DESERT_SS`: the review frames render this many times larger and shrink to [`SIZE`].
+/// With 2 or more they show the picture without aliasing.
+fn supersample() -> u32 {
+    std::env::var("DESERT_SS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
 }
 
 fn selected(name: &str) -> bool {
@@ -90,6 +111,13 @@ fn selected(name: &str) -> bool {
 
 fn times(seconds: f32) -> Vec<f32> {
     match std::env::var("DESERT_TIMES") {
+        Ok(range) if range.contains("..") => {
+            let (a, b) = range.split_once("..").unwrap();
+            let (a, b): (f32, f32) = (a.parse().unwrap(), b.parse().unwrap());
+            let first = (a * FPS as f32).round() as u32;
+            let last = (b * FPS as f32).round() as u32;
+            (first..last).map(|f| f as f32 / FPS as f32).collect()
+        }
         Ok(list) => list
             .split(',')
             .filter_map(|s| s.trim().parse().ok())
@@ -134,19 +162,29 @@ fn review() {
         let mut frames = Vec::new();
         for t in times(shot.seconds) {
             let start = Instant::now();
-            let pixels = look::picture_pixels(&shot.renderer, (shot.shutter)(t), t, &shot.moment);
+            let mut pixels =
+                look::picture_pixels(&shot.renderer, (shot.shutter)(t), t, &shot.moment);
+            // `DESERT_RAW` leaves out the work on the pixels, for comparisons.
+            if std::env::var("DESERT_RAW").is_err() {
+                (shot.post)(t, &mut pixels);
+            }
             eprintln!(
                 "{} t={t:.2}: {:.0} ms",
                 shot.name,
                 start.elapsed().as_secs_f32() * 1000.0
             );
-            let image = to_image(&pixels);
+            let mut image = to_image(&pixels);
+            if supersample() > 1 {
+                let (w, h) = SIZE;
+                image =
+                    image::imageops::resize(&image, w, h, image::imageops::FilterType::Lanczos3);
+            }
             image
                 .save(out_dir().join(format!("{}_t{t:05.2}.png", shot.name)))
                 .unwrap();
             frames.push(image);
         }
-        if frames.len() > 1 {
+        if (2..=24).contains(&frames.len()) {
             contact_sheet(
                 &frames,
                 2,
