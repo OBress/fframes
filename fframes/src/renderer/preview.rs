@@ -422,8 +422,22 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
         fast_shapes: bool,
     ) -> FFramesRendererResult<usvgr::Tree> {
         self.check_frame(frame)?;
+        let worker = Worker {
+            text_cache: self.text_cache.clone(),
+            decoders: self.decoders.clone(),
+            converter_cache: std::mem::replace(
+                &mut self.converter_cache,
+                usvgr::Cache::new_with_text_cache(0),
+            ),
+        };
+        let (worker, tree) = self.convert_with(worker, frame, fast_shapes);
+        self.converter_cache = worker.converter_cache;
+        tree
+    }
 
-        let ctx = FFramesContext {
+    /// The context of `Video::render_frame` for the frames of this previewer.
+    fn context(&self) -> FFramesContext<'_, 'media> {
+        FFramesContext {
             time_base: self.runtime.time_base,
             mode: crate::FFramesMode::Renderer,
             media_source: self.options.media,
@@ -432,32 +446,110 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
             font_source: Some(&self.runtime.font_source),
             abort_signal: None,
             current_video_size: self.size.clone(),
-        };
+        }
+    }
 
-        let svgr = super::render_frame_guarded(
-            self.video,
-            Frame::__internal_make_for_renderer(
-                frame,
-                frame,
-                TVideo::FPS,
-                self.text_cache.clone(),
-                self.decoders.clone(),
-            ),
-            &ctx,
-        )?;
-
-        let usvg_options = usvgr::Options {
+    fn usvg_options(&self, fast_shapes: bool) -> usvgr::Options<'_> {
+        usvgr::Options {
             image_data: Some(&self.image_source),
             font_family: self.options.default_font.to_string(),
             fast_shapes,
             ..Default::default()
-        };
+        }
+    }
 
-        Ok(svgr.into_svg_tree(
-            &usvg_options,
-            &mut self.converter_cache,
+    /// Converts `frame` with the caches of `worker`, and gives the worker back.
+    fn convert_with(
+        &self,
+        mut worker: Worker,
+        frame: usize,
+        fast_shapes: bool,
+    ) -> (Worker, FFramesRendererResult<usvgr::Tree>) {
+        let tree = convert(
+            self.video,
+            &self.context(),
+            &self.usvg_options(fast_shapes),
             self.runtime.font_source.as_db_ref(),
-        )?)
+            &mut worker,
+            frame,
+        );
+        (worker, tree)
+    }
+
+    /// Converts `frames` on several threads, so the CPU and the GPU work in parallel. Calls
+    /// `done` on this thread for each frame in order, with the tree and the problems found
+    /// in it. Stops at the first error of `done`.
+    fn convert_many(
+        &mut self,
+        frames: &[usize],
+        fast_shapes: bool,
+        mut done: impl FnMut(
+            usize,
+            FFramesRendererResult<usvgr::Tree>,
+            Vec<Diagnostic>,
+        ) -> FFramesRendererResult<()>,
+    ) -> FFramesRendererResult<()> {
+        for &frame in frames {
+            self.check_frame(frame)?;
+        }
+        let threads = frames.len().min(preview_threads());
+        if threads <= 1 {
+            for &frame in frames {
+                let (tree, found) = diagnostics::collect(|| self.convert_frame(frame, fast_shapes));
+                done(frame, tree, found)?;
+            }
+            return Ok(());
+        }
+
+        let video = self.video;
+        let (ctx, options) = (self.context(), self.usvg_options(fast_shapes));
+        let font_db = self.runtime.font_source.as_db_ref();
+        let text_capacity = self.converter_text_cache_capacity;
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                let sender = sender.clone();
+                let (ctx, options, next, stop) = (&ctx, &options, &next, &stop);
+                scope.spawn(move || {
+                    let mut worker = Worker {
+                        text_cache: TextCache::new(10),
+                        decoders: VideoDecodersWorker::new(2),
+                        converter_cache: usvgr::Cache::new_with_text_cache(text_capacity),
+                    };
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if index >= frames.len() || stop.load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            break;
+                        }
+                        let (tree, found) = diagnostics::collect(|| {
+                            convert(video, ctx, options, font_db, &mut worker, frames[index])
+                        });
+                        if sender.send((index, tree, found)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(sender);
+
+            // The frames arrive in any order. `done` gets them in order.
+            let mut waiting: Vec<Option<_>> = frames.iter().map(|_| None).collect();
+            let mut first = 0;
+            for (index, tree, found) in receiver {
+                waiting[index] = Some((tree, found));
+                while let Some((tree, found)) = waiting.get_mut(first).and_then(Option::take) {
+                    if let Err(e) = done(frames[first], tree, found) {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return Err(e);
+                    }
+                    first += 1;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// The frame as an SVG document, as the renderer sees it after conversion (text is
@@ -511,6 +603,63 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
         Ok((pixels, self.report(frame, found)))
     }
 
+    /// [`Self::render_inspected`] for several frames. Several threads call
+    /// `Video::render_frame` at the same time (a quarter of the threads of the CPU, see
+    /// `FFRAMES_NUM_THREADS`), and `renderer` draws the frames in order. So the GPU renders
+    /// the 3D of a frame while the CPU builds the next ones.
+    pub fn render_inspected_many(
+        &mut self,
+        frames: &[usize],
+        renderer: &mut dyn FrameRenderer,
+    ) -> FFramesRendererResult<Vec<(RgbaFrame, FrameReport)>> {
+        self.configure_renderer_cache(renderer);
+        let (width, height) = self.size();
+        let fast_shapes = renderer.fast_shapes();
+        let mut rendered = Vec::with_capacity(frames.len());
+        let mut reports = Vec::with_capacity(frames.len());
+        self.convert_many(frames, fast_shapes, |frame, tree, mut found| {
+            let tree = tree?;
+            found.extend(diagnostics::inspect_tree(
+                &tree,
+                tree.size().width(),
+                tree.size().height(),
+            ));
+            let pixels = renderer.render_tree(&tree, TVideo::BACKGROUND_COLOR, width, height)?;
+            rendered.push(pixels);
+            reports.push((frame, found));
+            Ok(())
+        })?;
+        Ok(rendered
+            .into_iter()
+            .zip(reports)
+            .map(|(pixels, (frame, found))| (pixels, self.report(frame, found)))
+            .collect())
+    }
+
+    /// [`Self::inspect`] for several frames, converted on several threads like
+    /// [`Self::render_inspected_many`].
+    pub fn inspect_many(&mut self, frames: &[usize]) -> FFramesRendererResult<Vec<FrameReport>> {
+        let mut reports = Vec::with_capacity(frames.len());
+        self.convert_many(frames, false, |frame, tree, mut found| {
+            match tree {
+                Ok(tree) => found.extend(diagnostics::inspect_tree(
+                    &tree,
+                    tree.size().width(),
+                    tree.size().height(),
+                )),
+                // The panic is already reported as a diagnostic.
+                Err(FFramesRendererError::FramePanicked(_)) => {}
+                Err(err) => return Err(err),
+            }
+            reports.push((frame, found));
+            Ok(())
+        })?;
+        Ok(reports
+            .into_iter()
+            .map(|(frame, found)| self.report(frame, found))
+            .collect())
+    }
+
     fn report(&self, frame: usize, found: Vec<Diagnostic>) -> FrameReport {
         FrameReport {
             frame,
@@ -543,6 +692,42 @@ impl<'a, 'media: 'a, TVideo: Video> Previewer<'a, 'media, TVideo> {
 
         Ok(self.report(frame, found))
     }
+}
+
+/// The caches of a thread that converts frames.
+struct Worker {
+    text_cache: Option<TextCache>,
+    decoders: VideoDecodersWorker,
+    converter_cache: usvgr::Cache,
+}
+
+/// Calls `Video::render_frame` for `frame` and converts the result.
+fn convert<'a, TVideo: Video>(
+    video: &'a TVideo,
+    ctx: &FFramesContext<'a, '_>,
+    options: &usvgr::Options,
+    font_db: &usvgr::fontdb::Database,
+    worker: &mut Worker,
+    frame: usize,
+) -> FFramesRendererResult<usvgr::Tree> {
+    let svgr = super::render_frame_guarded(
+        video,
+        Frame::__internal_make_for_renderer(
+            frame,
+            frame,
+            TVideo::FPS,
+            worker.text_cache.clone(),
+            worker.decoders.clone(),
+        ),
+        ctx,
+    )?;
+    Ok(svgr.into_svg_tree(options, &mut worker.converter_cache, font_db)?)
+}
+
+/// The number of threads that convert frames for the CLI commands: a quarter of
+/// [`super::get_thread_count`], at least one.
+fn preview_threads() -> usize {
+    (super::get_thread_count() / 4).max(1)
 }
 
 #[cfg(test)]

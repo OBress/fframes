@@ -82,11 +82,14 @@ fn march(ray: vec3f, key: f32, jitter: f32) -> vec4f {
             continue;
         }
         var light = constant + haze_lamps(p, ray);
+        // A long step crosses many shafts of light. The shadow is the mean of taps spread
+        // over the step, so the shafts do not alias into ripples.
+        let start = end * (i / n) * (i / n);
         if (any(sun0 > vec3f(0.0))) {
-            light += sun0 * shadow_lit(0, p);
+            light += sun0 * step_lit(0, ray, start, dt, jitter);
         }
         if (any(sun1 > vec3f(0.0))) {
-            light += sun1 * shadow_lit(1, p);
+            light += sun1 * step_lit(1, ray, start, dt, jitter);
         }
         let absorbed = exp(-density * dt);
         scatter += light * (through * (1.0 - absorbed));
@@ -126,6 +129,19 @@ fn haze_lamps(p: vec3f, ray: vec3f) -> vec3f {
     return light;
 }
 
+// The shadow taps of a step in the haze.
+const SHADOW_TAPS: i32 = 4;
+
+// The mean light of a shadow casting light over the step from `start` to `start + dt`.
+fn step_lit(index: i32, ray: vec3f, start: f32, dt: f32, jitter: f32) -> f32 {
+    var lit = 0.0;
+    for (var k = 0; k < SHADOW_TAPS; k++) {
+        let s = start + dt * (f32(k) + jitter) / f32(SHADOW_TAPS);
+        lit += shadow_lit(index, frame.camera.xyz + ray * s);
+    }
+    return lit / f32(SHADOW_TAPS);
+}
+
 // How much light of a shadow casting light reaches `position` in the air. One tap.
 fn shadow_lit(index: i32, position: vec3f) -> f32 {
     let s = &frame.shadows[index];
@@ -147,11 +163,12 @@ fn phase(cos: f32, g: f32) -> f32 {
     return (1.0 - g * g) / (4.0 * PI * x * sqrt(x));
 }
 
-// A 4x4 Bayer pattern.
-const BAYER = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
-
+// The start of the steps of a half resolution pixel, `0..1`: interleaved gradient noise,
+// moved by the golden ratio for each moment of a motion blurred frame (`jitter` in
+// `atmosphere.rs`).
 fn jitter(q: vec2u) -> f32 {
-    return (BAYER[(q.y % 4u) * 4u + q.x % 4u] + 0.5) / 16.0;
+    let noise = fract(52.982918 * fract(0.06711056 * f32(q.x) + 0.00583715 * f32(q.y)));
+    return fract(noise + 0.618034 * frame.haze_march.x);
 }
 
 fn fractal_noise(p: vec3f) -> f32 {

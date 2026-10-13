@@ -11,6 +11,14 @@ pub(crate) fn for_each(count: usize, f: impl Fn(usize) + Sync + Send) {
     (0..count).for_each(f);
 }
 
+/// The results of `f` for the items, in their order.
+pub(crate) fn map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return items.par_iter().map(f).collect();
+    #[cfg(target_arch = "wasm32")]
+    return items.iter().map(f).collect();
+}
+
 /// Calls `f` with the index and the items of every `chunk` long part of `data`.
 pub(crate) fn chunks_mut<T: Send>(
     data: &mut [T],
