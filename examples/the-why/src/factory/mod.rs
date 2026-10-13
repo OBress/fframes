@@ -274,7 +274,7 @@ impl FactorySet {
         let mut camera = lens(24.0)
             .position(position)
             .look_at(target)
-            .shake(t, 0.06, 7);
+            .shake(t * 0.4, 0.004, 7);
         camera.far = 600.0;
         // the focus moves from the arc to the watcher
         let watcher = self.watcher.base.w_axis.truncate() + vec3(0.6, 1.8, 0.0);
@@ -697,11 +697,11 @@ impl FactorySet {
             .lerp(hall_view, smoothstep(1.2, 2.9, t))
             .lerp(line, fall);
         let mm = 35.0 + 100.0 * smoothstep(5.5, 8.0, t);
-        let shake = 0.05 * (1.0 - smoothstep(6.0, 8.0, t));
+        let shake = 0.004 * (1.0 - smoothstep(6.0, 8.0, t));
         let mut camera = lens(mm)
             .position(position)
             .look_at(target)
-            .shake(t, shake, 21);
+            .shake(t * 0.4, shake, 21);
         camera.near = 0.02;
         camera.far = 3000.0;
         // the focus follows the front of the wave, then rests on the line
