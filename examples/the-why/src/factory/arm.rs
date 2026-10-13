@@ -3,7 +3,9 @@
 //! It comes from `examples/arm`, with cold accent lights for the factory.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::sync::Arc;
 
+use fframes_3d::math::noise1;
 use fframes_3d::*;
 
 /// Height of the J1 turret above the floor.
@@ -193,7 +195,8 @@ pub struct Palette {
     pub dark: Material,
     pub yellow: Material,
     pub glass: Material,
-    /// Machined aluminium with a cold rim at its edges, for the jaws of the gripper.
+    /// Dark anodized aluminium with a brushed finish, for the jaws of the gripper. Its maps
+    /// need the UVs of [`brushed`].
     pub aluminium: Material,
     /// The color of the status lights, the base ring and the eye.
     pub accent: Rgb,
@@ -212,9 +215,7 @@ impl Palette {
                 .roughness(0.03)
                 .clearcoat(1.0)
                 .env_intensity(1.6),
-            aluminium: Material::metal(0xa4abb4, 0.36)
-                .env_intensity(0.4)
-                .rim(Rgb::hex(0x9fd4ff) * 0.25, 6.0),
+            aluminium: anodized(),
             accent: Rgb::hex(0x6fb8ff),
         }
     }
@@ -224,6 +225,85 @@ impl Default for Palette {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The length of one repeat of the brushed finish, in meters.
+const BRUSH_REPEAT: f32 = 0.012;
+
+/// Dark grey anodized aluminium with a brushed finish. Fine grooves run along V: they bend
+/// the normal across the grooves and change the roughness from groove to groove. Thus the
+/// reflections stretch into streaks along the brushing. Some diffuse light remains, as in
+/// the dyed oxide layer, so the faces show the fall off of the lamp.
+fn anodized() -> Material {
+    let (w, h) = (256u32, 64u32);
+    // The height of the surface across the grooves at `u` (`0..1`). The two noise values
+    // blend across the repeat, so the texture tiles without a seam.
+    let groove = |seed: u32, u: f32, size: f32| {
+        let x = u * w as f32 / size;
+        let period = w as f32 / size;
+        noise1(seed, x) * (1.0 - u) + noise1(seed, x - period) * u
+    };
+    let height =
+        |u: f32| 0.55 * groove(1, u, 6.0) + 0.3 * groove(2, u, 2.5) + 0.15 * groove(3, u, 1.2);
+    // Some grooves are deeper over a part of their length.
+    let streak = |u: f32, v: f32| 0.6 + 0.4 * noise1(4 + (u * 40.0) as u32, v * 3.0);
+    let normal = Texture::from_fn_data(w, h, false, |u, v| {
+        let du = 1.0 / w as f32;
+        let slope = (height(u + du) - height(u - du)) / (2.0 * du) * 0.0018 * streak(u, v);
+        let n = vec3(-slope, 0.0, 1.0).normalize();
+        let byte = |c: f32| ((c * 0.5 + 0.5) * 255.0).round() as u8;
+        [byte(n.x), byte(n.y), byte(n.z), 255]
+    })
+    .repeat(1.0 / BRUSH_REPEAT, 1.0 / BRUSH_REPEAT);
+    // roughness in green, metalness in blue
+    let rough = Texture::from_fn_data(w, h, false, |u, v| {
+        let r = 0.75 + 0.25 * (0.5 + 0.5 * height(u)) * streak(u, v);
+        [255, (r * 255.0) as u8, 255, 255]
+    })
+    .repeat(1.0 / BRUSH_REPEAT, 1.0 / BRUSH_REPEAT);
+    let mut material = Material::metal(0x656c75, 0.45)
+        .metalness(0.82)
+        .normal_map(Arc::new(normal))
+        .env_intensity(0.8)
+        .rim(Rgb::hex(0x9fd4ff) * 0.05, 5.0);
+    material.metal_rough_map = Some(Arc::new(rough));
+    material
+}
+
+/// The faces of the jaws for the brushed finish, with UVs in meters: V runs along Z, the
+/// length of the jaws, and U across it in the plane of each face. The ends (faces along Z)
+/// take X and Y. The second geometry holds the chamfers, the rounded edges and the darker
+/// insides of the pockets. They are only a few pixels wide, so they get no grooves: a normal
+/// map breaks into dots on them.
+fn brushed(g: &Geometry) -> (Geometry, Geometry) {
+    let flat = |i: usize| g.normals[i].abs().max_element() >= 0.97 && g.colors[i].x >= 1.0;
+    let mut faces = [Vec::new(), Vec::new()];
+    for tri in g.indices.chunks(3) {
+        let side = usize::from(!tri.iter().all(|&i| flat(i as usize)));
+        faces[side].extend(tri.iter().map(|&i| i as usize));
+    }
+    let [brushed, edges] = faces.map(|corners| {
+        let uvs = corners
+            .iter()
+            .map(|&i| {
+                let (p, n) = (g.positions[i], g.normals[i]);
+                if n.z.abs() > 0.7 {
+                    vec2(p.x, p.y)
+                } else {
+                    vec2(p.dot(Vec3::Z.cross(n).normalize_or(Vec3::X)), p.z)
+                }
+            })
+            .collect();
+        let mut part = Geometry::new(
+            corners.iter().map(|&i| g.positions[i]).collect(),
+            corners.iter().map(|&i| g.normals[i]).collect(),
+            uvs,
+            (0..corners.len() as u32).collect(),
+        );
+        part.colors = corners.iter().map(|&i| g.colors[i]).collect();
+        part
+    });
+    (brushed, edges)
 }
 
 /// The convex hull of circles as a polygon. It gives cast parts with round ends.
@@ -480,7 +560,8 @@ fn motor(
 /// Z = 0.275, sorted by material.
 struct Jaw {
     metal: Geometry,
-    pockets: Geometry,
+    edges: Geometry,
+    etched: Geometry,
     steel: Geometry,
     rubber: Geometry,
 }
@@ -488,10 +569,12 @@ struct Jaw {
 fn finger_parts() -> Jaw {
     // the carriage on the rail, with chamfered edges along Z
     let carriage =
-        Geometry::extrude_segments(&Geometry::rect_shape(0.034, 0.066, 0.004), 0.05, 0.0015, 1)
+        Geometry::extrude_segments(&Geometry::rect_shape(0.034, 0.066, 0.004), 0.05, 0.0015, 3)
             .translate(0.017, 0.0, 0.16);
-    // The finger tapers to the tip. Its profile in the XZ plane is extruded along Y.
-    let profile = [
+    // The finger tapers to the tip. Its profile in the XZ plane is extruded along Y. Two
+    // pockets go through it. A floor 3 mm under each face closes them, so they are milled
+    // pockets with lit walls and a darker floor.
+    let profile = vec![
         vec2(0.0, 0.18),
         vec2(0.024, 0.18),
         vec2(0.024, 0.2),
@@ -499,18 +582,47 @@ fn finger_parts() -> Jaw {
         vec2(0.009, 0.275),
         vec2(0.0, 0.275),
     ];
-    let finger = Geometry::extrude_segments(&profile, 0.05, 0.002, 1).rotate_x(FRAC_PI_2);
-    // two pockets milled into the top face, and the same on the bottom face
-    let pockets = [-1.0f32, 1.0].into_iter().flat_map(|y| {
-        [
-            Geometry::rounded_box(0.006, 0.001, 0.026, 0.002, 1).translate(0.017, y * 0.025, 0.205),
-            Geometry::rounded_box(0.004, 0.001, 0.014, 0.0015, 1).translate(
-                0.0125,
-                y * 0.025,
-                0.243,
-            ),
-        ]
-    });
+    let pocket = |x: f32, z: f32, w: f32, l: f32| -> Vec<Vec2> {
+        let mut hole: Vec<Vec2> = Geometry::rect_shape(w, l, w * 0.3)
+            .into_iter()
+            .map(|p| p + vec2(x, z))
+            .collect();
+        hole.reverse();
+        hole
+    };
+    let pockets = [(0.017, 0.205, 0.006, 0.026), (0.0125, 0.243, 0.004, 0.014)];
+    let shape = Shape {
+        outer: profile,
+        holes: pockets
+            .iter()
+            .map(|&(x, z, w, l)| pocket(x, z, w, l))
+            .collect(),
+    };
+    let mut finger = Geometry::extrude_shape(&shape, 0.05, 0.0015, 3).rotate_x(FRAC_PI_2);
+    // The walls of the pockets get less light in a real pocket, so they are darker.
+    let in_pocket = |p: Vec3| {
+        pockets.iter().any(|&(x, z, w, l)| {
+            (p.x - x).abs() < w * 0.5 + 0.0002 && (p.z - z).abs() < l * 0.5 + 0.0002
+        })
+    };
+    finger.colors = finger
+        .positions
+        .iter()
+        .zip(&finger.normals)
+        .map(|(p, n)| {
+            let shade = if in_pocket(*p) && n.y.abs() < 0.9 {
+                0.3
+            } else {
+                1.0
+            };
+            vec4(shade, shade, shade, 1.0)
+        })
+        .collect();
+    let floors = Geometry::merge(pockets.iter().flat_map(|&(x, z, w, l)| {
+        [-1.0f32, 1.0]
+            .map(|y| Geometry::cuboid(w - 0.0002, 0.001, l - 0.0002).translate(x, y * 0.0215, z))
+    }))
+    .with_color(Rgb::linear(0.16, 0.16, 0.16));
     // socket head cap screws: a steel head with a dark hex socket
     let screw = |at: Vec3, r: f32| {
         Geometry::merge([
@@ -526,7 +638,7 @@ fn finger_parts() -> Jaw {
         screw(vec3(0.009, 0.033, 0.147), 0.0035),
         screw(vec3(0.025, 0.033, 0.173), 0.0035),
         screw(vec3(0.007, 0.025, 0.191), 0.0024),
-        screw(vec3(0.017, 0.025, 0.191), 0.0024),
+        screw(vec3(0.004, 0.025, 0.222), 0.0024),
     ]);
     // the piston rod goes into the cylinder on the gripper
     let piston = rod(0.003, 0.05, vec3(0.059, 0.024, 0.156), Vec3::X, 10);
@@ -553,25 +665,21 @@ fn finger_parts() -> Jaw {
         0.0022,
         8,
     );
-    // a raised spine along the top and the bottom of the finger
-    let spines = [-1.0f32, 1.0].map(|y| {
-        Geometry::extrude_segments(&Geometry::rect_shape(0.008, 0.06, 0.0015), 0.003, 0.0008, 1)
-            .rotate_x(FRAC_PI_2)
-            .translate(0.006, y * 0.026, 0.222)
-    });
-    // a scale of fine marks along the inner edge of the top face
+    // a scale of fine etched marks along the inner edge of the top face
     let marks = (0..9).map(|i| {
-        let long = if i % 4 == 0 { 0.003 } else { 0.0018 };
-        Geometry::cuboid(long, 0.0006, 0.0005).translate(
-            0.0006 + long * 0.5,
-            0.0252,
+        let long = if i % 4 == 0 { 0.0028 } else { 0.0016 };
+        Geometry::cuboid(long, 0.0002, 0.0004).translate(
+            0.0012 + long * 0.5,
+            0.0251,
             0.196 + i as f32 * 0.0045,
         )
     });
-    let [top, bottom] = spines;
+    // The other parts get white vertex colors in the merge, so only the floors are darker.
+    let (metal, edges) = brushed(&Geometry::merge([carriage, finger, floors]));
     Jaw {
-        metal: Geometry::merge([carriage, finger, top, bottom]),
-        pockets: Geometry::merge(pockets.chain(marks)),
+        metal,
+        edges,
+        etched: Geometry::merge(marks),
         steel: Geometry::merge([screws, piston]),
         rubber: Geometry::merge([pad, cable]),
     }
@@ -1171,11 +1279,16 @@ impl Arm {
         // pockets, cap screws, a ribbed rubber pad at the tip, the piston rod of its
         // cylinder and a sensor cable. They are built for the jaw on +X and mirrored.
         let jaw = finger_parts();
+        // the edges of the jaws: the same metal without the grooves
+        let mut edge = p.aluminium.clone();
+        edge.normal_map = None;
+        edge.metal_rough_map = None;
         let fingers = [-1.0f32, 1.0].map(|x| {
             let finger = scene.add_to(j6, Node::group());
             for (geometry, material) in [
                 (&jaw.metal, &p.aluminium),
-                (&jaw.pockets, &p.graphite),
+                (&jaw.edges, &edge),
+                (&jaw.etched, &p.rubber),
                 (&jaw.steel, &p.chrome),
                 (&jaw.rubber, &p.rubber),
             ] {

@@ -22,6 +22,12 @@ const ARRIVE: f32 = 5.6;
 const TOUCH: f32 = 7.3;
 const RELEASE: f32 = 7.75;
 const LEAVE: f32 = 8.0;
+/// A small work light in the J6 frame: 2.5 cm past the tips of the jaws and 13 cm to the
+/// side of the eye.
+const WORK_LIGHT: Vec3 = Vec3::new(0.0, 0.13, 0.30);
+/// The sun of the hall is out and the shadows come from the inspection lamp, seconds into
+/// shot 3.
+const KEY: f32 = WHIP + 0.5;
 /// The camera of the macro view in the J6 frame: 15 cm from the tool axis on the side of the
 /// eye.
 const MACRO: Vec3 = Vec3::new(0.0, 0.16, 0.11);
@@ -58,7 +64,7 @@ impl FactorySet {
         let jig = self.watcher.base.transform_point3(JIG);
         // the shadows: of the hall for the light shafts behind the engineer, then of the
         // chip and the fingers on the board
-        let bounds = if t < WHIP + 0.6 {
+        let bounds = if t < KEY {
             Aabb {
                 min: vec3(-30.0, 0.0, hall::CATWALK_Z - 100.0),
                 max: vec3(30.0, hall::WALL + 4.0, WATCHER_Z + 10.0),
@@ -90,7 +96,9 @@ impl FactorySet {
         // The inspection lamp lights the board from the far side, so the pads and the
         // traces glint toward the eye. It goes off in the dive.
         let on = smoothstep(WHIP, ARRIVE, t) * (1.0 - smoothstep(8.2, 9.0, t));
-        let lamp = jig + vec3(0.16, 0.4, 0.42);
+        // It stands high on the side, so that the board and the chip do not mirror it into
+        // the eye.
+        let lamp = jig + vec3(0.3, 0.6, 0.45);
         // The sky of the hall fades first, then the studio of shot 4 comes in its place.
         if let Environment::Map { intensity, .. } = &mut scene.environment {
             *intensity = SKY * (1.0 - smoothstep(8.6, 8.95, t));
@@ -120,7 +128,39 @@ impl FactorySet {
         let lamp_node = &mut scene[self.lamp];
         lamp_node.position = lamp;
         lamp_node.object =
-            Object::Light(Light::spot(0xe8f2ff, 1.0 * on, 0.5, 0.7).pointing(jig - lamp));
+            Object::Light(Light::spot(0xe8f2ff, 2.0 * on, 0.5, 0.7).pointing(jig - lamp));
+        // The work light lights the faces of the jaws that the camera sees. Their brushed
+        // faces catch it in streaks that fade toward the edges of its cone.
+        let flange = self.watcher.base * arm::flange(&q);
+        let work = flange.transform_point3(WORK_LIGHT);
+        if on > 0.0 {
+            scene.add(
+                Node::light(
+                    Light::spot(0xe4ecf5, 0.016 * on, 0.9, 0.9)
+                        .pointing(flange.transform_point3(vec3(0.0, 0.0, 0.22)) - work),
+                )
+                .at(work.x, work.y, work.z),
+            );
+        }
+        // The jig is in the shade of the roof: the sun of the hall goes out in the swing. Then
+        // the shadow casting light comes from the lamp too. Thus the jaws and the chip throw
+        // soft contact shadows on the board.
+        let sun = &mut scene[self.sun].object;
+        if t < KEY {
+            if let Object::Light(light) = sun {
+                *light.intensity_mut() *= 1.0 - smoothstep(WHIP, KEY, t);
+            }
+        } else {
+            *sun = Object::Light(
+                Light::directional(0xe8f2ff, 2.2 * on, lamp - jig).with_shadow(Shadow {
+                    map_size: 4096,
+                    softness: 6.0,
+                    bias: 4.0,
+                    bounds: Some(bounds),
+                    ..Default::default()
+                }),
+            );
+        }
         (scene, camera)
     }
 
