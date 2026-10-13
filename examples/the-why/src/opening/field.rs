@@ -43,6 +43,35 @@ pub const BLEED: u32 = 0x0a1424;
 pub const BLEED_LIGHT: f32 = 0.35;
 /// The light of a screen on the floor below it, at the brightest point.
 const POOL_LIGHT: f32 = 0.07;
+/// The colors of the code on the screens (sRGB) and the part of the screens with each
+/// color. All are cold: warm light is for human intent, later in the film.
+const TINTS: [(u32, f32); 5] = [
+    (0x9cc4ff, 0.45),
+    (0xbcd6ff, 0.2),
+    (0x7fb4ff, 0.15),
+    (0xa8e2ff, 0.12),
+    (0xe2ecff, 0.08),
+];
+/// The code of the main screen in the wide views: a cold white, brighter than the others.
+const HERO: u32 = 0xeef4ff;
+const HERO_LIGHT: f32 = 7.0;
+/// The light of the panel of the main screen in the wide views.
+const HERO_PANEL: f32 = 0.04;
+/// The light of the small lamps on the floor along the aisles.
+const MARKER_LIGHT: f32 = 2.5;
+
+/// The state of the main screen in the field at one moment.
+pub struct MainScreen {
+    /// The page line at the top of the screen.
+    pub lines: f32,
+    /// The light of the page on the screen. It is 0 where meshes show the text.
+    pub code: f32,
+    /// The light that the screen throws on the floor.
+    pub pool: f32,
+    /// How much the screen stands out of the field in the wide views, `0..1`: white code
+    /// on a glowing panel, so the eye finds it among the thousands.
+    pub hero: f32,
+}
 
 /// One monitor of the field.
 struct Monitor {
@@ -56,6 +85,8 @@ struct Monitor {
     phase: f32,
     /// The light of the screen relative to the others.
     light: f32,
+    /// The color of the code, linear.
+    tint: Rgb,
 }
 
 /// The monitors and the meshes of their screens.
@@ -68,9 +99,17 @@ pub struct Field {
     panel: Arc<Geometry>,
     /// The light of a screen on the floor.
     pool: Arc<Geometry>,
+    /// A small lamp on the floor.
+    marker_lamp: Arc<Geometry>,
+    /// The small lamps on the floor along the aisles, and their distances from the main
+    /// monitor (`0..1`).
+    markers: Vec<(Mat4, f32)>,
     content: Material,
+    /// The code of the main screen in the wide views.
+    hero: Material,
     bleed: Material,
     pool_light: Material,
+    marker: Material,
 }
 
 impl Field {
@@ -82,15 +121,30 @@ impl Field {
                     continue;
                 }
                 let seed = ((row + FRONT) * (2 * SIDE + 1) + column + SIDE) as u32;
-                let x =
-                    column as f32 * COLUMN_PITCH + (column + 3).div_euclid(BLOCK) as f32 * AISLE;
+                let x = column_x(column);
                 monitors.push(Monitor {
                     position: vec3(x, SCREEN_Y, -(row as f32) * ROW_PITCH),
-                    distance: (x.hypot(row as f32 * ROW_PITCH) / 120.0).min(1.0),
+                    distance: distance(x, row as f32 * ROW_PITCH),
                     ahead: hash(seed * 13) * 2.0,
                     phase: (hash(seed * 7 + 3) * PAGE_LINES as f32).floor(),
-                    light: 0.75 + 0.5 * hash(seed * 5 + 1),
+                    light: 0.55 + 0.8 * hash(seed * 5 + 1).powi(2),
+                    tint: tint(hash(seed * 11 + 2)),
                 });
+            }
+        }
+        // two lines of lamps along each aisle, one lamp every half row
+        let mut markers = Vec::new();
+        for column in -SIDE..SIDE {
+            if (column + 3 + 1).rem_euclid(BLOCK) != 0 {
+                continue;
+            }
+            let left = column_x(column) + 1.0;
+            let right = column_x(column + 1) - 1.0;
+            for half_row in -2 * FRONT..=2 * BACK {
+                let z = -(half_row as f32) * ROW_PITCH * 0.5 - ROW_PITCH * 0.25;
+                for x in [left, right] {
+                    markers.push((Mat4::from_translation(vec3(x, 0.006, z)), distance(x, z)));
+                }
             }
         }
         let (center, size) = terminal::text_area();
@@ -113,9 +167,15 @@ impl Field {
                 -SCREEN_Y + 0.004,
                 POOL * 0.5,
             )),
-            content: Material::unlit(Rgb::hex(CODE) * CODE_LIGHT).map(page),
+            marker_lamp: Arc::new(Geometry::cuboid(0.05, 0.012, 0.3)),
+            markers,
+            content: Material::unlit(Rgb::WHITE * CODE_LIGHT).map(page.clone()),
+            hero: Material::unlit(Rgb::hex(HERO) * HERO_LIGHT)
+                .map(page)
+                .additive(),
             bleed: Material::unlit(Rgb::hex(BLEED) * BLEED_LIGHT),
-            pool_light: Material::glow(CODE, POOL_LIGHT).map(pool()),
+            pool_light: Material::glow(Rgb::WHITE, POOL_LIGHT).map(pool()),
+            marker: Material::glow(0xd8e6ff, MARKER_LIGHT),
         }
     }
 
@@ -139,33 +199,48 @@ impl Field {
         }
     }
 
-    /// Adds the screens of the monitors at `t` seconds: the panels, the code and the light
-    /// on the floor. The main monitor shows the page from line `main_lines` with the light
-    /// `main_code`, and lights the floor with `main_pool`. `adapt` multiplies the light of
-    /// the code.
-    pub fn add_screens(
-        &self,
-        scene: &mut Scene,
-        t: f32,
-        main_lines: f32,
-        main_code: f32,
-        main_pool: f32,
-        adapt: f32,
-    ) {
+    /// Adds the screens of the monitors at `t` seconds: the panels, the code, the light on
+    /// the floor and the lamps along the aisles. `adapt` multiplies the light of the code.
+    pub fn add_screens(&self, scene: &mut Scene, t: f32, main: &MainScreen, adapt: f32) {
         let count = self.windows.len();
-        let window = |lines: f32| (lines * STEPS as f32).floor() as i64;
+        let window = |lines: f32| (lines * STEPS as f32).floor().rem_euclid(count as f32) as usize;
         let mut windows: Vec<(Vec<Mat4>, Vec<Rgb>)> = vec![(Vec::new(), Vec::new()); count];
         let mut panels = (Vec::new(), Vec::new());
         let mut pools = (Vec::new(), Vec::new());
-        let main = Mat4::from_translation(vec3(0.0, SCREEN_Y, 0.0));
-        if main_code > 0.0 {
-            let k = window(main_lines).rem_euclid(count as i64) as usize;
-            windows[k].0.push(main);
-            windows[k].1.push(Rgb::WHITE * (main_code * adapt));
+        let at = Mat4::from_translation(vec3(0.0, SCREEN_Y, 0.0));
+        if main.code > 0.0 {
+            // the main screen fades from the code of the field to the white of the hero
+            let k = window(main.lines);
+            windows[k].0.push(at);
+            windows[k]
+                .1
+                .push(Rgb::hex(CODE) * (main.code * adapt * (1.0 - main.hero)));
+            if main.hero > 0.0 {
+                // white code and a glow over the whole screen, added to the light of the
+                // screen
+                let light = main.code * adapt * main.hero;
+                let code = self
+                    .hero
+                    .clone()
+                    .color(Rgb::hex(HERO) * (HERO_LIGHT * light));
+                let panel = Material::glow(HERO, HERO_PANEL * light);
+                for (geometry, material, z) in [
+                    (&self.windows[k], code, 0.0003),
+                    (&self.panel, panel, 0.001),
+                ] {
+                    scene.add(
+                        Node::mesh(geometry.clone(), material)
+                            .at(0.0, SCREEN_Y, z)
+                            .shadows(false, false),
+                    );
+                }
+            }
         }
-        if main_pool > 0.0 {
-            pools.0.push(main);
-            pools.1.push(Rgb::WHITE * main_pool);
+        if main.pool > 0.0 {
+            pools.0.push(at);
+            pools
+                .1
+                .push(Rgb::hex(CODE) * (main.pool * (1.0 + 2.0 * main.hero)));
         }
         for m in &self.monitors {
             let light = screen_light(t, m.distance) * m.light;
@@ -177,11 +252,19 @@ impl Field {
                 continue;
             }
             let lines = super::written(t.min(super::ANSWER_END) + m.ahead) + m.phase;
-            let k = window(lines).rem_euclid(count as i64) as usize;
+            let k = window(lines);
             windows[k].0.push(at);
-            windows[k].1.push(Rgb::WHITE * (light * adapt));
+            windows[k].1.push(m.tint * (light * adapt));
             pools.0.push(at);
-            pools.1.push(Rgb::WHITE * light);
+            pools.1.push(m.tint * light);
+        }
+        let mut markers = (Vec::new(), Vec::new());
+        for (at, distance) in &self.markers {
+            let light = screen_light(t, *distance);
+            if light > 0.0 {
+                markers.0.push(*at);
+                markers.1.push(Rgb::WHITE * light);
+            }
         }
         let mut add =
             |geometry: &Arc<Geometry>, material: &Material, (at, colors): (Vec<Mat4>, Vec<Rgb>)| {
@@ -198,6 +281,7 @@ impl Field {
             };
         add(&self.panel, &self.bleed, panels);
         add(&self.pool, &self.pool_light, pools);
+        add(&self.marker_lamp, &self.marker, markers);
         for (k, list) in windows.into_iter().enumerate() {
             add(&self.windows[k], &self.content, list);
         }
@@ -265,4 +349,27 @@ pub fn screen_light(t: f32, distance: f32) -> f32 {
     let on = super::ANSWER_START + 0.05 + 0.5 * distance;
     let off = super::DARK_START + 0.32 * (1.0 - distance);
     smoothstep(on, on + 0.12, t) * (1.0 - smoothstep(off, off + 0.08, t))
+}
+
+/// The X position of the monitors in `column`, in meters. Blocks of [`BLOCK`] monitors
+/// have aisles between them. The main monitor is in column 0.
+fn column_x(column: i32) -> f32 {
+    column as f32 * COLUMN_PITCH + (column + 3).div_euclid(BLOCK) as f32 * AISLE
+}
+
+/// The distance of `x`, `z` from the main monitor, `0..1` of the farthest monitors.
+fn distance(x: f32, z: f32) -> f32 {
+    (x.hypot(z) / 120.0).min(1.0)
+}
+
+/// The color of the code of a screen (linear) for the random value `pick` in `0..1`.
+fn tint(pick: f32) -> Rgb {
+    let mut sum = 0.0;
+    for (hex, part) in TINTS {
+        sum += part;
+        if pick < sum {
+            return Rgb::hex(hex);
+        }
+    }
+    Rgb::hex(TINTS[0].0)
 }

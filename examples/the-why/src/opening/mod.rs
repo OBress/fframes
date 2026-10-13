@@ -15,7 +15,7 @@ use fframes_3d::*;
 
 use crate::assets::Assets;
 use crate::look;
-use field::{Field, SCREEN_Y};
+use field::{Field, MainScreen, SCREEN_Y};
 use terminal::{ADVANCE, EM, LINE, QUESTION, ROWS, SCREEN, Terminal};
 
 /// The time when the person starts to type, in seconds.
@@ -31,11 +31,15 @@ const DARK_START: f32 = 5.72;
 /// The cursor grows into light from this time.
 const GROW_START: f32 = 6.3;
 /// The light of the cursor fills the frame from this time.
-const FLASH_START: f32 = 6.75;
+const FLASH_START: f32 = 6.62;
+/// The frame is white from this time.
+const FLASH_END: f32 = 6.93;
 /// The cursor burns like a welding arc from this time: it flickers and throws sparks.
 const ARC_START: f32 = 6.45;
 /// The length of the shot.
 const END: f32 = 7.0;
+/// The floor reflects the scene from this time.
+const REFLECT_START: f32 = 5.95;
 
 /// The center of the main screen in the world. The other monitors stand around it.
 const MAIN: Vec3 = vec3(0.0, SCREEN_Y, 0.0);
@@ -53,6 +57,9 @@ const CURSOR_COLOR: u32 = 0xdcebff;
 const DUST: u32 = 220;
 /// The specks of dust on the glass of the main screen.
 const SPECKS: u32 = 140;
+/// The large motes of dust between the lens and the screen. They are far out of focus, so
+/// the lens draws them as soft discs.
+const BOKEH: u32 = 60;
 /// The camera is too far from the dust after this time.
 const DUST_END: f32 = 4.6;
 
@@ -83,7 +90,14 @@ fn grow(t: f32) -> f32 {
 /// The flash at the end of the shot, `0..1`: the light of the cursor fills the air and the
 /// frame turns white.
 fn flash(t: f32) -> f32 {
-    smoothstep(FLASH_START, END, t).powi(2)
+    smoothstep(FLASH_START, FLASH_END, t)
+}
+
+/// The light of the air in the flash. It grows by the same factor in each frame, from 0.02
+/// to 4, so the frame brightens evenly after the tone mapping.
+fn air_glow(t: f32) -> f32 {
+    let progress = ((t - FLASH_START) / (FLASH_END - FLASH_START)).clamp(0.0, 1.0);
+    0.02 * 200f32.powf(progress) * smoothstep(FLASH_START - 0.02, FLASH_START + 0.04, t)
 }
 
 /// The text of the main terminal at `t`: the typed characters, the written answer lines,
@@ -221,6 +235,8 @@ pub struct OpeningSet {
     dust: Vec<Vec3>,
     /// The dust on the glass of the main screen, in screen space.
     specks: Vec<Vec3>,
+    /// The large motes near the lens, in screen space.
+    bokeh: Vec<Vec3>,
 }
 
 impl OpeningSet {
@@ -372,35 +388,38 @@ impl OpeningSet {
                     terminal::baseline(5.0).extend(0.0) + vec3(18.0 * EM, 0.0, 0.0),
                     2.3,
                     8.0,
-                    4.5,
+                    // high enough that the pull back passes over the monitor in front
+                    9.0,
                     50.0,
-                    5.0,
+                    8.0,
                 ),
             ),
             // the main screen stays the subject while the field opens around it
             (
                 5.1,
-                pose(vec3(0.0, -0.15, -2.0), 18.6, 11.0, 10.0, 38.0, 4.0),
+                pose(vec3(0.0, -0.15, -2.0), 18.6, 11.0, 10.0, 38.0, 7.0),
             ),
             (
                 5.7,
-                pose(vec3(0.0, -0.6, -16.0), 50.0, 14.0, 14.0, 32.0, 3.0),
+                pose(vec3(0.0, -0.6, -16.0), 50.0, 14.0, 14.0, 32.0, 5.0),
             ),
             (
                 5.85,
-                pose(vec3(0.3, -0.6, -16.0), 49.0, 14.3, 14.2, 32.0, 3.0),
+                pose(vec3(0.3, -0.6, -16.0), 49.0, 14.3, 14.2, 32.0, 5.0),
             ),
-            (6.2, pose(end, 27.7, 11.0, 20.0, 34.0, 3.0)),
-            (6.6, pose(end, 2.34, 6.0, 9.0, 40.0, 3.0)),
-            (6.85, pose(end, 0.157, 2.0, 3.0, 45.0, 2.5)),
-            (6.95, pose(end, 0.041, 1.0, 1.0, 45.0, 2.0)),
+            // The rush passes through the gap between the monitor in front of the main
+            // monitor and its left neighbor, 3.2 m in front of the cursor.
+            (6.2, pose(end, 27.7, 3.0, 20.0, 34.0, 3.0)),
+            (6.6, pose(end, 2.34, -9.0, 9.0, 40.0, 3.0)),
+            (6.85, pose(end, 0.157, -2.0, 3.0, 45.0, 2.5)),
+            (6.95, pose(end, 0.041, -0.5, 1.0, 45.0, 2.0)),
             (END, pose(end, 0.02, 0.0, 0.5, 45.0, 2.0)),
         ]
         .into_iter()
         .map(|(t, pose)| (t, pose.values()))
         .collect();
 
-        Self {
+        let mut set = Self {
             scene,
             main,
             cursor_light,
@@ -412,7 +431,10 @@ impl OpeningSet {
             keys,
             dust,
             specks,
-        }
+            bokeh: Vec::new(),
+        };
+        set.bokeh = set.bokeh_motes();
+        set
     }
 
     /// The renderer of the shot for pictures of `width` x `height` pixels.
@@ -432,6 +454,27 @@ impl OpeningSet {
         }))
     }
 
+    /// The large motes near the lens. Each one is where the camera sees it at a moment of
+    /// the pull back: between 10 and 35 percent of the way to what the camera looks at, at a
+    /// place in the frame. The motes stay in place, so the pull back carries them through
+    /// the frame.
+    fn bokeh_motes(&self) -> Vec<Vec3> {
+        (0..BOKEH)
+            .map(|i| {
+                let r = |k: u32| hash(i * 5 + 70_001 + k);
+                let (pose, position) = self.place(DUST_END * 0.75 * r(0));
+                let camera = look::lens(pose.lens)
+                    .position(position)
+                    .look_at(MAIN + pose.target);
+                let depth = pose.distance * (0.1 + 0.25 * r(1));
+                let half = (camera.fov.to_radians() * 0.5).tan() * depth;
+                let offset = camera.right() * ((r(2) * 2.0 - 1.0) * half * look::ASPECT)
+                    + camera.up_vector() * ((r(3) * 2.0 - 1.0) * half);
+                position + camera.forward() * depth + offset - MAIN
+            })
+            .collect()
+    }
+
     /// The pose of the camera at `t` and its position in the world.
     fn place(&self, t: f32) -> (Pose, Vec3) {
         let pose = self.pose(t);
@@ -448,12 +491,15 @@ impl OpeningSet {
     pub fn moment(&self, t: f32) -> (Scene, Camera) {
         let (pose, position) = self.place(t);
         let target = MAIN + pose.target;
+        // In the wide views the camera looks past the main screen, and the focus stays on
+        // the screen.
+        let focus = MAIN + pose.target * vec3(1.0, 1.0, 0.0);
         let camera = look::lens(pose.lens)
             .position(position)
             .look_at(target)
             .clip((pose.distance * 0.05).min(0.5), 1200.0)
             .shake(t, 0.0012, 11)
-            .focus_on(target, pose.blur);
+            .focus_on(focus, pose.blur);
 
         let mut scene = self.scene.clone();
         let text = Text::at(t);
@@ -467,25 +513,26 @@ impl OpeningSet {
         let dark = 1.0 - smoothstep(DARK_START + 0.3, DARK_START + 0.4, t);
         self.add_text(&mut scene, &text, near * dark * adapt);
         let glow = smoothstep(ANSWER_START, ANSWER_START + 0.8, t) * dark;
-        self.field.add_screens(
-            &mut scene,
-            t,
-            text.count - ROWS as f32,
-            (1.0 - near) * dark,
-            glow,
-            adapt,
-        );
+        let main = MainScreen {
+            lines: text.count - ROWS as f32,
+            code: (1.0 - near) * dark,
+            pool: glow,
+            hero: smoothstep(4.7, 5.2, t),
+        };
+        self.field.add_screens(&mut scene, t, &main, adapt);
 
         // the cursor and its light
         let cursor = text.cursor();
         let arc = smoothstep(ARC_START, ARC_START + 0.15, t);
-        let flicker = 1.0 + arc * 0.35 * noise1(23, t * 40.0);
-        let light = blink(t) * (1.0 + 4.0 * grow(t) + 600.0 * flash(t)) * flicker;
+        // the flicker calms down before the flash, so the light grows without dips
+        let calm = 1.0 - smoothstep(FLASH_START - 0.06, FLASH_START + 0.02, t);
+        let flicker = 1.0 + arc * calm * 0.35 * noise1(23, t * 40.0);
+        let light = blink(t) * (1.0 + 4.0 * grow(t) + 300.0 * flash(t).powi(2)) * flicker;
         if light > 0.0 {
             // The pixels of the cursor melt into one light in the flash, and the light grows.
             let flash = flash(t);
-            let melt = smoothstep(FLASH_START - 0.15, FLASH_START + 0.1, t);
-            let size = vec3(1.0 + 10.0 * flash, 1.0 + 5.0 * flash, 1.0);
+            let melt = smoothstep(FLASH_START - 0.05, FLASH_START + 0.15, t);
+            let size = vec3(1.0 + 10.0 * flash.powi(2), 1.0 + 5.0 * flash.powi(2), 1.0);
             scene.add_to(
                 self.main,
                 Node::mesh(
@@ -515,18 +562,17 @@ impl OpeningSet {
         // The light is just behind the glass, so the glass does not reflect it.
         let cursor = cursor.extend(0.003);
         scene[self.cursor_light].position = cursor;
-        // When the screens go dark, the cursor is the only light of the field. Near the
-        // end the camera is close to the frame of the monitor, and the light dims, so the
-        // frame does not burn white.
+        // When the screens go dark, the cursor is the only light of the field. Closer than
+        // 3 m the light dims with the square of the distance of the camera, so its halo in
+        // the air keeps its brightness and the frame of the monitor does not burn white.
+        // The flash then comes from the air, see `atmosphere`.
         let alone = smoothstep(DARK_START + 0.1, DARK_START + 0.6, t);
+        let near = (pose.distance / 3.0).min(1.0).powi(2);
         *scene[self.cursor_light]
             .light_mut()
             .expect("the cursor light is a light")
             .intensity_mut() = (0.03 * blink(t)
-            + 16.0
-                * alone
-                * (1.0 + grow(t))
-                * (1.0 - smoothstep(FLASH_START, FLASH_START + 0.15, t)))
+            + 16.0 * alone * (1.0 + grow(t)) * near * (1.0 - flash(t)).powi(2))
             * flicker;
         *scene[self.hall_light]
             .light_mut()
@@ -550,7 +596,12 @@ impl OpeningSet {
                 Blending::Additive,
             ));
         }
-        scene.atmosphere = Some(atmosphere(t, far, flash(t)));
+        scene.atmosphere = Some(atmosphere(t, far, pose.distance));
+        // The floor shows the light of the cursor in the rush. Before, its reflections do
+        // not show and cost a second view.
+        if t < REFLECT_START {
+            scene.reflector = None;
+        }
         (scene, camera)
     }
 
@@ -638,7 +689,7 @@ impl OpeningSet {
                 noise1(s + 1, t * 0.2) + 0.2 * t,
                 noise1(s + 2, t * 0.22),
             ) * 0.01;
-            mote(*base + drift, 0.00004 * (0.5 + hash(s + 7)), 40.0)
+            mote(*base + drift, 0.00004 * (0.5 + hash(s + 7)), 15.0)
         });
         let specks = self.specks.iter().enumerate().filter_map(|(i, p)| {
             mote(
@@ -647,17 +698,44 @@ impl OpeningSet {
                 30.0 * hash(i as u32 + 9),
             )
         });
-        Node::particles(motes.chain(specks).collect(), Blending::Additive)
+        // The large motes near the lens are discs as wide as their blur. Each disc keeps a
+        // faint light, so the eye sees the air between the lens and the screen.
+        let discs = self.bokeh.iter().enumerate().filter_map(|(i, base)| {
+            let s = i as u32 * 5 + 3;
+            let p = *base + vec3(noise1(s, t * 0.3), noise1(s + 1, t * 0.25), 0.0) * 0.01;
+            let world = MAIN + p;
+            let depth = (world - camera.position).dot(forward);
+            let disc = blur * (1.0 - focus / depth).abs();
+            if depth < camera.near * 2.0 || disc < 6.0 {
+                return None;
+            }
+            let size = disc * pixel * depth;
+            let to_cursor = (p - cursor).length_squared();
+            let lit = 0.04 + 0.15 * light / (to_cursor / 0.01 + 1.0) + 0.1 * glow;
+            Some(Particle::new(
+                world,
+                size,
+                Rgb::hex(CURSOR_COLOR) * (lit * (0.6 + 0.8 * hash(s + 2))),
+            ))
+        });
+        Node::particles(
+            motes.chain(specks).chain(discs).collect(),
+            Blending::Additive,
+        )
     }
 
     /// Motion blur samples at `t`: the scrolling code and the fast moves of the camera blur.
+    /// The pull back moves the screens near the camera fast, so it takes many samples.
+    /// Without the reflection of the floor they cost less.
     pub fn shutter(&self, t: f32) -> usize {
-        if t < ANSWER_START + 0.4 {
+        if t < ANSWER_START + 0.2 {
             1
-        } else if t < 4.3 {
-            3
+        } else if t < 4.0 {
+            4
+        } else if t < REFLECT_START {
+            7
         } else {
-            5
+            6
         }
     }
 
@@ -670,22 +748,22 @@ impl OpeningSet {
 
 /// The air at `t`. `far` is `0..1` from a camera at the screen to a camera far away. Near
 /// the screen the haze is dense and fine, so the light of the cursor shows in it. In the
-/// field it is thin and wide: the glow of thousands of screens. `flash` fills the air with
-/// the light of the cursor.
-fn atmosphere(t: f32, far: f32, flash: f32) -> Atmosphere {
+/// field it is thin and wide: the glow of thousands of screens. In the flash the air
+/// between the lens and the cursor, `distance` meters, fills with light, so the
+/// brightness of the frame follows [`air_glow`].
+fn atmosphere(t: f32, far: f32, distance: f32) -> Atmosphere {
     // after the pull back the air stays thin, also when the camera rushes back in
     let wide = far.max(smoothstep(4.3, 4.9, t));
     let lerp = |a: f32, b: f32| a + (b - a) * wide;
     let screens = field::screen_light(t, 0.3);
     Atmosphere {
-        density: lerp(0.3, 0.014) + 2.5 * flash,
+        density: lerp(0.3, 0.02) + 2.5 * flash(t).powi(2) / distance.max(0.02),
         color: Rgb::hex(0xcfe4ff),
         base: SCREEN_Y,
         falloff: lerp(0.0, 0.25),
         anisotropy: 0.55,
-        // In the flash the air glows, also the thin air between the lens and the screen.
-        ambient: Rgb::linear(0.012, 0.024, 0.055) * (wide * screens)
-            + Rgb::hex(CURSOR_COLOR) * (25.0 * flash),
+        ambient: Rgb::linear(0.018, 0.036, 0.08) * (wide * screens)
+            + Rgb::hex(CURSOR_COLOR) * air_glow(t),
         noise: 0.6,
         noise_size: lerp(0.05, 6.0),
         offset: vec3(0.02 * t, 0.01 * t, 0.0),

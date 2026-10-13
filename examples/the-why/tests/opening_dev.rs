@@ -170,10 +170,14 @@ fn path() {
         let d = camera.target - camera.position;
         let azimuth = (-d.x).atan2(-d.z).to_degrees();
         let elevation = (-d.y / distance).asin().to_degrees();
+        let p = camera.position;
         println!(
-            "{t:.4} {:.5} {azimuth:.3} {elevation:.3} {:.3}",
+            "{t:.4} {:.5} {azimuth:.3} {elevation:.3} {:.3} {:.3} {:.3} {:.3}",
             distance.ln(),
-            camera.fov
+            camera.fov,
+            p.x,
+            p.y,
+            p.z
         );
     }
 }
