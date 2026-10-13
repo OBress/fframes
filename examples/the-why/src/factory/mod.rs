@@ -436,7 +436,8 @@ impl FactorySet {
 
     /// Poses the crowd at time `t`, moves the machines and adds the sparks and the arc lights
     /// of the arms that `view` sees.
-    fn work(&self, scene: &mut Scene, t: f32, view: &View) {
+    fn work(&self, scene: &mut Scene, t: f32, camera: &Camera) {
+        let view = View::new(camera);
         let hint = crowd::rest();
         let eye = Rgb::hex(COLD) * 4.0;
         let posed: Vec<Posed> = self
@@ -452,12 +453,12 @@ impl FactorySet {
             .collect();
         self.crowd
             .pose(scene, &posed, |a| view.lod(a.base.w_axis.truncate()));
-        let camera = view.position;
+        let from = view.position;
         self.hall.conveyors(
             scene,
             t,
-            camera.z + 20.0,
-            camera.z - 180.0,
+            from.z + 20.0,
+            from.z - 180.0,
             Rgb::hex(0x8fd0ff) * 5.0,
         );
         self.hall.machines(
@@ -471,7 +472,7 @@ impl FactorySet {
         let mut arcs = Vec::new();
         for (index, (station, arm)) in self.stations.iter().zip(&posed).enumerate() {
             let base = station.base.w_axis.truncate();
-            let distance = base.distance(camera);
+            let distance = base.distance(from);
             if distance > 60.0 || !view.sees(base + vec3(0.0, 1.2, 0.0), 2.5) {
                 continue;
             }
@@ -484,7 +485,7 @@ impl FactorySet {
             }
             sparks.extend(weld_sparks(index as u32, tip, t, welding));
         }
-        scene.add(Node::particles(sparks, Blending::Additive));
+        add_sparks(scene, sparks, camera);
         // the nearest arcs light their surroundings
         arcs.sort_by(|a, b| a.0.total_cmp(&b.0));
         for (_, glow, tip) in arcs.into_iter().take(4) {
@@ -500,8 +501,8 @@ impl FactorySet {
 
     /// Shot 2: the factory of answers. The welding arc of the first hero arm in close-up. The
     /// camera rises over the conveyor and flies down the line between the arms. Then it
-    /// cranes up over the endless grid of arms and settles on the watcher, which stops and
-    /// turns its eye up to the engineer on the catwalk.
+    /// cranes up over the endless grid of arms. The watcher stops and turns its eye up to the
+    /// engineer on the catwalk, and the camera swoops down behind its eye.
     pub fn moment_factory(&self, t: f32) -> (Scene, Camera) {
         let welder = self.welder_joints(t);
         let arc = self.tip(&self.welder, welder);
@@ -515,8 +516,8 @@ impl FactorySet {
         };
         let mut scene = self.day(t, bounds, 1.0);
         let view = View::new(&camera);
-        self.work(&mut scene, t, &view);
-        self.pose_hero(&mut scene, &self.welder, welder, t, 0.0);
+        self.work(&mut scene, t, &camera);
+        self.pose_hero(&mut scene, &self.welder, welder, t, &camera);
         // The arc flares at the cut: the white of shot 1 is its light, which fills the lens
         // and shrinks to the arc. The glow stands just in front of the lens, so nothing
         // hides it.
@@ -575,35 +576,50 @@ impl FactorySet {
         // The flight: the speed rises to 6 m/s, holds, and falls to 0 as the crane rises.
         let flown = 6.1 * (glide(2.6, 4.8, t) - glide(8.0, 11.4, t));
         let up = smoothstep(2.6, 4.4, t);
-        let crane = smoothstep(8.2, 11.6, t);
+        let crane = smoothstep(8.2, 10.8, t);
+        // Then the camera swoops down behind the watcher as it looks up: an over the shoulder
+        // view of the robot and the engineer, just before the cut into its eye.
+        let swoop = smoothstep(10.1, 12.0, t);
         // In the flight the camera sways a little from side to side and banks into the
         // sway, as a camera on a cable rig does.
         let flight = up * (1.0 - crane);
         let sway = 0.25 * (t * 0.9).sin() * flight;
         let bob = 0.06 * (t * 1.3).sin() * flight;
-        // the crane rises a little too far and settles back, as a heavy arm does
-        let settle = 0.12 * (std::f32::consts::PI * smoothstep(11.0, 12.0, t)).sin();
-        let position = vec3(
+        let high = vec3(
             6.1 + 0.9 * up + 2.5 * crane + sway,
-            1.12 + 1.23 * up + 3.65 * crane + bob + settle,
+            1.12 + 1.23 * up + 3.65 * crane + bob,
             WELDER_Z + 1.25 - flown,
         );
+        // Behind the eye of the watcher in its final pose and a little to the side, so the
+        // beam of the eye crosses the picture and does not hide him.
+        let head = ENGINEER + vec3(0.0, 1.62, 0.0);
+        let eye =
+            (self.watcher.base * arm::flange(&self.watcher_gaze())).transform_point3(arm::EYE);
+        let gaze = (head - eye).normalize();
+        let side = gaze.cross(Vec3::Y).normalize();
+        let shoulder = eye - gaze * 1.5 + side * 0.55 - Vec3::Y * 0.1;
+        let position = high.lerp(shoulder, swoop);
         let ahead = vec3(7.0, 1.4, position.z - 25.0);
         let watcher = self.watcher.base.w_axis.truncate();
-        let end = vec3(1.5, 2.9, hall::CATWALK_Z + 2.0);
+        // Over the grid the view looks down the hall to the catwalk. Over the shoulder it
+        // looks up past the eye of the watcher to the engineer.
+        let hall_end = vec3(1.5, 2.9, hall::CATWALK_Z + 2.0);
+        let up_to_him = eye.lerp(head, 0.62);
         let target = arc
             .lerp(ahead, smoothstep(2.6, 4.2, t))
-            .lerp(end, smoothstep(8.4, 11.8, t));
-        let mut camera = lens(24.0)
+            .lerp(hall_end, smoothstep(8.4, 10.8, t))
+            .lerp(up_to_him, smoothstep(10.4, 11.9, t));
+        let mut camera = lens(24.0 + 26.0 * swoop)
             .position(position)
             .look_at(target)
             .roll(0.03 * (t * 0.9).sin() * flight)
             .shake(t * 0.4, 0.003, 7);
         camera.far = 600.0;
-        // the focus moves from the arc down the line, then to the watcher
+        // the focus moves from the arc down the line, then to the watcher, then to him
         let focus = arc
             .lerp(ahead, smoothstep(2.6, 4.2, t))
-            .lerp(watcher + vec3(0.0, 1.8, 0.0), smoothstep(8.6, 11.0, t));
+            .lerp(watcher + vec3(0.0, 1.8, 0.0), smoothstep(8.6, 10.6, t))
+            .lerp(head, smoothstep(11.0, 11.8, t));
         camera.focus_on(focus, 12.0 - 9.0 * smoothstep(1.8, 4.0, t))
     }
 
@@ -698,8 +714,15 @@ impl FactorySet {
     }
 
     /// Poses a hero arm and adds the sparks of its torch. `work_time` is the time of its work
-    /// cycle; `awake` brightens its eye.
-    fn pose_hero(&self, scene: &mut Scene, hero: &Hero, q: Joints, work_time: f32, awake: f32) {
+    /// cycle.
+    fn pose_hero(
+        &self,
+        scene: &mut Scene,
+        hero: &Hero,
+        q: Joints,
+        work_time: f32,
+        camera: &Camera,
+    ) {
         hero.arm.apply(
             scene,
             &q,
@@ -707,7 +730,7 @@ impl FactorySet {
             &Expression {
                 ring: 2.0,
                 status: 3.0,
-                eye: 4.0 + 10.0 * awake,
+                eye: 4.0,
                 lid: 1.0,
             },
         );
@@ -719,18 +742,20 @@ impl FactorySet {
         if glow > 0.0 {
             scene.add(arc_light(tip, glow));
         }
-        scene.add(Node::particles(
-            weld_sparks(seed, tip, work_time, welding),
-            Blending::Additive,
-        ));
+        add_sparks(scene, weld_sparks(seed, tip, work_time, welding), camera);
     }
 }
 
 /// The sparks of a welding torch at `tip` at time `t`. `welding(b)` tells whether the torch
 /// burned at time `b`. The sparks have no state: each spark comes from its birth time.
 fn weld_sparks(seed: u32, tip: Vec3, t: f32, welding: impl Fn(f32) -> bool) -> Vec<Particle> {
-    const RATE: f32 = 240.0;
-    const LIFE: f32 = 0.7;
+    const RATE: f32 = 360.0;
+    const LIFE: f32 = 0.9;
+    /// The air slows a spark: its speed falls by this rate per second.
+    const DRAG: f32 = 1.4;
+    let gravity = vec3(0.0, -9.8, 0.0);
+    // The conveyor is 1.2 m wide under the torch. Sparks that leave it fall to the floor.
+    let belt_x = 14.0 * ((tip.x - 7.0) / 14.0).round() + 7.0;
     let mut out = Vec::new();
     let newest = (t * RATE).floor() as i64;
     for k in 0..(RATE * LIFE) as i64 {
@@ -748,27 +773,38 @@ fn weld_sparks(seed: u32, tip: Vec3, t: f32, welding: impl Fn(f32) -> bool) -> V
                     .wrapping_add(i),
             )
         };
-        // most sparks leave upward and outward, away from the part
-        let velocity =
-            vec3(h(1) * 2.0 - 1.0, h(2) * 1.2 + 0.4, h(3) * 2.0 - 1.0) * (1.5 + 3.5 * h(4) * h(4));
-        let gravity = vec3(0.0, -9.8, 0.0);
-        let mut position = tip + velocity * age + gravity * (0.5 * age * age);
-        let speed = velocity + gravity * age;
-        // the sparks bounce off the parts on the belt
-        let floor = hall::BELT + 0.23;
-        if position.y < floor {
-            position.y = floor + (floor - position.y) * 0.3;
-        }
-        let life = 1.0 - age / (LIFE * (0.4 + 0.6 * h(5)));
-        if life <= 0.0 {
+        // Most sparks live a short time. A few fly far and cool slowly.
+        let life = LIFE * (0.2 + 0.8 * h(5) * h(5));
+        let heat = 1.0 - age / life;
+        if heat <= 0.0 {
             continue;
         }
-        let heat = life * life;
-        let color = Rgb::linear(0.8 + 0.2 * heat, 0.88 + 0.12 * heat, 1.0) * (3.0 + 45.0 * heat);
+        // They leave the weld upward and outward. A few are fast.
+        let direction = vec3(h(1) * 2.0 - 1.0, 0.25 + h(2), h(3) * 2.0 - 1.0).normalize();
+        let start = direction * (1.2 + 5.0 * h(4) * h(4) * h(4));
+        // The motion with linear air drag and gravity.
+        let slow = (-DRAG * age).exp();
+        let mut position =
+            tip + start * ((1.0 - slow) / DRAG) + gravity * ((age - (1.0 - slow) / DRAG) / DRAG);
+        let mut velocity = start * slow + gravity * ((1.0 - slow) / DRAG);
+        // They bounce off the parts on the belt, or off the floor beside it.
+        let ground = if (position.x - belt_x).abs() < 0.6 {
+            hall::BELT + 0.23
+        } else {
+            0.01
+        };
+        if position.y < ground {
+            position.y = ground + (ground - position.y) * 0.25;
+            velocity.y = -velocity.y * 0.25;
+        }
+        // The color of hot steel: white at first, then yellow, then a dim orange.
+        let color = Rgb::linear(1.0, 0.42 + 0.55 * heat, 0.12 + 0.72 * heat * heat)
+            * (10.0 + 300.0 * heat * heat.sqrt());
         out.push(Particle {
             position,
-            tail: -speed * 0.01,
-            size: 0.003 + 0.002 * h(6),
+            // the streak of the spark in the open shutter
+            tail: -velocity * 0.01,
+            size: 0.0005 + 0.0005 * h(6),
             color,
             opacity: 1.0,
         });
@@ -784,6 +820,53 @@ fn weld_sparks(seed: u32, tip: Vec3, t: f32, welding: impl Fn(f32) -> bool) -> V
         out.push(Particle::new(tip, 0.05, Rgb::hex(0x9fc8ff) * (6.0 * glow)));
     }
     out
+}
+
+/// Adds sparks to the scene. The streaks near the camera become thin meshes: a mesh has a
+/// depth for the depth of field, and a particle has none. Without it, a spark in focus in
+/// front of a far background gets the blur of the background.
+fn add_sparks(scene: &mut Scene, sparks: Vec<Particle>, camera: &Camera) {
+    const NEAR: f32 = 30.0;
+    // the size of a pixel of the 1080 line picture at a distance of 1 m
+    let pixel = 2.0 * (camera.fov.to_radians() * 0.5).tan() / 804.0;
+    let (near, far): (Vec<Particle>, Vec<Particle>) = sparks
+        .into_iter()
+        .partition(|p| p.tail != Vec3::ZERO && p.position.distance(camera.position) < NEAR);
+    let mut positions = Vec::with_capacity(near.len() * 4);
+    let mut normals = Vec::with_capacity(near.len() * 4);
+    let mut colors = Vec::with_capacity(near.len() * 4);
+    let mut indices = Vec::with_capacity(near.len() * 6);
+    for p in &near {
+        let to_eye = camera.position - p.position;
+        let side = p.tail.cross(to_eye).normalize_or_zero();
+        if side == Vec3::ZERO {
+            continue;
+        }
+        // At least one pixel wide. A wider streak is dimmer, so it keeps its light.
+        let half = p.size.max(0.5 * pixel * to_eye.length());
+        let length = p.tail.length();
+        let light = p.color * (p.size / half * (2.0 * p.size / (2.0 * p.size + length)));
+        let n = positions.len() as u32;
+        // The streak tapers and cools to its tail.
+        positions.extend([
+            p.position - side * half,
+            p.position + side * half,
+            p.position + p.tail + side * (half * 0.4),
+            p.position + p.tail - side * (half * 0.4),
+        ]);
+        normals.extend([to_eye.normalize(); 4]);
+        let (head, tail) = (light.0.extend(1.0), (light * 0.3).0.extend(1.0));
+        colors.extend([head, head, tail, tail]);
+        indices.extend([n, n + 1, n + 2, n, n + 2, n + 3]);
+    }
+    if !indices.is_empty() {
+        let mut streaks = Geometry::new(positions, normals, Vec::new(), indices);
+        streaks.colors = colors;
+        scene.add(
+            Node::mesh(streaks, Material::unlit(0xffffff).double_sided()).shadows(false, false),
+        );
+    }
+    scene.add(Node::particles(far, Blending::Additive));
 }
 
 /// The brightness of a welding arc at `t`, `0..1`. `welding(b)` tells whether the torch

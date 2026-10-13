@@ -83,8 +83,8 @@ pub struct MainScreen {
 
 /// One monitor of the field.
 struct Monitor {
-    /// The center of the screen, in meters.
-    position: Vec3,
+    /// The place of the monitor: the center of its screen, in meters, and its turn.
+    at: Mat4,
     /// The distance from the main monitor, `0..1` of the farthest.
     distance: f32,
     /// How many seconds the terminal of the monitor is ahead of the main terminal.
@@ -113,7 +113,8 @@ pub struct Field {
     marker_lamp: Arc<Geometry>,
     /// The small lamps on the floor along the aisles, and their distances from the main
     /// monitor (`0..1`).
-    markers: Vec<(Mat4, f32)>,
+    /// The lamps have different levels of light too.
+    markers: Vec<(Mat4, f32, f32)>,
     content: Material,
     /// The code of the screens far away, see [`SHARP`].
     soft: Material,
@@ -134,12 +135,26 @@ impl Field {
                 }
                 let seed = ((row + FRONT) * (2 * SIDE + 1) + column + SIDE) as u32;
                 let x = column_x(column);
+                // People set up the monitors: each stands a little off the grid and turns a
+                // few degrees. A perfect grid looks designed.
+                let h = |k: u32| hash(seed * 37 + k) - 0.5;
+                let offset = vec3(0.3 * h(1), 0.0, 0.5 * h(2));
+                let turn = Quat::from_rotation_y(0.14 * h(3));
+                // a few monitors are off
+                let off = hash(seed * 41 + 9) < 0.05;
                 monitors.push(Monitor {
-                    position: vec3(x, SCREEN_Y, -(row as f32) * ROW_PITCH),
+                    at: Mat4::from_rotation_translation(
+                        turn,
+                        vec3(x, SCREEN_Y, -(row as f32) * ROW_PITCH) + offset,
+                    ),
                     distance: distance(x, row as f32 * ROW_PITCH),
                     ahead: hash(seed * 13) * 2.0,
                     phase: (hash(seed * 7 + 3) * PAGE_LINES as f32).floor(),
-                    light: 0.55 + 0.8 * hash(seed * 5 + 1).powi(2),
+                    light: if off {
+                        0.0
+                    } else {
+                        0.55 + 0.8 * hash(seed * 5 + 1).powi(2)
+                    },
                     soft: x.hypot(row as f32 * ROW_PITCH) > SHARP,
                     tint: tint(hash(seed * 11 + 2)),
                 });
@@ -156,7 +171,13 @@ impl Field {
             for half_row in -2 * FRONT..=2 * BACK {
                 let z = -(half_row as f32) * ROW_PITCH * 0.5 - ROW_PITCH * 0.25;
                 for x in [left, right] {
-                    markers.push((Mat4::from_translation(vec3(x, 0.006, z)), distance(x, z)));
+                    // Some lamps are out and the others differ a little, as old lamps do.
+                    let pick = hash((half_row * 131 + column * 7) as u32 * 3 + u32::from(x > left));
+                    if pick < 0.3 {
+                        continue;
+                    }
+                    let at = Mat4::from_translation(vec3(x, 0.006, z));
+                    markers.push((at, distance(x, z), 0.45 + 0.75 * pick));
                 }
             }
         }
@@ -201,14 +222,15 @@ impl Field {
         let material = Material::standard(Rgb::WHITE)
             .metalness(0.6)
             .roughness(0.38);
-        let (near, far): (Vec<Vec3>, Vec<Vec3>) = std::iter::once(vec3(0.0, SCREEN_Y, 0.0))
-            .chain(self.monitors.iter().map(|m| m.position))
-            .partition(|p| p.x.hypot(p.z) < 14.0);
+        let (near, far): (Vec<Mat4>, Vec<Mat4>) =
+            std::iter::once(Mat4::from_translation(vec3(0.0, SCREEN_Y, 0.0)))
+                .chain(self.monitors.iter().map(|m| m.at))
+                .partition(|at| at.w_axis.x.hypot(at.w_axis.z) < 14.0);
         for (bodies, rounded) in [(near, true), (far, false)] {
             scene.add(Node::instanced(
                 body(rounded),
                 material.clone(),
-                Instances::new(bodies.into_iter().map(Mat4::from_translation)),
+                Instances::new(bodies),
             ));
         }
     }
@@ -259,7 +281,7 @@ impl Field {
         }
         for m in &self.monitors {
             let light = screen_light(t, m.distance) * m.light;
-            let at = Mat4::from_translation(m.position);
+            let at = m.at;
             // a dark panel stays in front of the frame of the monitor
             panels.0.push(at);
             panels.1.push(Rgb::WHITE * light);
@@ -279,11 +301,11 @@ impl Field {
             pools.1.push(m.tint * light);
         }
         let mut markers = (Vec::new(), Vec::new());
-        for (at, distance) in &self.markers {
+        for (at, distance, level) in &self.markers {
             let light = screen_light(t, *distance);
             if light > 0.0 {
                 markers.0.push(*at);
-                markers.1.push(Rgb::WHITE * light);
+                markers.1.push(Rgb::WHITE * (light * level));
             }
         }
         let mut add =

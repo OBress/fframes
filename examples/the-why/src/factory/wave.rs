@@ -65,12 +65,15 @@ impl FactorySet {
                 ..Default::default()
             }),
         );
+        // The haze is thin while the low warm light comes through the glass wall. Thick
+        // haze in front of the light turns the far rows of arms into a flat bright wall.
+        let thin = smoothstep(ARRIVAL, ARRIVAL + 1.0, t) * (1.0 - smoothstep(4.0, 6.0, t));
         scene.atmosphere = Some(Atmosphere {
-            density: 0.014,
+            density: 0.014 * (1.0 - 0.55 * thin),
             color: Rgb::hex(0xe8eef8),
             base: 1.0,
             falloff: 0.05,
-            anisotropy: 0.65,
+            anisotropy: 0.65 - 0.15 * thin,
             ambient: Rgb::hex(0x0c1a30).lerp(Rgb::hex(0x6a3a14), glow_air),
             noise: 0.5,
             noise_size: 8.0,
@@ -95,18 +98,20 @@ impl FactorySet {
         self.hall.night(&mut scene);
         // The glass wall flares when the light comes through it and stays warm. The light
         // from behind draws a warm rim on the arms.
+        // After the flare the panes glow only a little: the haze behind them carries the
+        // light, so the wall has depth and the far arms stand dark against it.
         let flash = smoothstep(ARRIVAL - 0.05, ARRIVAL + 0.1, t)
-            * (1.0 - 0.8 * smoothstep(ARRIVAL + 0.1, ARRIVAL + 1.4, t));
+            * (1.0 - smoothstep(ARRIVAL + 0.1, ARRIVAL + 1.4, t));
         self.hall
-            .light_glass(&mut scene, Rgb::hex(WARM) * (0.08 * warm + 0.9 * flash));
+            .light_glass(&mut scene, Rgb::hex(WARM) * (0.015 * warm + 0.9 * flash));
         // Outside, the light of the line glows over the desert, low behind the middle of
         // the glass wall. It is the source of the warm light in the hall.
         let glow = vec3(0.0, 2.0, hall::Z_FAR - 50.0);
         scene.add(Node::particles(
             vec![
                 Particle::new(glow, 4.0, Rgb::hex(0xffd29a) * (3.0 * warm)),
-                Particle::new(glow, 40.0, Rgb::hex(WARM) * (1.0 * warm)),
-                Particle::new(glow, 120.0, Rgb::hex(0xff8a2a) * (0.3 * warm)),
+                Particle::new(glow, 40.0, Rgb::hex(WARM) * (0.45 * warm)),
+                Particle::new(glow, 120.0, Rgb::hex(0xff8a2a) * (0.08 * warm)),
             ],
             Blending::Additive,
         ));
@@ -197,7 +202,7 @@ impl FactorySet {
             let welding = |b: f32| b < stop && crowd::work(b + station.phase).welding;
             sparks.extend(weld_sparks(index as u32, tip, time, welding));
         }
-        scene.add(Node::particles(sparks, Blending::Additive));
+        add_sparks(&mut scene, sparks, &camera);
 
         for hero in [&self.welder, &self.watcher] {
             let z = hero.base.w_axis.z;
@@ -223,6 +228,35 @@ impl FactorySet {
         scene[self.engineer.root].visible = false;
         scene[self.laptop].visible = false;
         self.add_line(&mut scene, t);
+        // Close to the floor, the line rakes the concrete in front of the camera with warm
+        // light. Without it the lower half of the last frames is black.
+        let rake = smoothstep(5.0, 7.0, t);
+        if rake > 0.0 {
+            // The low light shows the bumps of the concrete as glints. Fine bumps make
+            // glints that change in each frame when the camera drifts, so they flatten.
+            if let Some(m) = scene[self.hall.floor].material_mut() {
+                m.normal_scale *= 1.0 - 0.75 * rake;
+            }
+            // Five lights act as one long light. Uneven gaps and levels keep their sheens on
+            // the floor from looking like a row of lamps. They stand still in the hall: a
+            // light that moves with the camera makes the glints on the floor crawl. The
+            // engine draws 16 lights, and the scene has room for five more.
+            for (dz, level) in [
+                (-7.1f32, 0.35f32),
+                (-5.3, 0.22),
+                (-4.2, 0.4),
+                (-2.5, 0.28),
+                (-1.1, 0.33),
+            ] {
+                // 30 cm over the floor: the sheen is broad and soft. Lights closer to the
+                // floor graze the bumps of the concrete and make glints that boil.
+                scene.add(Node::light(Light::point(WARM, level * rake, 5.0)).at(
+                    0.0,
+                    0.3,
+                    hall::Z_FAR + 36.1 + dz,
+                ));
+            }
+        }
         (scene, camera)
     }
 

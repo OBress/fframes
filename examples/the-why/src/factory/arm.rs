@@ -611,7 +611,7 @@ fn finger_parts() -> Jaw {
         .zip(&finger.normals)
         .map(|(p, n)| {
             let shade = if in_pocket(*p) && n.y.abs() < 0.9 {
-                0.3
+                0.62
             } else {
                 1.0
             };
@@ -622,7 +622,7 @@ fn finger_parts() -> Jaw {
         [-1.0f32, 1.0]
             .map(|y| Geometry::cuboid(w - 0.0002, 0.001, l - 0.0002).translate(x, y * 0.0215, z))
     }))
-    .with_color(Rgb::linear(0.16, 0.16, 0.16));
+    .with_color(Rgb::linear(0.4, 0.4, 0.4));
     // socket head cap screws: a steel head with a dark hex socket
     let screw = |at: Vec3, r: f32| {
         Geometry::merge([

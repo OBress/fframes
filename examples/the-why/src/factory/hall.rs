@@ -70,6 +70,8 @@ pub struct Hall {
     windows: [NodeId; 2],
     /// The panes of the glass wall at the far end.
     glass: NodeId,
+    /// The concrete floor.
+    pub floor: NodeId,
     cranes: Vec<Crane>,
     /// The carts: bodies, glowing bumpers and loads.
     agvs: [NodeId; 3],
@@ -152,7 +154,7 @@ impl Hall {
         // ---- The floor, with painted lane lines beside the aisles.
         let length = Z_NEAR - Z_FAR;
         let center = f32::midpoint(Z_NEAR, Z_FAR);
-        scene.add(
+        let floor = scene.add(
             Node::mesh(
                 Geometry::floor(HALF_WIDTH * 2.0, length),
                 concrete.clone().roughness(0.45).reflection(0.45),
@@ -560,6 +562,7 @@ impl Hall {
             lamps,
             windows: [glazing, clerestory],
             glass,
+            floor,
             cranes,
             agvs,
             beacon,

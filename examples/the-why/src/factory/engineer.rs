@@ -84,13 +84,13 @@ impl FactorySet {
         let daylight = 1.0 - smoothstep(8.4, 9.6, t);
         let mut scene = self.day(time, bounds, daylight);
         let view = View::new(&camera);
-        self.work(&mut scene, time, &view);
+        self.work(&mut scene, time, &camera);
         self.pose_hero(
             &mut scene,
             &self.welder,
             self.welder_joints(time),
             time,
-            0.0,
+            &camera,
         );
         let awake = 1.0 - smoothstep(WHIP, WHIP + 0.6, t);
         self.pose_watcher(&mut scene, &q, &grip, awake);
@@ -98,13 +98,13 @@ impl FactorySet {
         self.show(&mut scene, &self.welder, &view);
         // The inspection lamp lights the board from the far side, so the pads and the
         // traces glint toward the eye. It goes off in the dive.
-        let on = smoothstep(WHIP, ARRIVE, t) * (1.0 - smoothstep(8.2, 9.0, t));
+        let on = smoothstep(WHIP + 0.2, WHIP + 0.8, t) * (1.0 - smoothstep(8.2, 9.0, t));
         // It stands high on the side, so that the board and the chip do not mirror it into
         // the eye.
         let lamp = jig + vec3(0.3, 0.6, 0.45);
         // The sky of the hall fades first, then the studio of shot 4 comes in its place.
         if let Environment::Map { intensity, .. } = &mut scene.environment {
-            *intensity = SKY * (1.0 - smoothstep(8.6, 8.95, t));
+            *intensity = SKY * (1.0 + 0.8 * on) * (1.0 - smoothstep(8.6, 8.95, t));
         }
         let city = smoothstep(8.95, 9.3, t);
         if t > 8.95 {
@@ -145,6 +145,14 @@ impl FactorySet {
                 .at(work.x, work.y, work.z),
             );
         }
+        // The ring light of the eye fills the pockets and the inner faces of the jaws, so
+        // they read as machined metal and not as black holes.
+        if on > 0.0 {
+            let ring = flange.transform_point3(MACRO);
+            scene.add(
+                Node::light(Light::point(0xdfe9ff, 0.006 * on, 0.6)).at(ring.x, ring.y, ring.z),
+            );
+        }
         // The jig is in the shade of the roof: the sun of the hall goes out in the swing. Then
         // the shadow casting light comes from the lamp too. Thus the jaws and the chip throw
         // soft contact shadows on the board.
@@ -168,8 +176,12 @@ impl FactorySet {
     }
 
     pub fn shutter_engineer(&self, t: f32) -> usize {
+        // The whip moves the picture by up to 70 pixels per frame. With few samples the blur
+        // shows separate copies.
+        if (WHIP + 0.1..WHIP + 0.9).contains(&t) {
+            9
         // the start of the dive too: the pins and the traces shrink fast and would crawl
-        if (WHIP..ARRIVE).contains(&t) || t > DETACH {
+        } else if (WHIP..ARRIVE).contains(&t) || t > DETACH {
             3
         } else {
             2
@@ -217,8 +229,10 @@ impl FactorySet {
     /// wrist, then the dive into the chip.
     fn pov_camera(&self, t: f32, q: &Joints) -> Camera {
         let flange = self.watcher.base * arm::flange(q);
-        // The eye camera blends into the macro camera during the swing. Both move with J6.
-        let k = smoothstep(WHIP + 0.5, ARRIVE, t);
+        // The eye camera blends into the macro camera in the fastest part of the swing, where
+        // the motion blur hides the move. Thus the macro view holds the chip while the board
+        // comes up under it, and the camera never looks into the side of a jaw.
+        let k = smoothstep(WHIP + 0.15, WHIP + 0.75, t);
         let eye_local = arm::EYE + Vec3::Z * 0.06;
         let local = eye_local.lerp(MACRO, k);
         let look_local = Vec3::Z.lerp((HELD - MACRO).normalize(), k).normalize();
