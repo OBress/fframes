@@ -61,8 +61,15 @@ pub struct FactorySet {
 /// The jig where the watcher places the chip, in the frame of its base: the top of the
 /// circuit board.
 const JIG: Vec3 = Vec3::new(0.0, 0.98, 1.25);
-/// The size of the chip: its width and its height in meters.
-const CHIP: (f32, f32) = (0.04, 0.004);
+/// The chip of the city (`crate::city::chip`): its top and its bottom above its origin.
+const CHIP_TOP: f32 = 0.0015;
+const CHIP_BOTTOM: f32 = -0.0021;
+/// Shot 4 starts this high above the top of the chip and falls 1.18 times its height per
+/// second. The dive of shot 3 ends the same way.
+const DIVE_HEIGHT: f32 = 0.0418;
+const DIVE_RATE: f32 = 1.18;
+/// The length of shot 3 in seconds.
+const ENGINEER_SECONDS: f32 = 10.0;
 
 /// The base of an arm on the aisle side of line 7 at `z`, facing the conveyor.
 fn aisle_station(z: f32) -> Mat4 {
@@ -128,21 +135,17 @@ impl FactorySet {
         scene.add(
             Node::mesh(
                 Geometry::cuboid(0.3, 0.016, 0.22),
-                Material::standard(0x0b1a24).roughness(0.35).clearcoat(0.6),
+                Material::standard(0x060708).roughness(0.35).clearcoat(0.6),
             )
             .at(jig.x, JIG.y - 0.008, jig.z),
         );
-        let chip = scene.add(Node::mesh(
-            Geometry::rounded_box(CHIP.0, CHIP.1, CHIP.0, 0.0008, 1),
-            Material::standard(0x0c0d0f).roughness(0.3).clearcoat(0.5),
-        ));
-        // the inspection lamp over the jig
+        let chip = scene.add(crate::city::chip());
+        // the inspection lamp lights the jig from the side, so the glossy chip does not
+        // mirror it into the camera above
+        let lamp = jig + vec3(-0.7, 0.75, -0.5);
         scene.add(
-            Node::light(Light::spot(0xe8f2ff, 6.0, 0.5, 0.6).pointing(vec3(0.15, -1.0, 0.1))).at(
-                jig.x - 0.2,
-                JIG.y + 1.1,
-                jig.z - 0.15,
-            ),
+            Node::light(Light::spot(0xe8f2ff, 3.0, 0.45, 0.6).pointing(jig - lamp))
+                .at(lamp.x, lamp.y, lamp.z),
         );
         Self {
             scene,
@@ -340,7 +343,7 @@ impl FactorySet {
         gaze.q[0] += offset.x;
         gaze.q[4] += offset.y;
         let over = crowd::tool_down_at(JIG + vec3(0.0, 0.26, 0.0), &gaze);
-        let placed = crowd::tool_down_at(JIG + vec3(0.0, CHIP.1 * 0.5 + 0.001, 0.0), &over);
+        let placed = crowd::tool_down_at(JIG - vec3(0.0, CHIP_BOTTOM, 0.0), &over);
         let blend = |a: &Joints, b: &Joints, k: f32| Joints {
             q: std::array::from_fn(|i| crowd::turn(a.q[i], b.q[i], k)),
         };
@@ -361,20 +364,23 @@ impl FactorySet {
         let zoom = [35.0f32, 50.0, 70.0, 85.0];
         let i = (stage.floor() as usize).min(2);
         let mm = zoom[i] + (zoom[i + 1] - zoom[i]) * (stage - i as f32);
-        // the dive: from the eye to straight above the chip
+        // The dive: the camera leaves the eye, comes over the chip, then falls straight down
+        // at the speed with which shot 4 goes on. Image top is +Z of the chip, as in shot 4.
         let turn = smoothstep(7.2, 9.0, t);
-        let dive = smoothstep(7.2, 10.0, t);
-        let chip = self
+        let top = self
             .watcher
             .base
-            .transform_point3(JIG + vec3(0.0, CHIP.1, 0.0));
-        let above = chip + vec3(0.0, 0.0432, 0.0);
-        let position = eye.lerp(above, dive * dive);
+            .transform_point3(JIG - vec3(0.0, CHIP_BOTTOM, 0.0))
+            + vec3(0.0, CHIP_TOP, 0.0);
+        let height = |t: f32| DIVE_HEIGHT * (DIVE_RATE * (ENGINEER_SECONDS - t)).exp();
+        let over = eye.lerp(top + Vec3::Y * height(9.0), turn);
+        let fall = top + Vec3::Y * height(t);
+        let position = over.lerp(fall, smoothstep(8.6, 9.4, t));
         let look = forward.lerp(Vec3::NEG_Y, turn).normalize();
         let mut camera = lens(mm + (35.0 - mm) * turn)
             .position(position)
             .look_at(position + look);
-        camera.up = up.lerp(Vec3::NEG_Z, turn).normalize();
+        camera.up = up.lerp(Vec3::Z, turn).normalize();
         camera.near = 0.005;
         camera.far = 600.0;
         // the eye hunts for focus on the engineer, then focuses on the chip
@@ -383,9 +389,11 @@ impl FactorySet {
         let focus = if t < 5.6 {
             eye + (head - eye) * hunt
         } else {
-            chip
+            top
         };
-        camera.focus_on(focus, 4.0 + 6.0 * smoothstep(5.6, 8.0, t))
+        // the blur ends at the value of shot 4
+        let blur = 4.0 + 6.0 * smoothstep(5.6, 8.0, t) - 8.0 * smoothstep(8.6, 9.8, t);
+        camera.focus_on(focus, blur)
     }
 
     /// The HUD of the eye in shot 3: brackets on the engineer, labels and telemetry.

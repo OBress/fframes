@@ -330,3 +330,64 @@ fn rail_sheet() {
     }
     save_sheet("rail", &tiles, 4);
 }
+
+/// A dark night set: a dim sky, a cool key light from the front side and a warm backlight.
+fn night() -> (Scene, Figure) {
+    let mut scene = Scene::new()
+        .environment(Environment::gradient(0x1c2433, 0x0c0b0a, 0.6))
+        .background(Background::Gradient {
+            top: Rgb::hex(0x0b1220),
+            bottom: Rgb::hex(0x3a2a20),
+        });
+    scene.add(Node::mesh(
+        Geometry::floor(80.0, 80.0),
+        Material::standard(0x4a3a2c).roughness(1.0),
+    ));
+    scene.add(Node::light(Light::sun(
+        Rgb::hex(0xaec4ff),
+        1.6,
+        vec3(2.5, 3.0, 4.0),
+    )));
+    scene.add(Node::light(Light::directional(
+        Rgb::hex(0xffc890),
+        6.0,
+        vec3(-0.8, 1.5, -4.0),
+    )));
+    let figure = Figure::build(&mut scene, None, &FigureStyle::default());
+    (scene, figure)
+}
+
+/// The close frames of the film: the hand that draws at 100 mm from 0.8 m, the walk toward
+/// the camera at 85 mm from 6 m, and the rail pose from 7 m below.
+#[test]
+fn detail_shots() {
+    // The vertical field of view of a lens on a full frame camera, in degrees.
+    let lens = |mm: f32| 2.0 * (12.0 / mm).atan().to_degrees();
+    let renderer = Renderer::new(1280, 720).cpu();
+
+    let (scene, figure) = night();
+    let pose = Pose::draw(0.5);
+    let tip = LINE_START.lerp(LINE_END, 0.5);
+    let camera = Camera::perspective(lens(100.0)).orbit(tip + Vec3::Y * 0.12, 0.8, -50.0, 25.0);
+    render(&renderer, &scene, &figure, &pose, &camera)
+        .save(out_dir().join("detail_hand.png"))
+        .unwrap();
+
+    let pose = Pose::walk(0.3, 1.0);
+    let camera = Camera::perspective(lens(85.0))
+        .position(pose.position + vec3(0.3, 1.4, 6.0))
+        .look_at(pose.position + Vec3::Y * 1.0);
+    render(&renderer, &scene, &figure, &pose, &camera)
+        .save(out_dir().join("detail_walk.png"))
+        .unwrap();
+
+    let (mut scene, figure) = night();
+    catwalk(&mut scene);
+    let pose = Pose::at_rail(2.0, RAIL);
+    let camera = Camera::perspective(lens(85.0))
+        .position(vec3(0.6, -7.0, 4.0))
+        .look_at(vec3(0.0, 1.3, 0.2));
+    render(&renderer, &scene, &figure, &pose, &camera)
+        .save(out_dir().join("detail_rail.png"))
+        .unwrap();
+}

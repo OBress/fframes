@@ -3,9 +3,14 @@
 pub mod cursor;
 pub mod title;
 
+use std::sync::Arc;
+
 use fframes::media::ImageData;
-use fframes::{Duration, FFramesContext, Frame, Scene, Svgr, svgr};
-use fframes_3d::Renderer;
+use fframes::{
+    Duration, FFramesContext, FFramesSyncedVideoFrame, Frame, Scene, Svgr, SyncVideoFrameInput,
+    svgr,
+};
+use fframes_3d::{Renderer, Texture};
 
 use crate::WIDTH;
 use crate::look::{BAR, PICTURE_HEIGHT, SANS};
@@ -102,6 +107,21 @@ impl Shot {
             )
         })
     }
+}
+
+/// The frame of the video `file` at the time of `frame`, as a texture for a screen in a 3D
+/// scene. The video loops. `None` when the media has no such video.
+pub fn video_texture(frame: &Frame, ctx: &FFramesContext, file: &str) -> Option<Arc<Texture>> {
+    let video = frame.get_synced_video_frame(
+        ctx,
+        file,
+        &SyncVideoFrameInput {
+            start_from: 0.0,
+            looping: true,
+            editor_fallback_image: None,
+        },
+    )?;
+    Some(Arc::new(Texture::from_image(&video.into_image())))
 }
 
 impl Scene for Shot {

@@ -5,6 +5,7 @@
 #![allow(clippy::unreadable_literal)]
 
 pub mod assets;
+pub mod city;
 pub mod desert;
 pub mod factory;
 pub mod figure;
@@ -23,6 +24,7 @@ use fframes::{
 };
 
 use assets::Assets;
+use city::CitySet;
 use desert::DesertSet;
 use factory::FactorySet;
 use look::Overlay;
@@ -67,6 +69,29 @@ impl TheWhy {
         let wave = Shot::new("Wave", 8.5, renderer(), move |r, t| {
             look::picture(r, set.shutter_wave(t), t, |t| set.moment_wave(t))
         });
+        // The billboards of the city play an earlier fframes film, made-of-motion.
+        let city = Arc::new(CitySet::new(&assets));
+        let set = city.clone();
+        let city_shot = Shot::with_media(
+            "City",
+            13.0,
+            CitySet::renderer(width, height),
+            move |r, frame, ctx| {
+                let t = frame.seconds();
+                let film = shots::video_texture(frame, ctx, "made_of_motion.mp4");
+                look::picture(r, set.shutter(t), t, |t| {
+                    let (mut scene, camera) = set.moment(t);
+                    if let Some(film) = &film {
+                        for screen in set.screens() {
+                            if let Some(material) = scene[*screen].material_mut() {
+                                material.map = Some(film.clone());
+                            }
+                        }
+                    }
+                    (scene, camera)
+                })
+            },
+        );
         let desert = Arc::new(DesertSet::new(&assets));
         let set = desert.clone();
         let walk = Shot::new(
@@ -104,7 +129,7 @@ impl TheWhy {
                 Shot::svg("Cursor", 7.0, shots::cursor::cursor),
                 factory_shot,
                 engineer,
-                Shot::placeholder("City", 13.0),
+                city_shot,
                 walk,
                 line,
                 wave,

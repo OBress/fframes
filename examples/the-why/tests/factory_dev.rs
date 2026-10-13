@@ -7,12 +7,16 @@ pub const HEIGHT: usize = 2160;
 pub const FPS: usize = 60;
 #[path = "../src/assets.rs"]
 pub mod assets;
+#[path = "../src/city.rs"]
+pub mod city;
 #[path = "../src/factory/mod.rs"]
 pub mod factory;
 #[path = "../src/figure.rs"]
 pub mod figure;
 #[path = "../src/look.rs"]
 pub mod look;
+#[path = "../src/stars.rs"]
+pub mod stars;
 
 use std::path::Path;
 

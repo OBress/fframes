@@ -26,7 +26,8 @@ pub(super) fn wind() -> Vec3 {
 /// and haze over the plateau. Returns the node of the moon.
 pub(super) fn light_night(scene: &mut Scene) -> NodeId {
     scene.environment = Environment::Gradient {
-        sky: Rgb::hex(0x060c1e),
+        // the zenith is as dark as the end of shot 4, which tilts up into the same stars
+        sky: Rgb::hex(0x02050d),
         horizon: Rgb::hex(0x1c2c4c),
         ground: Rgb::hex(0x06080c),
         intensity: 1.0,
