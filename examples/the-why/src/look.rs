@@ -74,7 +74,7 @@ pub fn flash_in(t: f32, length: f32) -> Svgr<'static> {
     if opacity <= 0.0 {
         return Svgr::empty();
     }
-    svgr!(<rect x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} fill="#f4f8ff" opacity={opacity} />)
+    svgr!(<rect x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} fill="#fff" opacity={opacity} />)
 }
 
 /// The iris of a camera that opens over the first `length` seconds of a shot.

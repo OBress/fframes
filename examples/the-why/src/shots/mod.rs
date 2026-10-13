@@ -1,6 +1,5 @@
 //! The shots of the film. A shot is a 3D picture with SVG over it, or SVG only.
 
-pub mod cursor;
 pub mod title;
 
 use std::sync::Arc;

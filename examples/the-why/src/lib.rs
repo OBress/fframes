@@ -11,6 +11,7 @@ pub mod factory;
 pub mod figure;
 pub mod look;
 pub mod montage;
+pub mod opening;
 pub mod shots;
 pub mod stars;
 
@@ -29,6 +30,7 @@ use desert::DesertSet;
 use factory::FactorySet;
 use look::Overlay;
 use montage::MontageSet;
+use opening::OpeningSet;
 use shots::Shot;
 
 include_media_dir!(pub struct TheWhyMedia, "examples/the-why/media");
@@ -127,9 +129,20 @@ impl TheWhy {
         )
         .overlay(move |t| white.overlay(t))
         .vignette(|t| 1.0 - montage::final_white(t));
+        // The cursor grows into the light of the welding arc that opens shot 2.
+        let opening = Arc::new(OpeningSet::new(&assets));
+        let (set, svg) = (opening.clone(), opening);
+        let cursor = Shot::new(
+            "Cursor",
+            7.0,
+            OpeningSet::renderer(width, height),
+            move |r, t| look::picture(r, set.shutter(t), t, |t| set.moment(t)),
+        )
+        .overlay(move |t| svg.overlay(t))
+        .vignette(|t| 1.0 - fframes_3d::math::smoothstep(6.55, 6.9, t));
         Self {
             shots: vec![
-                Shot::svg("Cursor", 7.0, shots::cursor::cursor),
+                cursor,
                 factory_shot,
                 engineer,
                 city_shot,
@@ -219,10 +232,19 @@ impl Video for TheWhy {
             sound("sfx_cables.mp3", 69.6, -11.0),
             sound("sfx_deck.mp3", 70.0, -5.0),
             sound("sfx_village.mp3", 71.0, -16.0).fade_out(1.0),
-            sound("sfx_glass.mp3", 73.5, -11.0),
-            sound("sfx_streak.mp3", 76.8, -10.0),
+            // the greenhouse: drones carry the panels in, the panels click, the plants grow,
+            // a spark leads the whip pan to the launch
+            sound("sfx_drones.mp3", 73.5, -17.0)
+                .fade_in(0.4)
+                .fade_out(1.0),
+            sound("sfx_glass.mp3", 74.0, -11.0),
+            sound("sfx_bloom.mp3", 74.4, 4.0).fade_out(0.8),
+            sound("sfx_streak.mp3", 76.7, -10.0),
+            // the launch: the lamps run up the tower, the deluge, the ignition, the flare
+            sound("sfx_ignite.mp3", 77.45, -16.0),
+            sound("sfx_deluge.mp3", 78.55, -12.0).fade_out(1.0),
             sound("sfx_rocket.mp3", 78.9, -7.0).fade_out(1.0),
-            sound("sfx_sun.mp3", 81.3, -9.0),
+            sound("sfx_sun.mp3", 81.55, -9.0),
             sound("sfx_breeze.mp3", 82.6, 10.0)
                 .fade_in(2.0)
                 .fade_out(2.0),
