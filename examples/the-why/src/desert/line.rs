@@ -173,10 +173,10 @@ impl DesertSet {
         let mut pose = if t < TOUCH {
             let kneel = Pose::kneel(kneel_at_cut() + t / KNEEL);
             let reach = smoothstep(knee_down() - 0.15, TOUCH, t);
-            kneel.lerp(&Pose::draw(0.0, mud(0.0) + 0.07 * (1.0 - reach)), reach)
+            kneel.lerp(&Pose::draw(0.0, mud(0.0) + 0.07 * (1.0 - reach), t), reach)
         } else {
             let u = drawn(t);
-            Pose::draw(u, mud(u) + 0.035 * smoothstep(LIFT, LIFT + 0.6, t))
+            Pose::draw(u, mud(u) + 0.035 * smoothstep(LIFT, LIFT + 0.6, t), t)
         }
         .placed(Vec3::ZERO, kneel_heading());
         pose.position.y = root;

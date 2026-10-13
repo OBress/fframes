@@ -102,7 +102,7 @@ fn poses() -> Vec<(Pose, f32)> {
         poses.push((Pose::kneel(t), 0.7));
     }
     for t in [0.0, 0.5, 1.0] {
-        poses.push((Pose::draw(t, 0.0), 0.55));
+        poses.push((Pose::draw(t, 0.0, 0.0), 0.55));
     }
     poses.push((Pose::look_up(1.0), 0.95));
     poses
@@ -140,7 +140,7 @@ fn silhouette() {
         Pose::walk(0.3, 1.0),
         Pose::walk(0.6, 1.0),
         Pose::kneel(1.0),
-        Pose::draw(0.3, 0.0),
+        Pose::draw(0.3, 0.0, 0.0),
         Pose::look_up(1.0),
     ];
     for (view, azimuth) in [("side", 90.0), ("three_quarter", 140.0)] {
@@ -162,7 +162,7 @@ fn hand_close_up() {
     for (name, (scene, figure)) in [("clay", studio()), ("dark", backlit())] {
         let mut tiles = Vec::new();
         for t in [0.0, 0.5, 1.0] {
-            let pose = Pose::draw(t, 0.0);
+            let pose = Pose::draw(t, 0.0, 0.0);
             let target = line_point(t) + Vec3::Y * 0.05;
             for azimuth in [-60.0, 30.0] {
                 let camera = Camera::perspective(30.0).orbit(target, 0.7, azimuth, 30.0);
@@ -245,7 +245,7 @@ fn fingertip_follows_the_line() {
     let root = Mat4::from_rotation_translation(Quat::from_rotation_y(heading), origin);
     for k in 0..=40 {
         let t = k as f32 / 40.0;
-        figure.apply(&mut scene, &Pose::draw(t, 0.0).placed(origin, heading));
+        figure.apply(&mut scene, &Pose::draw(t, 0.0, 0.0).placed(origin, heading));
         let tip = figure.fingertip(&scene);
         let line = root.transform_point3(line_point(t));
         assert!(
@@ -366,7 +366,7 @@ fn detail_shots() {
     let renderer = Renderer::new(1280, 720).cpu();
 
     let (scene, figure) = night();
-    let pose = Pose::draw(0.5, 0.0);
+    let pose = Pose::draw(0.5, 0.0, 0.0);
     let tip = line_point(0.5);
     let camera = Camera::perspective(lens(100.0)).orbit(tip + Vec3::Y * 0.12, 0.8, -50.0, 25.0);
     render(&renderer, &scene, &figure, &pose, &camera)

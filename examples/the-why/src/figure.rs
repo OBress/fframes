@@ -75,9 +75,9 @@ pub const RIGHT: usize = 1;
 pub const KNEEL_CONTACTS: [f32; 3] = [0.35, 0.7, 1.0];
 
 /// The start of the line that [`Pose::draw`] draws, in root space, in meters.
-pub const LINE_START: Vec3 = Vec3::new(-0.2, 0.0, 0.95);
-/// The end of the line. The line is 0.6 m long.
-pub const LINE_END: Vec3 = Vec3::new(-0.24, 0.0, 0.35);
+pub const LINE_START: Vec3 = Vec3::new(-0.218, 0.0, 0.55);
+/// The end of the line, beside the right knee. The line is 0.43 m long.
+pub const LINE_END: Vec3 = Vec3::new(-0.247, 0.0, 0.12);
 
 /// The point at the part `u` (`0..1`) of the line that [`Pose::draw`] draws, in root
 /// space. A hand does not draw a straight line: the path bows 12 mm to the side and
@@ -151,7 +151,10 @@ const KNEE_POLES: [Vec3; 2] = [Vec3::new(0.25, 0.0, 1.0), Vec3::new(-0.25, 0.0, 
 /// The right knee joint when he kneels. It is below the right hip joint.
 const KNEE_DOWN: Vec3 = Vec3::new(-0.09, KNEE_RADIUS, 0.0);
 /// The heel point and the turn (radians) of the left foot when he kneels.
-const KNEEL_LEFT: (Vec3, f32) = (Vec3::new(0.17, 0.0, 0.52), 0.15);
+const KNEEL_LEFT: (Vec3, f32) = (Vec3::new(0.17, 0.0, 0.36), 0.15);
+/// Where he stands when the kneel begins, along Z from the root, in meters. The body goes
+/// forward and down onto the knee, and the right foot steps back only a little.
+const KNEEL_START: f32 = -0.25;
 /// The turn of the right foot when he kneels, in radians.
 const KNEEL_RIGHT_YAW: f32 = -0.06;
 /// The angle of the right foot, heel up, when he kneels on its toes.
@@ -169,6 +172,9 @@ const INDEX: usize = 1;
 
 /// The bend of the fingers of a relaxed hand: thumb, index, middle, ring, little finger.
 const RELAXED: [f32; 5] = [0.2, 0.25, 0.32, 0.38, 0.45];
+/// The bend of the fingers of a hand that hangs loose: the fingers curl more from the index
+/// to the little finger.
+const LOOSE: [f32; 5] = [0.3, 0.32, 0.42, 0.5, 0.6];
 
 /// A finger of the left hand. The right hand mirrors X.
 struct Finger {
@@ -643,73 +649,129 @@ impl Pose {
     }
 
     /// The distance of one gait cycle (two steps) at `speed` meters per second, in meters.
+    /// At 1 m/s a step is 0.6 m long, and he takes 100 steps a minute.
     pub fn stride(speed: f32) -> f32 {
-        2.0 * (0.42 + 0.21 * speed.clamp(0.3, 2.0))
+        2.0 * (0.36 + 0.24 * speed.clamp(0.3, 2.0))
     }
 
     /// A walk along +Z at `speed` meters per second. `phase` counts gait cycles: the right
     /// heel strikes at each whole number, the left heel half a cycle later. The root moves
     /// `phase * Pose::stride(speed)` meters, so a planted foot stays in place.
+    ///
+    /// The motion follows the joint curves of a slow, tired walk. The pelvis turns, drops
+    /// on the side of the swing leg and moves over the standing foot. It is lowest just
+    /// after a heel strike, when the knee of the new standing leg bends to take the weight.
+    /// The chest turns against the pelvis. The arms swing late and loose, and the head is
+    /// steadier than the body. Each step is a little different.
     pub fn walk(phase: f32, speed: f32) -> Pose {
         let stride = Self::stride(speed);
-        let travel = phase * stride;
         let amount = (speed / 1.3).clamp(0.3, 1.4);
-        let angle = TAU * phase;
+        let a = TAU * phase;
+        // A value in -1..1 that changes from step to step.
+        let vary = |seed: u32| noise1(seed, 2.0 * phase);
         let mut pose = Pose {
-            position: vec3(0.0, 0.0, travel),
+            position: vec3(0.0, 0.0, phase * stride),
+            fingers: [LEFT, RIGHT].map(|i| {
+                std::array::from_fn(|f| {
+                    let seed = 40 + 5 * i as u32 + f as u32;
+                    LOOSE[f] + 0.06 * noise1(seed, 1.3 * phase)
+                })
+            }),
             ..Pose::default()
         };
 
-        // The pelvis turns forward on the side of the swing leg, drops on that side and
-        // moves over the standing foot.
-        let yaw = 0.08 * amount * angle.cos();
-        let list = -0.045 * angle.sin();
-        let lean = 0.02 + 0.04 * amount;
-        pose[Pelvis] = Quat::from_rotation_y(yaw) * Quat::from_rotation_z(list);
-        pose.pelvis.x = -0.02 * angle.sin();
+        // The pelvis turns forward on the side of the swing leg, drops on that side early in
+        // the stance and moves over the standing foot. It tips forward a little after each
+        // heel strike. The body is slowest over the standing foot.
+        let yaw = 0.075 * amount * (a - 0.15).cos() * (1.0 + 0.15 * vary(11));
+        let list = -0.06 * (a + 0.35).sin() * (1.0 + 0.2 * vary(12));
+        let tilt = 0.03 + 0.02 * (2.0 * a - 0.6).cos();
+        pose[Pelvis] =
+            Quat::from_rotation_y(yaw) * Quat::from_rotation_x(tilt) * Quat::from_rotation_z(list);
+        pose.pelvis.x = -0.026 * (a - 0.3).sin() * (1.0 + 0.15 * vary(13));
+        pose.pelvis.z = 0.01 * amount * (2.0 * a).sin();
         let feet = [phase - 0.5, phase].map(|cycle| {
             let side = if cycle < phase { 1.0 } else { -1.0 };
             let mut foot = walk_foot(cycle, stride, side);
             foot.ankle.z -= cycle * stride;
             foot
         });
-        pose.pelvis.y = pose.pelvis_reach(&feet, 0.997, 0.04);
+        // The pelvis is highest over the standing foot and lowest just after each heel
+        // strike. It never goes higher than the legs reach, so the knees do not lock.
+        let bob = 0.022 * amount * (1.0 + 0.2 * vary(14));
+        let height = -0.014 + bob * (2.0 * a - TAU * 0.56).cos();
+        pose.pelvis.y = smooth_min(height, pose.pelvis_reach(&feet, 0.999, 0.0), 0.02);
         pose.solve_legs(&feet, [vec3(0.1, 0.0, 1.0), vec3(-0.1, 0.0, 1.0)]);
 
-        // The spine turns against the pelvis, so the shoulders stay calm and the head
-        // looks ahead.
-        pose[Spine] = euler(0.4 * lean, -0.7 * yaw, -0.6 * list);
-        pose[Chest] = euler(0.6 * lean, -0.6 * yaw, -0.3 * list);
-        pose[Neck] = euler(0.03 - 0.4 * lean, 0.15 * yaw, 0.0);
-        pose[Head] = euler(0.03 - 0.6 * lean, 0.15 * yaw, -0.1 * list);
+        // The chest turns against the pelvis, a little later, with the arms. The spine bends
+        // against the drop of the pelvis and leans over the standing foot. He walks a little
+        // bent forward: he is tired.
+        let turn = -0.06 * amount * (a - 0.4).cos() - yaw;
+        let lean = 0.02 * (a - 0.35).sin();
+        let bend = 0.015 * (2.0 * a - 0.9).cos();
+        pose[Spine] = euler(0.05 + 0.4 * bend, 0.5 * turn, -0.6 * list + lean);
+        pose[Chest] = euler(0.09 + 0.6 * bend, 0.5 * turn, -0.3 * list + 0.5 * lean);
 
-        // The arms swing against the legs: the left arm is forward when the right heel
-        // strikes. The elbow bends more when the arm is forward.
-        let swing = 0.24 * amount;
-        let forward = (angle - 0.25).cos();
+        // The arms swing against the legs. Each arm is most forward a little after the heel
+        // strike of the other foot. The elbow bends later than the shoulder swings, and the
+        // hand trails the forearm. The shoulders hang forward, and the right arm swings a
+        // little more than the left.
         for i in [LEFT, RIGHT] {
             let side = SIDE[i];
-            let [_, shoulder, elbow, _] = ARMS[i];
-            let f = side * forward;
-            pose[shoulder] = euler(0.03 - swing * f, 0.0, side * 0.1);
-            pose[elbow] = euler(-0.22 - 0.2 * (0.5 + 0.5 * f), 0.0, 0.0);
+            let [clavicle, shoulder, elbow, wrist] = ARMS[i];
+            let center = 0.09 + 0.5 * i as f32;
+            let wave = |lag: f32| {
+                let x = TAU * (phase - center - lag);
+                x.cos() + 0.12 * (2.0 * x - 0.8).cos()
+            };
+            let swing = 0.27 * amount * (1.0 + 0.15 * vary(20 + i as u32)) * (1.0 - 0.06 * side);
+            pose[clavicle] = euler(0.0, -side * (0.1 + 0.05 * wave(0.0)), -side * 0.03);
+            pose[shoulder] = euler(
+                0.05 - swing * wave(0.0),
+                -side * 0.25,
+                side * (0.11 - 0.03 * wave(0.0)),
+            );
+            pose[elbow] = euler(-(0.25 + 0.35 * amount * (0.5 + 0.5 * wave(0.07))), 0.0, 0.0);
+            let trail = (TAU * (phase - center - 0.1)).sin();
+            pose[wrist] = euler(-0.15 * trail, 0.0, -side * 0.15);
         }
+
+        // The head looks a little down at the ground ahead. It turns only a part of the
+        // way with the chest, and slowly looks around.
+        let look = euler(
+            0.14 + 0.04 * noise1(51, 0.5 * phase),
+            0.06 * noise1(52, 0.35 * phase),
+            0.0,
+        );
+        pose.steady_head(look, 0.3);
         pose
     }
 
-    /// He kneels on the right knee. The left foot steps forward, the right foot steps back
-    /// onto its toes, and the body goes down. `t` goes from 0 ([`Pose::stand`] at time 0)
-    /// to 1 (on the knee). The film plays it over about 1.5 s.
+    /// He kneels on the right knee. `t` goes from 0 ([`Pose::stand`] at time 0) to 1, when
+    /// the knee touches the ground, see [`KNEEL_CONTACTS`]. The film plays it over about 1.5
+    /// s.
+    ///
+    /// First his weight goes onto the right foot, and the left foot steps forward. Then the
+    /// weight goes forward onto the left foot, the right foot goes back onto its toes and
+    /// the body goes down. He leans forward to keep his balance: the left hand reaches for
+    /// the left knee, and the right arm comes out a little. The knee touches the ground
+    /// softly. From 1 to about 1.5 the body settles: it sinks back a little and comes
+    /// forward again, and he breathes out.
     pub fn kneel(t: f32) -> Pose {
+        let settle = settle(t - 1.0);
         let t = t.clamp(0.0, 1.0);
-        let start = Pose::stand(0.0);
-        let end = kneeling(0.1, 0.12);
+        let back = vec3(0.0, 0.0, KNEEL_START);
+        let mut start = Pose::stand(0.0);
+        start.pelvis += back;
+        let end = kneeling(0.1 - 0.06 * settle, 0.12 + 0.05 * settle);
         // One foot steps at a time, so the other foot carries the weight.
         let [left_down, right_down, knee_down] = KNEEL_CONTACTS;
         let left_step = smoothstep(0.0, left_down, t);
         let right_step = smoothstep(left_down, right_down, t);
-        let down = smoothstep(0.3, knee_down, t);
-        let upper = smoothstep(0.2, 1.0, t);
+        // The body goes down slowly at the end, so the knee touches the ground softly.
+        let down = smoothstep(0.35, knee_down, t);
+        let ahead = smoothstep(0.05, 0.5, t);
+        let upper = smoothstep(0.15, 0.9, t);
 
         let mut pose = start.clone();
         for joint in UPPER_BODY {
@@ -720,20 +782,33 @@ impl Pose {
                 *curl += (end_curl - *curl) * upper;
             }
         }
+        // He leans forward while he goes down, and a little again when he settles.
+        let lean = 0.16 * bump(t, 0.35, 0.75, 1.0) + 0.06 * settle;
+        pose[Spine] *= Quat::from_rotation_x(0.4 * lean);
+        pose[Chest] *= Quat::from_rotation_x(0.6 * lean + 0.03 * settle);
+        // The right arm comes forward and out for balance.
+        let balance = bump(t, 0.3, 0.65, 1.0);
+        pose[ShoulderR] *= euler(-0.2 * balance, 0.0, -0.22 * balance);
+        pose[ElbowR] *= Quat::from_rotation_x(-0.3 * balance);
         pose[Pelvis] = start[Pelvis].slerp(end[Pelvis], down);
-        pose.pelvis = start.pelvis.lerp(end.pelvis, down);
+        pose.pelvis = start.pelvis.lerp(end.pelvis, ahead);
+        // The weight goes onto the right foot while the left foot steps, then onto the left
+        // foot while the body goes down.
+        pose.pelvis.x += -0.03 * bump(t, 0.0, 0.18, left_down) + 0.035 * bump(t, 0.3, 0.6, 1.0);
 
         let (left_heel, left_yaw) = STAND_FEET[LEFT];
         let (right_heel, right_yaw) = STAND_FEET[RIGHT];
+        // A foot that steps lifts first and stops before it touches down.
+        let reach = |step: f32| smoothstep(0.0, 0.8, step);
         let mut left = planted(
-            left_heel.lerp(KNEEL_LEFT.0, left_step),
-            left_yaw + (KNEEL_LEFT.1 - left_yaw) * left_step,
+            (left_heel + back).lerp(KNEEL_LEFT.0, reach(left_step)),
+            left_yaw + (KNEEL_LEFT.1 - left_yaw) * reach(left_step),
             0.0,
         );
         left.ankle.y += 0.08 * (PI * left_step).sin();
         let mut right = planted(
-            right_heel.lerp(kneeling_heel(), right_step),
-            right_yaw + (KNEEL_RIGHT_YAW - right_yaw) * right_step,
+            (right_heel + back).lerp(kneeling_heel(), reach(right_step)),
+            right_yaw + (KNEEL_RIGHT_YAW - right_yaw) * reach(right_step),
             -TUCK * right_step,
         );
         right.ankle.y += 0.04 * (PI * right_step).sin();
@@ -744,45 +819,67 @@ impl Pose {
         let hip = pose.hip(RIGHT);
         let knee = KNEE_POLES[RIGHT]
             .normalize()
-            .lerp((KNEE_DOWN - hip).normalize(), down);
+            .lerp((KNEE_DOWN - hip).normalize(), right_step);
         pose.solve_legs(&feet, [KNEE_POLES[LEFT], knee]);
         pose
     }
 
     /// He kneels, leans forward and draws a line in the dust with the right index finger.
     /// The tip of the finger is `lift` meters above [`line_point`]`(t)`, see
-    /// [`Figure::fingertip`]. The other fingers curl, and the left hand rests on the left
-    /// thigh.
-    pub fn draw(t: f32, lift: f32) -> Pose {
+    /// [`Figure::fingertip`]. `time` in seconds moves the breath and the small corrections
+    /// of the hand.
+    ///
+    /// The index finger points, and the other fingers curl loosely. The finger trails the
+    /// wrist, most in the middle of the stroke. The eyes go ahead of the hand, and the hips
+    /// and the shoulder follow it late. The left hand rests on the left knee.
+    pub fn draw(t: f32, lift: f32, time: f32) -> Pose {
         let t = t.clamp(0.0, 1.0);
         let tip = line_point(t) + Vec3::Y * (0.004 + lift);
-        let fingers = [1.0, 0.08, 0.92, 1.0, 1.0];
-        // The finger points down and forward along the line, so it drags in the dust.
-        let ahead = (LINE_START - LINE_END).normalize();
-        let hand = hand_rotation(ahead * 0.7 + Vec3::NEG_Y, Vec3::X);
+        // The fingers curl more when the hand lifts from the dust.
+        let relax = (lift / 0.03).clamp(0.0, 1.0);
+        let fingers = [
+            0.55 + 0.1 * relax,
+            0.1 + 0.3 * relax,
+            0.62 + 0.1 * relax,
+            0.72 + 0.08 * relax,
+            0.8 + 0.06 * relax,
+        ];
+        // The finger points down and back along the line, so it drags in the dust. Small
+        // corrections turn the hand.
+        let back = (LINE_START - LINE_END).normalize();
+        let across = back.cross(Vec3::Y);
+        let drag = 0.9 + 0.3 * (PI * t).sin();
+        let hand = hand_rotation(
+            back * drag + across * (0.08 * noise1(61, 2.2 * time)) + Vec3::NEG_Y,
+            Vec3::X + back * (0.15 * noise1(62, 1.7 * time)),
+        );
         let wrist = tip - hand * index_tip_in_wrist(SIDE[RIGHT], fingers[INDEX]);
 
         // He bends from the hips, with a little bend of the back to the right. The hips
-        // start forward over the right knee and rock back as the finger comes closer. He
-        // bends only as far as the arm needs to reach the wrist. The right shoulder comes
-        // forward and down with the bend.
-        let forward = 0.85 - 1.05 * t;
+        // start forward over the right knee and rock back as the finger comes closer, a
+        // little later than the hand. He bends only as far as the arm needs to reach the
+        // wrist. The right shoulder comes forward and down with the bend.
+        let body = t - 0.1 * (PI * t).sin();
+        let forward = 0.65 - 0.9 * body;
+        let breath = breath(time);
         let bent = |bend: f32| {
             let mut pose = kneeling(forward, 0.12 + 0.7 * bend);
             pose[Spine] = euler(0.15 * bend, -0.05, 0.06 * bend);
-            pose[Chest] = euler(0.15 * bend, -0.1, 0.06 * bend);
+            pose[Chest] = euler(0.15 * bend - 0.015 * breath, -0.1, 0.06 * bend);
             pose[ClavicleR] = euler(0.0, 0.2 * bend, 0.12 * bend);
+            pose[ClavicleL] = Quat::from_rotation_z(0.012 * breath);
             pose
         };
         let bend = least(1.4, |bend| {
             let shoulder = bent(bend).joint_matrices()[ShoulderR as usize].w_axis;
-            shoulder.truncate().distance(wrist) <= 0.92 * (UPPER_ARM + FOREARM)
+            shoulder.truncate().distance(wrist) <= 0.95 * (UPPER_ARM + FOREARM)
         });
         let mut pose = bent(bend);
         pose.fingers[RIGHT] = fingers;
         pose.reach(RIGHT, wrist, hand, vec3(-0.8, 0.3, -0.5));
         pose.rest_hand_on_thigh(1.2);
-        pose.look_at(tip);
+        // The eyes go ahead of the finger along the line.
+        pose.look_at(line_point((t + 0.12).min(1.0)) + back * (0.02 * noise1(63, 0.9 * time)));
         pose
     }
 
@@ -842,7 +939,7 @@ impl Pose {
     /// the feet and the knees on the ground.
     pub fn lerp(&self, other: &Pose, t: f32) -> Pose {
         let turn = (other.heading - self.heading + PI).rem_euclid(TAU) - PI;
-        let pose = Pose {
+        let mut pose = Pose {
             position: self.position.lerp(other.position, t),
             heading: self.heading + turn * t,
             pelvis: self.pelvis.lerp(other.pelvis, t),
@@ -853,7 +950,45 @@ impl Pose {
                 })
             }),
         };
+        // Each foot goes straight from its place in one pose to its place in the other, and
+        // turns around its heel. Thus a foot whose heel stands in the same place in both
+        // poses does not slide. The knees keep the side to which they point in the blend.
+        let world = |p: &Pose, foot: Foot| {
+            let turn = Quat::from_rotation_y(p.heading);
+            let rotation = turn * foot.rotation;
+            (p.position + turn * foot.ankle + rotation * HEEL, rotation)
+        };
+        let to_root = Quat::from_rotation_y(pose.heading).inverse();
+        let (from, to) = (self.feet(), other.feet());
+        let feet = [LEFT, RIGHT].map(|i| {
+            let (a, ra) = world(self, from[i]);
+            let (b, rb) = world(other, to[i]);
+            let rotation = ra.slerp(rb, t);
+            Foot {
+                ankle: to_root * (a.lerp(b, t) - rotation * HEEL - pose.position),
+                rotation: to_root * rotation,
+                toes: from[i].toes + (to[i].toes - from[i].toes) * t,
+            }
+        });
+        let m = pose.joint_matrices();
+        let poles = LEGS.map(|[hip, knee, _, _]| {
+            m[knee as usize].w_axis.truncate() - m[hip as usize].w_axis.truncate() + Vec3::Z * 0.02
+        });
+        pose.solve_legs(&feet, poles);
         pose.grounded()
+    }
+
+    /// The places of the feet in root space.
+    fn feet(&self) -> [Foot; 2] {
+        let m = self.joint_matrices();
+        LEGS.map(|[_, _, ankle, toe]| {
+            let toes = self[toe];
+            Foot {
+                ankle: m[ankle as usize].w_axis.truncate(),
+                rotation: Quat::from_mat4(&m[ankle as usize]),
+                toes: 2.0 * toes.x.atan2(toes.w),
+            }
+        })
     }
 
     /// Moves the pelvis up or down so that the lowest point of the soles and the knees
@@ -888,35 +1023,54 @@ impl Pose {
         self.joint_matrices()[LEGS[i][2] as usize].transform_point3(HEEL)
     }
 
-    /// The idle stance at `time` seconds. `look` lifts the chest and the head, `0..1`.
+    /// The idle stance at `time` seconds. `look` lifts the chest and the head, `0..1`. He
+    /// breathes, his weight moves slowly from one leg to the other, he sways a little over
+    /// the ankles, and the arms and the fingers are never quite still.
     fn standing(time: f32, look: f32) -> Pose {
-        let breath = (TAU * time / 4.5).sin();
+        let breath = breath(time);
         // Positive puts the weight on the left leg.
         let weight = 0.7 * (TAU * time / 11.0).sin() + 0.3 * noise1(3, 0.2 * time);
+        let sway = 0.008 * noise1(4, 0.35 * time);
         let mut pose = Pose {
-            pelvis: vec3(0.02 * weight, 0.0, 0.02 * look),
+            pelvis: vec3(0.02 * weight, 0.0, 0.02 * look + sway),
+            fingers: [LEFT, RIGHT].map(|i| {
+                std::array::from_fn(|f| {
+                    let seed = 80 + 5 * i as u32 + f as u32;
+                    LOOSE[f] + 0.05 * noise1(seed, 0.3 * time)
+                })
+            }),
             ..Pose::default()
         };
-        pose[Pelvis] = euler(-0.03 * look, 0.0, 0.03 * weight);
+        pose[Pelvis] = euler(-0.03 * look, 0.03 * noise1(13, 0.1 * time), 0.03 * weight);
         let feet = STAND_FEET.map(|(heel, yaw)| planted(heel, yaw, 0.0));
         pose.pelvis.y = pose.pelvis_reach(&feet, STAND_EXTENSION, 0.0);
         pose.solve_legs(&feet, KNEE_POLES);
 
         // The spine keeps the shoulders level, and the chest rises when he breathes in.
-        pose[Spine] = euler(-0.02 - 0.05 * look, 0.0, -0.02 * weight);
-        pose[Chest] = euler(0.02 - 0.012 * breath - 0.1 * look, 0.0, -0.012 * weight);
+        pose[Spine] = euler(
+            -0.02 - 0.05 * look,
+            -0.02 * noise1(13, 0.1 * time),
+            -0.02 * weight,
+        );
+        pose[Chest] = euler(0.02 - 0.015 * breath - 0.1 * look, 0.0, -0.012 * weight);
         pose[Neck] = euler(0.06 - 0.25 * look, 0.0, 0.0);
         pose[Head] = euler(
-            0.03 + 0.02 * noise1(6, 0.2 * time) - 0.4 * look,
-            0.06 * noise1(5, 0.25 * time),
-            0.0,
+            0.03 + 0.03 * noise1(6, 0.2 * time) - 0.4 * look,
+            0.08 * noise1(5, 0.25 * time),
+            0.02 * noise1(7, 0.15 * time),
         );
         for i in [LEFT, RIGHT] {
             let side = SIDE[i];
-            let [clavicle, shoulder, elbow, _] = ARMS[i];
-            pose[clavicle] = euler(0.0, side * 0.06 * look, side * 0.01 * breath);
-            pose[shoulder] = euler(0.03, 0.0, side * 0.11);
-            pose[elbow] = euler(-0.16, 0.0, 0.0);
+            let [clavicle, shoulder, elbow, wrist] = ARMS[i];
+            let drift = |seed: u32, rate: f32| noise1(seed + 10 * i as u32, rate * time);
+            pose[clavicle] = euler(0.0, side * 0.06 * look, side * 0.012 * breath);
+            pose[shoulder] = euler(
+                0.03 + 0.02 * drift(20, 0.3) + 0.005 * breath,
+                -side * 0.2,
+                side * (0.11 + 0.01 * drift(21, 0.2)),
+            );
+            pose[elbow] = euler(-0.2 - 0.05 * drift(22, 0.25), 0.0, 0.0);
+            pose[wrist] = euler(0.04 * drift(23, 0.3), 0.0, -side * 0.12);
         }
         pose
     }
@@ -993,6 +1147,16 @@ impl Pose {
         let wrist = hip.lerp(knee, along) + Vec3::Y * 0.08;
         let hand = hand_rotation(knee - hip + Vec3::NEG_Y * 0.4, Vec3::NEG_X);
         self.reach(LEFT, wrist, hand, vec3(1.0, -0.3, 0.0));
+    }
+
+    /// Turns the neck and the head so that the head has the rotation `level` in root
+    /// space, and follows the turn of the chest only for the part `follow`. The neck does 40
+    /// % of the turn. A head that does not follow the chest is steadier than the body.
+    fn steady_head(&mut self, level: Quat, follow: f32) {
+        let chest = Quat::from_mat4(&self.joint_matrices()[Chest as usize]);
+        let turn = chest.inverse() * level.slerp(chest, follow);
+        self[Neck] = Quat::IDENTITY.slerp(turn, 0.4);
+        self[Head] = self[Neck].inverse() * turn;
     }
 
     /// Turns the neck and the head toward `target`, in root space. The eyes do the rest,
@@ -1085,9 +1249,20 @@ fn planted(heel: Vec3, yaw: f32, roll: f32) -> Foot {
 /// strike. Z is relative to the root at cycle 0, and the root moves one stride in each
 /// cycle.
 fn walk_foot(cycle: f32, stride: f32, side: f32) -> Foot {
-    let yaw = side * 0.08;
+    // Each step lands a little differently: a value in -1..1 for each step and foot.
+    let vary = |step: f32, seed: u32| {
+        let n = (step as i32 as u32).wrapping_mul(2) + u32::from(side > 0.0);
+        hash(n.wrapping_mul(7919) ^ seed.wrapping_mul(104_729)) * 2.0 - 1.0
+    };
+    let yaw = |step: f32| side * 0.08 + 0.035 * vary(step, 1);
     // The ankle is below the hip in the middle of the stance.
-    let heel = |step: f32| vec3(side * 0.075, 0.0, (step + 0.25) * stride + HEEL.z);
+    let heel = |step: f32| {
+        vec3(
+            side * (0.075 + 0.01 * vary(step, 2)),
+            0.0,
+            (step + 0.25) * stride + HEEL.z,
+        )
+    };
     // Heel strike, then the foot rolls flat, then the heel lifts until the toes leave.
     let stance = |f: f32, step: f32| {
         let roll = if f < FOOT_FLAT {
@@ -1095,7 +1270,7 @@ fn walk_foot(cycle: f32, stride: f32, side: f32) -> Foot {
         } else {
             -TOE_OFF * progress(f, HEEL_OFF, STANCE).powi(2)
         };
-        planted(heel(step), yaw, roll)
+        planted(heel(step), yaw(step), roll)
     };
     let step = cycle.floor();
     let f = cycle - step;
@@ -1103,20 +1278,23 @@ fn walk_foot(cycle: f32, stride: f32, side: f32) -> Foot {
         return stance(f, step);
     }
 
-    // The swing: the foot lifts, goes forward and turns from toes down to toes up.
+    // The swing: the foot lifts, goes forward and turns from toes down to toes up. A tired
+    // foot lifts little.
     let s = (f - STANCE) / (1.0 - STANCE);
     let from = stance(STANCE, step);
     let to = stance(0.0, step + 1.0);
+    let lift = 0.06 + 0.01 * vary(step, 3);
     let mut ankle = from.ankle.lerp(to.ankle, smoothstep(0.0, 1.0, s));
-    ankle.y = from.ankle.y + (to.ankle.y - from.ankle.y) * s + 0.07 * (PI * s.sqrt()).sin().powi(2);
+    ankle.y = from.ankle.y + (to.ankle.y - from.ankle.y) * s + lift * (PI * s.sqrt()).sin().powi(2);
     let pitch = -TOE_OFF + (STRIKE + TOE_OFF) * (1.0 - (1.0 - s).powi(2));
     let mut foot = Foot {
         ankle,
-        rotation: Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-pitch),
+        rotation: Quat::from_rotation_y(yaw(step) + (yaw(step + 1.0) - yaw(step)) * s)
+            * Quat::from_rotation_x(-pitch),
         toes: -TOE_OFF * (1.0 - smoothstep(0.0, 0.4, s)),
     };
     // The sole keeps a small distance from the ground.
-    let clearance = 0.012 * (PI * s).sin();
+    let clearance = 0.008 * (PI * s).sin();
     foot.ankle.y += (clearance - foot.lowest()).max(0.0);
     foot
 }
@@ -1241,6 +1419,30 @@ fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     }
     let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
     b + (a - b) * h - k * h * (1.0 - h)
+}
+
+/// The breath at `time` seconds, from -1 (breathed out) to 1 (breathed in). He breathes
+/// about 14 times a minute, a little irregularly. He breathes in for 40 % of a breath and
+/// out for the rest.
+fn breath(time: f32) -> f32 {
+    let x = (time / 4.3 + 0.08 * noise1(71, 0.15 * time)).fract();
+    if x < 0.4 {
+        -(PI * x / 0.4).cos()
+    } else {
+        (PI * (x - 0.4) / 0.6).cos()
+    }
+}
+
+/// A smooth bump: 0 before `start`, 1 at `peak` and 0 again after `end`.
+fn bump(t: f32, start: f32, peak: f32, end: f32) -> f32 {
+    smoothstep(start, peak, t) * (1.0 - smoothstep(peak, end, t))
+}
+
+/// The settle after a contact, `s` seconds of the motion after it: 0 before the contact,
+/// up to 1 after 0.12, and back to 0 within about 0.5.
+fn settle(s: f32) -> f32 {
+    let k = (s / 0.12).max(0.0);
+    k * (1.0 - k).exp()
 }
 
 /// Skin weights for a part that runs along `axis` in the rest pose. The part belongs to

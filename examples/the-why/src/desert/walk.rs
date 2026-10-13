@@ -11,8 +11,8 @@ use crate::look;
 /// The forward direction of the camera at the first frame. Shot 4 ends with this view of
 /// the stars.
 const FIRST_FORWARD: Vec3 = vec3(0.145, 0.906, 0.397);
-/// The walking speed in meters per second.
-const SPEED: f32 = 1.1;
+/// The walking speed in meters per second: slow and tired.
+const SPEED: f32 = 1.0;
 /// The story time at which he stops and begins to kneel, in seconds.
 const STOP: f32 = 8.5;
 /// The story time that the kneel takes, in seconds.
@@ -100,7 +100,7 @@ fn story_time(t: f32) -> f32 {
 /// The pose of the engineer at the story time `tau`: he walks to the origin and kneels.
 fn pose(tau: f32) -> Pose {
     let heading = kneel_heading();
-    let walk = |tau: f32| Pose::walk(tau * SPEED / Pose::stride(SPEED), SPEED);
+    let walk = |tau: f32| Pose::walk(walk_phase(tau), SPEED);
     // The walk ends with the right foot planted where the kneel starts, so the foot does
     // not slide in the blend.
     let last = walk(STOP);
@@ -110,10 +110,11 @@ fn pose(tau: f32) -> Pose {
     if tau <= STOP {
         return walk_at(tau);
     }
-    // The last step blends into the kneel.
-    let blend = smoothstep(STOP, STOP + 0.45, tau);
+    // The last step blends into the kneel. The blend ends before the left foot of the
+    // kneel touches down.
+    let blend = smoothstep(STOP, STOP + 0.3 * KNEEL, tau);
     let kneel = Pose::kneel((tau - STOP) / KNEEL).placed(Vec3::ZERO, heading);
-    walk_at(STOP + 0.25 * blend).lerp(&kneel, blend)
+    walk_at(STOP + 0.2 * blend).lerp(&kneel, blend)
 }
 
 /// The part of [`Pose::kneel`] at the end of the shot. Shot 6 goes on from it.
@@ -121,12 +122,23 @@ pub(super) fn kneel_at_cut() -> f32 {
     (story_time(WALK_SECONDS) - STOP) / KNEEL
 }
 
-/// The shot time in seconds at the story time `tau`: the inverse of [`story_time`].
-fn shot_time(tau: f32) -> f32 {
-    let (mut low, mut high) = (0.0, WALK_SECONDS + 10.0);
+/// The gait cycles of the walk at the story time `tau`, see [`Pose::walk`]. The pace
+/// drifts a little, so the steps do not come like clockwork. At [`STOP`] the right heel
+/// has just struck: the kneel starts on that foot.
+fn walk_phase(tau: f32) -> f32 {
+    let drift = |tau: f32| 0.04 * noise1(77, 0.45 * tau);
+    let end = 7.16;
+    let rate = (end - drift(STOP) + drift(0.0)) / STOP;
+    tau * rate + drift(tau) - drift(0.0)
+}
+
+/// The time at which `f`, a function that grows with time, reaches `value`. It searches
+/// from 0 to `high` seconds.
+fn solve(f: impl Fn(f32) -> f32, value: f32, high: f32) -> f32 {
+    let (mut low, mut high) = (0.0, high);
     for _ in 0..40 {
         let mid = f32::midpoint(low, high);
-        if story_time(mid) < tau {
+        if f(mid) < value {
             low = mid;
         } else {
             high = mid;
@@ -139,12 +151,13 @@ fn shot_time(tau: f32) -> f32 {
 /// the sounds of the steps: the heel strikes of the walk, then the left foot, the right foot
 /// and the right knee of the kneel. The times after the end of the shot are left out.
 pub fn footfalls() -> Vec<f32> {
-    // One step is half a gait cycle.
-    let step = 0.5 * Pose::stride(SPEED) / SPEED;
-    let walk = (1..).map(|k| k as f32 * step).take_while(|&tau| tau < STOP);
+    // The right heel strikes at each whole cycle, the left heel half a cycle later.
+    let first = (2.0 * walk_phase(0.0)).floor() as i32 + 1;
+    let last = (2.0 * walk_phase(STOP)).floor() as i32;
+    let walk = (first..=last).map(|k| solve(walk_phase, 0.5 * k as f32, STOP));
     let kneel = KNEEL_CONTACTS.map(|k| STOP + k * KNEEL);
     walk.chain(kneel)
-        .map(shot_time)
+        .map(|tau| solve(story_time, tau, WALK_SECONDS + 10.0))
         .filter(|&t| t < WALK_SECONDS)
         .collect()
 }
