@@ -108,7 +108,13 @@ impl TheWhy {
             "Line",
             6.5,
             DesertSet::renderer_line(width, height),
-            move |r, t| look::picture(r, set.shutter_line(t), t, |t| set.moment_line(t)),
+            // the hot air over the glowing line bends the picture behind it
+            move |r, t| {
+                let mut pixels =
+                    look::picture_pixels(r, set.shutter_line(t), t, |t| set.moment_line(t));
+                set.heat_shimmer(t, &mut pixels);
+                pixels.into_image()
+            },
         );
         let set = desert.clone();
         let sunrise = Shot::new(
