@@ -5,6 +5,7 @@
 #![allow(clippy::unreadable_literal)]
 
 pub mod assets;
+pub mod desert;
 pub mod factory;
 pub mod figure;
 pub mod look;
@@ -22,6 +23,7 @@ use fframes::{
 };
 
 use assets::Assets;
+use desert::DesertSet;
 use factory::FactorySet;
 use look::Overlay;
 use montage::MontageSet;
@@ -65,6 +67,29 @@ impl TheWhy {
         let wave = Shot::new("Wave", 8.5, renderer(), move |r, t| {
             look::picture(r, set.shutter_wave(t), t, |t| set.moment_wave(t))
         });
+        let desert = Arc::new(DesertSet::new(&assets));
+        let set = desert.clone();
+        let walk = Shot::new(
+            "Walk",
+            10.0,
+            DesertSet::renderer_walk(width, height),
+            move |r, t| look::picture(r, set.shutter_walk(t), t, |t| set.moment_walk(t)),
+        );
+        let set = desert.clone();
+        let line = Shot::new(
+            "Line",
+            6.5,
+            DesertSet::renderer_line(width, height),
+            move |r, t| look::picture(r, set.shutter_line(t), t, |t| set.moment_line(t)),
+        );
+        let set = desert.clone();
+        let sunrise = Shot::new(
+            "Sunrise",
+            10.0,
+            DesertSet::renderer_sunrise(width, height),
+            move |r, t| look::picture(r, set.shutter_sunrise(t), t, |t| set.moment_sunrise(t)),
+        )
+        .overlay(shots::title::quote);
         let montage = Arc::new(MontageSet::new(&assets));
         let (set, white) = (montage.clone(), montage.clone());
         let why = Shot::new(
@@ -80,11 +105,11 @@ impl TheWhy {
                 factory_shot,
                 engineer,
                 Shot::placeholder("City", 13.0),
-                Shot::placeholder("Walk", 10.0),
-                Shot::placeholder("Line", 6.5),
+                walk,
+                line,
                 wave,
                 why,
-                Shot::placeholder("Sunrise", 10.0).overlay(shots::title::quote),
+                sunrise,
                 Shot::svg("Title", 6.0, shots::title::title),
             ],
             overlay: Overlay::new(),
