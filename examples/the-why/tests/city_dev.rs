@@ -278,15 +278,83 @@ fn end_direction() {
     assert!(forward.distance(expected) < 1e-5, "{forward} != {expected}");
     assert!(camera.right().y.abs() < 1e-5, "the horizon is level");
     assert!(camera.up_vector().y > 0.0);
-    for t in [0.0, 2.0, 4.4, 6.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0] {
+    // The frame 0 of the cut: straight down, the image top is +Z.
+    let first = city::camera(0.0);
+    assert!(first.forward().distance(-fframes_3d::Vec3::Y) < 1e-5);
+    assert!(first.up_vector().z > 0.999, "{}", first.up_vector());
+    assert!(
+        (first.position.y - city::START_HEIGHT).abs() < 0.01,
+        "{}",
+        first.position
+    );
+    for k in 0..=26 {
+        let t = k as f32 * 0.5;
         let c = city::camera(t);
+        let p = c.position;
+        let speed = c.position.distance(city::camera(t + 0.01).position) / 0.01;
         println!(
-            "t {t:5.2}: {:?} forward {:?} fov {:.1}",
-            c.position,
-            c.forward(),
-            c.fov
+            "t {t:5.2}: ({:6.1} {:6.1} {:6.1}) {speed:5.1} m/s forward ({:5.2} {:5.2} {:5.2}) fov {:.1} roll {:.2}",
+            p.x,
+            p.y,
+            p.z,
+            c.forward().x,
+            c.forward().y,
+            c.forward().z,
+            c.fov,
+            c.roll.to_degrees()
         );
     }
+}
+
+/// The distance of the flight from the buildings: the times where the camera passes
+/// closer than 12 m to a building that is higher than the camera.
+#[test]
+fn clearance() {
+    use fframes_3d::*;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("dynamic_media/nyc/manhattan.bin");
+    let data = city::data::Manhattan::load(&std::fs::read(&path).unwrap()).unwrap();
+    // The distance from `p` to the triangle `t` on the ground plane.
+    let distance = |p: Vec2, t: [Vec2; 3]| {
+        let side = |a: Vec2, b: Vec2| (b - a).perp_dot(p - a);
+        let s = [side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0])];
+        if s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0) {
+            return 0.0;
+        }
+        (0..3)
+            .map(|i| {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                let k = ((p - a).dot(b - a) / (b - a).length_squared().max(1e-6)).clamp(0.0, 1.0);
+                p.distance(a + (b - a) * k)
+            })
+            .fold(f32::MAX, f32::min)
+    };
+    let mut worst = (f32::MAX, 0.0);
+    for k in 0..=1300 {
+        let t = k as f32 * 0.01;
+        let p = city::camera(t).position;
+        let ground = vec2(p.x, p.z);
+        let mut near = f32::MAX;
+        for b in data
+            .buildings
+            .iter()
+            .filter(|b| b.center.distance(ground) < 250.0)
+        {
+            for tri in b.roofs.iter().chain(&b.walls) {
+                if tri.iter().map(|q| q.y).fold(0.0, f32::max) < p.y - 3.0 {
+                    continue;
+                }
+                near = near.min(distance(ground, tri.map(|q| vec2(q.x, q.z))));
+            }
+        }
+        if near < worst.0 {
+            worst = (near, t);
+        }
+        if near < 12.0 {
+            println!("t {t:5.2}: {near:4.1} m from a building at {p}");
+        }
+    }
+    println!("closest: {:.1} m at {:.2} s", worst.0, worst.1);
+    assert!(worst.0 > 6.0);
 }
 
 /// An overview of the Manhattan data, to check its frame and its triangles.

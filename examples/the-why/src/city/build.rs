@@ -13,10 +13,11 @@ pub const FLOOR: f32 = 3.6;
 /// The width of one window bay in meters.
 pub const BAY: f32 = 1.8;
 /// The sizes of the video screens in meters, 4:3 like the film that they play.
-pub const SCREENS: [Vec2; 3] = [
+pub const SCREENS: [Vec2; 4] = [
     Vec2::new(40.0, 30.0),
     Vec2::new(32.0, 24.0),
     Vec2::new(24.0, 18.0),
+    Vec2::new(16.0, 12.0),
 ];
 /// The Building Identification Numbers of the two crowns that the city lights.
 pub const EMPIRE_STATE: u32 = 1015862;
@@ -255,15 +256,19 @@ pub const STYLES: [Style; 5] = [
 /// The number of rise groups.
 pub const GROUPS: usize = 12;
 /// The seconds that one building takes to rise.
-pub const RISE_TIME: f32 = 1.2;
+pub const RISE_TIME: f32 = 1.0;
 /// The first and the last start of a rise, in seconds.
-const RISE_FIRST: f32 = 0.55;
-const RISE_LAST: f32 = 3.3;
+const RISE_FIRST: f32 = 0.45;
+const RISE_LAST: f32 = 1.9;
 
 /// The second at which a building `p` meters from the point of the dive starts to rise.
-/// The buildings below the dive rise first, and the wave runs outward.
+/// The Empire State Building rises first, then the buildings below the dive, and the wave
+/// runs outward. All of the city stands at 2.9 s, before the camera flies over it.
 pub fn rise_start(p: Vec2, seed: u32) -> f32 {
-    (RISE_FIRST + 1.7 * (p.length() / 800.0).powf(0.8) + 0.45 * hash(seed)).min(RISE_LAST)
+    if seed == EMPIRE_STATE {
+        return RISE_FIRST;
+    }
+    (RISE_FIRST + 1.2 * (p.length() / 800.0).powf(0.8) + 0.3 * hash(seed)).min(RISE_LAST)
 }
 
 /// The rise group of a start time.
@@ -676,17 +681,17 @@ pub struct Screen {
     pub size: Vec2,
 }
 
-/// The places for a video screen on the walls of Times Square that face the camera on
-/// Broadway: on each wall in one plane, for each size, a grid of places 8 m apart.
-pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2), toward: Vec2) -> Vec<Screen> {
+/// The places for a video screen on the walls of the buildings in `area`: on each wall in
+/// one plane, for each size, a grid of places 6 m apart that lie on the wall.
+pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2)) -> Vec<Screen> {
     let mut out = Vec::new();
     for (i, b) in city.buildings.iter().enumerate() {
         if b.far || !(b.center.cmpge(area.0).all() && b.center.cmple(area.1).all()) {
             continue;
         }
-        // The walls of the building in one plane: the normal, and the extent along the wall
-        // (x) and up (y).
-        let mut planes: HashMap<[i32; 3], (Vec2, Vec2, Vec2)> = HashMap::new();
+        // The walls of the building in one plane: the normal, and the triangles in the
+        // plane, along the wall (x) and up (y).
+        let mut planes: HashMap<[i32; 3], (Vec2, Vec<[Vec2; 3]>)> = HashMap::new();
         for t in &b.walls {
             let n = (t[1] - t[0]).cross(t[2] - t[0]);
             let nh = vec2(n.x, n.z);
@@ -694,9 +699,6 @@ pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2), toward: Vec2) -> Vec<S
                 continue;
             }
             let nh = nh.normalize();
-            if nh.dot(-toward) < 0.3 {
-                continue;
-            }
             let along = vec2(nh.y, -nh.x);
             let offset = vec2(t[0].x, t[0].z).dot(nh);
             let key = [
@@ -704,33 +706,52 @@ pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2), toward: Vec2) -> Vec<S
                 (nh.y * 50.0) as i32,
                 offset.round() as i32,
             ];
-            let e = planes.entry(key).or_insert((nh, Vec2::MAX, Vec2::MIN));
-            for p in t {
-                let q = vec2(vec2(p.x, p.z).dot(along), p.y);
-                e.1 = e.1.min(q);
-                e.2 = e.2.max(q);
-            }
+            let flat = t.map(|p| vec2(vec2(p.x, p.z).dot(along), p.y));
+            planes.entry(key).or_insert((nh, Vec::new())).1.push(flat);
         }
-        for ([_, _, offset], (nh, min, max)) in planes {
-            let (u0, u1, y0, y1) = (min.x, max.x, min.y, max.y);
+        for ([_, _, offset], (nh, tris)) in planes {
+            let on_wall = |q: Vec2| {
+                tris.iter().any(|t| {
+                    let s = [0, 1, 2].map(|k| (t[(k + 1) % 3] - t[k]).perp_dot(q - t[k]));
+                    s.iter().all(|&v| v >= -1e-3) || s.iter().all(|&v| v <= 1e-3)
+                })
+            };
+            let (min, max) = tris
+                .iter()
+                .flatten()
+                .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), &q| {
+                    (lo.min(q), hi.max(q))
+                });
             let along = vec2(nh.y, -nh.x);
             for size in SCREENS {
                 let half = size * 0.5;
-                // Times Square has screens from the third floor up to 150 m.
-                let mut y = y0.max(0.0) + half.y + 10.0;
-                while y <= (y1 - half.y - 4.0).min(150.0) {
-                    let mut u = u0 + half.x + 1.0;
-                    while u <= u1 - half.x - 1.0 {
-                        let mid = along * u + nh * (offset as f32 + 0.8);
-                        out.push(Screen {
-                            building: i,
-                            center: vec3(mid.x, y, mid.y),
-                            facing: nh,
-                            size,
-                        });
-                        u += 8.0;
+                // Times Square has screens from the third floor up to 120 m.
+                let mut y = min.y.max(0.0) + half.y + 9.0;
+                while y <= (max.y - half.y - 3.0).min(120.0) {
+                    let mut u = min.x + half.x + 1.0;
+                    while u <= max.x - half.x - 1.0 {
+                        let corners = [
+                            (-1.0, -1.0),
+                            (1.0, -1.0),
+                            (1.0, 1.0),
+                            (-1.0, 1.0),
+                            (0.0, 0.0),
+                        ];
+                        if corners
+                            .iter()
+                            .all(|&(a, c)| on_wall(vec2(u + half.x * a, y + half.y * c)))
+                        {
+                            let mid = along * u + nh * (offset as f32 + 0.8);
+                            out.push(Screen {
+                                building: i,
+                                center: vec3(mid.x, y, mid.y),
+                                facing: nh,
+                                size,
+                            });
+                        }
+                        u += 6.0;
                     }
-                    y += 8.0;
+                    y += 6.0;
                 }
             }
         }
@@ -866,6 +887,100 @@ pub fn lamp_light(city: &Manhattan, near: impl Fn(Vec2) -> bool) -> Geometry {
         }
     }
     buf.geometry()
+}
+
+/// `count` points at the centers of windows on the walls of the buildings near the flight
+/// (`near`), 0.15 m in front of the glass: the screens that are left on in dark rooms.
+pub fn window_points(city: &Manhattan, near: impl Fn(Vec2) -> bool, count: u32) -> Vec<Vec3> {
+    let walls: Vec<&[Vec3; 3]> = city
+        .buildings
+        .iter()
+        .filter(|b| !b.far && b.height > 20.0 && near(b.center))
+        .flat_map(|b| b.walls.iter())
+        .filter(|t| (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero().y.abs() < 0.1)
+        .collect();
+    let mut total = 0.0;
+    let areas: Vec<f32> = walls
+        .iter()
+        .map(|t| {
+            total += (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5;
+            total
+        })
+        .collect();
+    let mut out = Vec::new();
+    for k in 0..count * 4 {
+        if out.len() >= count as usize || walls.is_empty() {
+            break;
+        }
+        let i = areas
+            .partition_point(|&a| a < hash(k * 3 + 1) * total)
+            .min(walls.len() - 1);
+        let t = walls[i];
+        let (mut a, mut b) = (hash(k * 3 + 2), hash(k * 3 + 3));
+        if a + b > 1.0 {
+            (a, b) = (1.0 - a, 1.0 - b);
+        }
+        let p = t[0] + (t[1] - t[0]) * a + (t[2] - t[0]) * b;
+        // Move the point to the middle of its window: the bays and the floors of the
+        // facade texture, see `walls`.
+        let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+        let along = vec3(n.z, 0.0, -n.x).normalize_or_zero();
+        let u = p.dot(along);
+        let q = p
+            + along * (((u / BAY).floor() + 0.5) * BAY - u)
+            + Vec3::Y * (((p.y / FLOOR - 0.58).floor() + 0.58) * FLOOR - p.y);
+        // Keep the point when it is still on the wall.
+        let s = [0, 1, 2].map(|j| (t[(j + 1) % 3] - t[j]).cross(q - t[j]).dot(n));
+        if s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0) {
+            out.push(q + n * 0.15);
+        }
+    }
+    out
+}
+
+/// The lit shop windows and lobbies at the foot of the buildings near the flight: a band
+/// 0.4 to 4.4 m above the street, 0.25 m in front of each wall that stands on the ground.
+/// U runs along the wall, one shop front per 6 m. The vertex colors hold the color and the
+/// brightness of each building. One building in five is dark.
+pub fn storefronts(city: &Manhattan, near: impl Fn(Vec2) -> bool) -> MeshBuf {
+    let mut buf = MeshBuf::default();
+    for b in city.buildings.iter().filter(|b| !b.far && near(b.center)) {
+        if hash(b.bin + 70) < 0.2 {
+            continue;
+        }
+        let tone = [0xffd9a8, 0xfff1e0, 0xdfeaff, 0xcfe4ff][(hash(b.bin + 71) * 4.0) as usize % 4];
+        let color = Rgb::hex(tone) * (0.5 + 0.7 * hash(b.bin + 72));
+        for t in &b.walls {
+            // The edge of the wall on the ground.
+            let low: Vec<Vec3> = t.iter().copied().filter(|p| p.y < 0.5).collect();
+            let [p, q] = low[..] else { continue };
+            let n = (t[1] - t[0]).cross(t[2] - t[0]);
+            let out = vec3(n.x, 0.0, n.z).normalize_or_zero() * 0.25;
+            // The corners go counterclockwise seen from the street.
+            let (a, c) = if (q - p).cross(Vec3::Y).dot(out) > 0.0 {
+                (p, q)
+            } else {
+                (q, p)
+            };
+            let length = a.distance(c);
+            if length < 3.0 || out == Vec3::ZERO {
+                continue;
+            }
+            let first = buf.len();
+            let at = |p: Vec3, y: f32| vec3(p.x, y, p.z) + out;
+            buf.quad(
+                [at(a, 0.4), at(c, 0.4), at(c, 4.4), at(a, 4.4)],
+                [
+                    vec2(0.0, 1.0),
+                    vec2(length / 6.0, 1.0),
+                    vec2(length / 6.0, 0.0),
+                    vec2(0.0, 0.0),
+                ],
+            );
+            buf.paint(first, color);
+        }
+    }
+    buf
 }
 
 /// The lamps along the streets near the flight: the transforms of the poles and the

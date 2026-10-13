@@ -32,6 +32,8 @@
 mod build;
 #[path = "city/data.rs"]
 pub(crate) mod data;
+#[path = "city/flight.rs"]
+mod flight;
 #[path = "city/textures.rs"]
 mod textures;
 #[path = "city/traffic.rs"]
@@ -49,6 +51,8 @@ use crate::assets::{Assets, Pbr};
 use crate::look;
 use build::{BAY, CraneParts, FLOOR, MeshBuf, RISE_TIME, RoofLight, STYLES};
 use data::Manhattan;
+pub use flight::camera;
+use flight::near_flight;
 use traffic::{Lane, Signal};
 
 /// The direction of the camera at the end of the shot. Shot 5 starts with it.
@@ -71,11 +75,21 @@ const CHIP_HALF: f32 = 810.0;
 const PIN_PITCH: f32 = 36.0;
 const PIN_REACH: f32 = 99.0;
 const PINS: usize = 44;
-/// Broadway at 42nd Street, the south end of Times Square. Its traffic lights change in
-/// view.
-const KEY_CROSSING: Vec2 = Vec2::new(452.0, 686.0);
+/// Seventh Avenue at 46th Street, ahead of the glide through Times Square. Its light for
+/// the cross street throws its color on the street.
+const KEY_CROSSING: Vec2 = Vec2::new(504.0, 1010.0);
 /// Times Square, the area where the video screens hang.
-const TIMES_SQUARE: (Vec2, Vec2) = (Vec2::new(380.0, 700.0), Vec2::new(640.0, 1180.0));
+const TIMES_SQUARE: (Vec2, Vec2) = (Vec2::new(400.0, 680.0), Vec2::new(640.0, 1180.0));
+/// The steam vents in Seventh Avenue, under the flight.
+const VENTS: [Vec2; 3] = [
+    Vec2::new(505.0, 560.0),
+    Vec2::new(504.0, 812.0),
+    Vec2::new(502.0, 965.0),
+];
+/// The puffs of steam over one vent.
+const PUFFS: u32 = 60;
+/// The most video screens in Times Square.
+const SCREEN_COUNT: usize = 18;
 
 /// The colors of the chip. Shot 3 shows the same materials on [`chip`].
 const DIE: u32 = 0x0b0c0e;
@@ -141,6 +155,7 @@ pub struct CitySet {
     /// The pins and the seal ring of the chip on the city.
     chip_rim: [NodeId; 2],
     lamp_light: NodeId,
+    storefronts: NodeId,
     markings: NodeId,
     lamp_heads: NodeId,
     small_lights: NodeId,
@@ -158,13 +173,18 @@ pub struct CitySet {
     signal_light: (NodeId, usize),
     /// The lamps of Broadway, by distance along it, and the point lights that move along
     /// them with the camera.
-    avenue_lamps: Vec<Vec3>,
+    avenue_lamps: Vec<(f32, Vec3)>,
     avenue_lights: [NodeId; AVENUE_LIGHTS],
     /// The video screens, with the start time of the rise of their tower.
     screens: Vec<(NodeId, f32)>,
     screen_ids: Vec<NodeId>,
     sites: Vec<SiteNodes>,
     stars: NodeId,
+    /// The steam of the street vents.
+    steam: NodeId,
+    /// The screens left on in dark rooms along Times Square, which flicker.
+    monitors: NodeId,
+
     materials: Materials,
     /// The light of the city, after the chip.
     city_light: Environment,
@@ -250,19 +270,6 @@ fn manhattan() -> Manhattan {
     let bytes = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("{}: {e}. Run examples/the-why/fetch-nyc.sh", path.display()));
     Manhattan::load(&bytes).unwrap_or_else(|e| panic!("{e}"))
-}
-
-/// The direction of the flight on the ground: up Broadway, the same heading as at the end.
-fn heading() -> Vec2 {
-    let end = END_DIRECTION.normalize();
-    vec2(end.x, end.z).normalize()
-}
-
-/// Whether a point on the ground is near enough to the flight for small details.
-fn near_flight(p: Vec2) -> bool {
-    let along = (p - DIVE).dot(heading());
-    let side = (p - DIVE).perp_dot(heading()).abs();
-    (-700.0..1600.0).contains(&along) && side < 900.0
 }
 
 impl CitySet {
@@ -356,6 +363,16 @@ impl CitySet {
             )
             .shadows(false, false),
         );
+        // The shop windows and lobbies at street level. They come on with the street lamps.
+        let storefronts = scene.add(
+            Node::mesh(
+                build::storefronts(&city, near_flight).geometry(),
+                Material::unlit(Rgb::BLACK)
+                    .map(textures::storefront())
+                    .additive(),
+            )
+            .shadows(false, false),
+        );
         let markings = scene.add(
             Node::mesh(
                 build::markings(&city, &crossings, near_flight),
@@ -381,17 +398,17 @@ impl CitySet {
                 .collect(),
             Blending::Additive,
         ));
-        // Every third lamp along the flight can carry a point light.
-        let mut avenue_lamps: Vec<Vec3> = heads
+        // Every third lamp under the flight can carry a point light. They are sorted by the
+        // distance along the track.
+        let mut avenue_lamps: Vec<(f32, Vec3)> = heads
             .iter()
-            .copied()
-            .filter(|h| (vec2(h.x, h.z) - DIVE).perp_dot(heading()).abs() < 40.0)
+            .filter_map(|&h| {
+                let (off, along) = flight::track().project(vec2(h.x, h.z));
+                (off < 30.0).then_some((along, h))
+            })
             .collect();
-        avenue_lamps.sort_by(|a, b| {
-            let along = |p: &Vec3| (vec2(p.x, p.z) - DIVE).dot(heading());
-            along(a).total_cmp(&along(b))
-        });
-        let avenue_lamps: Vec<Vec3> = avenue_lamps.into_iter().step_by(3).collect();
+        avenue_lamps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let avenue_lamps: Vec<(f32, Vec3)> = avenue_lamps.into_iter().step_by(3).collect();
         let avenue_lights = [(); AVENUE_LIGHTS]
             .map(|()| scene.add(Node::light(Light::point(Rgb::hex(0xdbe8ff), 0.0, 70.0))));
 
@@ -426,7 +443,7 @@ impl CitySet {
         // room for construction sites. Five walls of Times Square carry the screens.
         let sites_at = construction_lots(&city);
         let skip: HashSet<usize> = sites_at.iter().map(|s| s.0).collect();
-        let screen_list = screens_in_view(&city);
+        let screen_list = place_screens(&city);
         let facades: Vec<textures::Facade> = std::thread::scope(|s| {
             let handles: Vec<_> = STYLES
                 .iter()
@@ -451,9 +468,12 @@ impl CitySet {
         let screen_texture = textures::screen();
         let details = Material::metal(0x6c7078, 0.55).env_intensity(0.35);
         let tanks = Arc::new(build::water_tower());
-        let tank_wood = Material::standard(0x3a2e26)
-            .roughness(0.85)
-            .env_intensity(0.4);
+        // The wood of the water towers catches the glow of the city, so their shapes read
+        // against the dark roofs.
+        let tank_wood = Material::standard(0x7a6450)
+            .roughness(0.8)
+            .env_intensity(1.0)
+            .emissive(0x2a3448, 0.6);
         let mut groups = Vec::new();
         let mut roof_light_list = Vec::new();
         let mut screens = Vec::new();
@@ -542,8 +562,8 @@ impl CitySet {
             let floors = 16 + (hash(seed) * 6.0) as u32;
             let crane_height = floors as f32 * FLOOR + 30.0 + hash(seed + 1) * 12.0;
             // The crane stands at the side of the frame that faces the flight.
-            let toward =
-                (DIVE + heading() * (center - DIVE).dot(heading()) - center).normalize_or(Vec2::X);
+            let (_, along) = flight::track().project(center);
+            let toward = (flight::track().at(along).0 - center).normalize_or(Vec2::X);
             let crane_at = center + toward * ((max - min).max_element() * 0.5 + 8.0);
             let root = scene.add(Node::group().scaled3(1.0, 0.002, 1.0));
             let (frame, slabs, glass, work) = build::site_frame(min, max, floors, seed);
@@ -615,8 +635,9 @@ impl CitySet {
             });
         }
 
-        // The traffic and the traffic lights.
-        let lanes = traffic::lanes(&city.routes, near_flight);
+        // The traffic lights and the traffic.
+        let signals = traffic::signals(&city.streets, &city.routes, near_flight, TIMES_SQUARE);
+        let lanes = traffic::lanes(&city.routes, near_flight, &signals);
         let cars = scene.add(Node::particles(Vec::new(), Blending::Additive));
         let car_bodies = scene.add(
             Node::instanced(
@@ -629,7 +650,6 @@ impl CitySet {
             )
             .shadows(false, false),
         );
-        let signals = traffic::signals(&city.streets, &city.routes, near_flight, KEY_CROSSING);
         let mut signal_poles = MeshBuf::default();
         for s in &signals {
             let p = s.head;
@@ -658,8 +678,17 @@ impl CitySet {
             )
             .shadows(false, false),
         );
-        // The key crossing gets a point light in the color of the street.
-        let key = signals.iter().position(|s| s.key && !s.avenue).unwrap_or(0);
+        // The crossing ahead of the glide through Times Square gets a point light in the
+        // color of the street.
+        let key = signals
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.key && !s.avenue)
+            .min_by(|a, b| {
+                let d = |s: &Signal| s.crossing.distance(KEY_CROSSING);
+                d(a.1).total_cmp(&d(b.1))
+            })
+            .map_or(0, |(i, _)| i);
         let head = signals.get(key).map_or(Vec3::ZERO, |s| s.head);
         let signal_light = (
             scene.add(Node::light(Light::point(Rgb::WHITE, 0.0, 60.0)).with_position(head)),
@@ -671,6 +700,39 @@ impl CitySet {
 
         let stars = scene.add(crate::stars::stars());
 
+        // The steam stacks of the street vents: orange cones with white bands, as the
+        // steam company puts them over the vents in the avenues.
+        let stacks = Geometry::merge(
+            VENTS.map(|v| Geometry::cylinder(0.38, 0.55, 3.4, 12).translate(v.x, 1.7, v.y)),
+        );
+        let bands = Geometry::merge(VENTS.iter().flat_map(|v| {
+            [1.1, 2.3].map(|y| Geometry::cylinder(0.5, 0.53, 0.35, 12).translate(v.x, y, v.y))
+        }));
+        scene.add(Node::mesh(
+            stacks,
+            Material::standard(0xff5a12)
+                .roughness(0.6)
+                .emissive(0xff5a12, 0.15),
+        ));
+        scene.add(Node::mesh(
+            bands,
+            Material::standard(0xe8ecf0)
+                .roughness(0.5)
+                .emissive(0xe8ecf0, 0.1),
+        ));
+        let steam = scene.add(Node::particles(Vec::new(), Blending::Normal));
+        let monitors = scene.add(Node::particles(
+            build::window_points(
+                &city,
+                |p| (450.0..1250.0).contains(&p.y) && flight::track().project(p).0 < 150.0,
+                700,
+            )
+            .into_iter()
+            .map(|p| Particle::new(p, 0.3, Rgb::BLACK))
+            .collect(),
+            Blending::Additive,
+        ));
+
         Self {
             scene,
             groups,
@@ -681,6 +743,7 @@ impl CitySet {
             traces,
             chip_rim,
             lamp_light,
+            storefronts,
             markings,
             lamp_heads,
             small_lights,
@@ -699,6 +762,8 @@ impl CitySet {
             screen_ids,
             sites,
             stars,
+            steam,
+            monitors,
             materials,
             city_light: environment(false),
         }
@@ -775,7 +840,7 @@ impl CitySet {
         for g in &self.groups {
             let rise = ease(g.start, g.start + RISE_TIME, t);
             scene[g.root].scale.y = rise.max(0.002);
-            let windows = smoothstep(g.start + 0.6, g.start + RISE_TIME + 0.8, t);
+            let windows = smoothstep(g.start + 0.3, g.start + RISE_TIME + 0.4, t);
             for (&w, light) in g.walls.iter().zip([1.5, 1.4, 1.3, 1.3, 1.1]) {
                 if let Some(mat) = scene[w].material_mut() {
                     mat.emissive_intensity = windows * light * textures::WINDOW_LIGHT;
@@ -796,7 +861,7 @@ impl CitySet {
         }
         for &(id, start) in &self.screens {
             if let Some(mat) = scene[id].material_mut() {
-                mat.color = Rgb::WHITE * (1.3 * smoothstep(start + 1.0, start + 2.2, t));
+                mat.color = Rgb::WHITE * (1.8 * smoothstep(start + 1.0, start + 2.2, t));
             }
         }
         scene[self.park_root].scale.y = ease(1.4, 1.4 + RISE_TIME, t).max(0.002);
@@ -822,6 +887,9 @@ impl CitySet {
         if let Some(mat) = scene[self.lamp_light].material_mut() {
             mat.color = Rgb::hex(0x9fc0ff) * (0.3 * lamps);
         }
+        if let Some(mat) = scene[self.storefronts].material_mut() {
+            mat.color = Rgb::WHITE * (1.6 * lamps);
+        }
         if let Some(mat) = scene[self.markings].material_mut() {
             mat.color = Rgb::hex(0x8a92a2) * (0.3 * smoothstep(1.6, 3.0, t));
         }
@@ -832,19 +900,15 @@ impl CitySet {
                 }
             }
         }
-        // The point lights of the lamps of Broadway ahead of the camera. They fade in far
-        // ahead and out behind, so they can move from lamp to lamp.
-        let along = |p: Vec3| (vec2(p.x, p.z) - DIVE).dot(heading());
-        let here = along(camera.position);
-        let first = self
-            .avenue_lamps
-            .partition_point(|&p| along(p) < here - 40.0);
+        // The point lights of the lamps under the flight ahead of the camera. They fade in
+        // far ahead and out behind, so they can move from lamp to lamp.
+        let here = flight::distance(t);
+        let first = self.avenue_lamps.partition_point(|&(s, _)| s < here - 40.0);
         for (k, &id) in self.avenue_lights.iter().enumerate() {
-            let Some(&lamp) = self.avenue_lamps.get(first + k) else {
+            let Some(&(s, lamp)) = self.avenue_lamps.get(first + k) else {
                 scene[id].visible = false;
                 continue;
             };
-            let s = along(lamp);
             let fade = smoothstep(here - 40.0, here - 10.0, s)
                 * (1.0 - smoothstep(here + 200.0, here + 300.0, s));
             scene[id].position = lamp - Vec3::Y * 0.6;
@@ -898,7 +962,7 @@ impl CitySet {
         scene[id].visible = ahead(scene[id].position);
         if let Some(Light::Point(p)) = scene[id].light_mut() {
             p.color = colors.get(i).copied().unwrap_or(Rgb::BLACK);
-            p.intensity = 1400.0;
+            p.intensity = 260.0;
         }
 
         // The cranes lift beams and place them on the frames. Only the nearest crane ahead
@@ -921,6 +985,24 @@ impl CitySet {
 
         // The stars stay around the camera.
         scene[self.stars].position = camera.position;
+        set_particles(&mut scene, self.steam, steam(t));
+        // The screens in the dark rooms flicker with their films.
+        if let Object::Particles(p) = &mut scene[self.monitors].object {
+            let on = smoothstep(3.0, 4.0, t);
+            for (i, item) in p.items.iter_mut().enumerate() {
+                let i = i as u32;
+                let k = t * (5.0 + 7.0 * hash(i * 7 + 1)) + hash(i * 7 + 2) * 50.0;
+                let (a, b) = (hash(i * 131 + k as u32), hash(i * 131 + k as u32 + 1));
+                let flicker = 0.35 + 0.65 * (a + (b - a) * k.fract());
+                let tone = if hash(i * 7 + 3) < 0.7 {
+                    0x8fb8ff
+                } else {
+                    0xd8e4ff
+                };
+                item.color = Rgb::hex(tone) * (2.2 * flicker * on);
+            }
+        }
+
         // The small lights streak with the motion of the camera.
         let before = self::camera(t - look::SHUTTER * 0.5);
         for id in [
@@ -961,11 +1043,54 @@ impl CitySet {
     }
 }
 
-/// The five video screens of Times Square: the places on the walls that the camera sees
-/// largest and longest in the glide, at most two on one building.
-fn screens_in_view(city: &Manhattan) -> Vec<build::Screen> {
-    // The heights of the roofs on a grid of 5 m cells, to test the lines of sight.
-    let (origin, cell, size) = (vec2(-200.0, -600.0), 5.0, (220usize, 420usize));
+/// The steam of the vents at `t`: puffs that rise, grow, drift with the wind and fade.
+fn steam(t: f32) -> Vec<Particle> {
+    let mut out = Vec::new();
+    for (v, at) in VENTS.iter().enumerate() {
+        for i in 0..PUFFS {
+            let seed = v as u32 * 997 + i;
+            let life = 3.5 + 1.5 * hash(seed);
+            let age = ((t + 30.0) / life + hash(seed + 1)).fract();
+            let a = age * life;
+            let wobble = vec3(
+                (a * 1.3 + hash(seed + 2) * 6.0).sin(),
+                0.0,
+                (a * 1.1 + hash(seed + 3) * 6.0).cos(),
+            ) * (0.4 * a);
+            let p = vec3(at.x, 3.4 + 6.5 * a - 0.5 * a * a, at.y)
+                + vec3(1.2, 0.0, -0.5) * (a * a * 0.5)
+                + wobble;
+            let opacity = 0.3 * (1.0 - age).powf(1.6) * smoothstep(0.0, 0.08, age);
+            out.push(Particle::new(p, 0.6 + 1.3 * a, Rgb::hex(0xa8b8d0) * 0.35).opacity(opacity));
+        }
+    }
+    out
+}
+
+/// The brightness (`0..1`) of the film on the video screens, `made_of_motion.mp4`, every
+/// quarter second of the shot. The film owner plays it in sync with the shot. The screens
+/// throw this light into Times Square.
+const FILM_LIGHT: [f32; 56] = [
+    0.80, 0.77, 0.78, 0.82, 0.82, 0.82, 0.82, 0.82, 0.32, 0.56, 0.53, 0.52, 0.52, 0.52, 0.53, 0.21,
+    0.11, 0.16, 0.16, 0.18, 0.18, 0.18, 0.19, 0.24, 0.37, 0.71, 0.67, 0.75, 0.75, 0.75, 0.73, 0.73,
+    0.73, 0.72, 0.08, 0.09, 0.08, 0.75, 0.75, 0.74, 0.08, 0.13, 0.12, 0.74, 0.74, 0.08, 0.09, 0.08,
+    0.74, 0.75, 0.75, 0.78, 0.77, 0.76, 0.77, 0.78,
+];
+
+/// The brightness of the film at `t`.
+fn film_light(t: f32) -> f32 {
+    let k = (t * 4.0).clamp(0.0, (FILM_LIGHT.len() - 1) as f32);
+    let i = (k as usize).min(FILM_LIGHT.len() - 2);
+    FILM_LIGHT[i] + (FILM_LIGHT[i + 1] - FILM_LIGHT[i]) * (k - i as f32)
+}
+
+/// The video screens of Times Square: the places on the walls that the camera sees well
+/// when it drops into the square and glides through it, without overlaps and at most
+/// four on one building. A screen counts most when it fills about a fifth of the picture
+/// while the film is bright.
+fn place_screens(city: &Manhattan) -> Vec<build::Screen> {
+    // The heights of the roofs on a grid of 2 m cells, to test the lines of sight.
+    let (origin, cell, size) = (vec2(300.0, 500.0), 2.0, (240usize, 450usize));
     let mut heights = vec![0.0f32; size.0 * size.1];
     let index = |p: Vec2| {
         let q = ((p - origin) / cell).floor();
@@ -975,14 +1100,18 @@ fn screens_in_view(city: &Manhattan) -> Vec<build::Screen> {
     for b in city.buildings.iter().filter(|b| !b.far) {
         for t in &b.roofs {
             let top = t.iter().map(|p| p.y).fold(0.0, f32::max);
-            let (min, max) = t.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| {
-                (lo.min(vec2(p.x, p.z)), hi.max(vec2(p.x, p.z)))
+            let flat = t.map(|p| vec2(p.x, p.z));
+            let (min, max) = flat.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), &p| {
+                (lo.min(p), hi.max(p))
             });
-            let mut x = min.x;
+            let mut x = (min.x / cell).floor() * cell + cell * 0.5;
             while x <= max.x {
-                let mut z = min.y;
+                let mut z = (min.y / cell).floor() * cell + cell * 0.5;
                 while z <= max.y {
-                    if let Some(i) = index(vec2(x, z)) {
+                    let q = vec2(x, z);
+                    let s = [0, 1, 2].map(|k| (flat[(k + 1) % 3] - flat[k]).perp_dot(q - flat[k]));
+                    let inside = s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0);
+                    if let Some(i) = index(q).filter(|_| inside) {
                         heights[i] = heights[i].max(top);
                     }
                     z += cell;
@@ -991,31 +1120,47 @@ fn screens_in_view(city: &Manhattan) -> Vec<build::Screen> {
             }
         }
     }
+    // Whether the air between `eye` and `target` is free. The last 3 m before the wall
+    // do not count.
     let clear = |eye: Vec3, target: Vec3| {
-        let steps = (eye.distance(target) / 3.0) as usize;
+        let length = eye.distance(target);
+        let steps = (length / 2.0) as usize;
         (1..steps).all(|k| {
             let p = eye.lerp(target, k as f32 / steps as f32);
-            index(vec2(p.x, p.z)).is_none_or(|i| p.y > heights[i])
+            length * (1.0 - k as f32 / steps as f32) < 3.0
+                || index(vec2(p.x, p.z)).is_none_or(|i| p.y > heights[i])
         })
     };
     let (width, height) = (1920.0, 804.0);
-    let views: Vec<Camera> = [7.5, 8.25, 9.0, 9.75, 10.5].map(camera).to_vec();
-    // The width in pixels of the screen, added over the views, times the part of it that
-    // is in the picture and not behind other buildings.
+    let times: Vec<f32> = (0..22).map(|k| 6.4 + k as f32 * 0.25).collect();
+    let views: Vec<(Camera, f32)> = times
+        .iter()
+        .map(|&t| (camera(t), 0.35 + 0.65 * film_light(t)))
+        .collect();
     let score = |screen: &build::Screen| {
         let right = vec2(screen.facing.y, -screen.facing.x);
         let half = screen.size * 0.5;
-        let front = screen.center + vec3(screen.facing.x, 0.0, screen.facing.y) * 2.0;
+        let facing = vec3(screen.facing.x, 0.0, screen.facing.y);
+        let front = screen.center + facing * 1.0;
         let point =
             |a: f32, b: f32| front + vec3(right.x * half.x * a, half.y * b, right.y * half.x * a);
         let mut sum = 0.0;
-        for view in &views {
+        for (view, light) in &views {
+            if (view.position - screen.center).dot(facing) < 2.0 {
+                continue;
+            }
+            let Some(center) = view.project(front, width, height) else {
+                continue;
+            };
+            if !(0.0..width).contains(&center.x) || !(0.0..height).contains(&center.y) {
+                continue;
+            }
             let mut seen = 0;
             for a in [-0.9, 0.0, 0.9] {
                 for b in [-0.9, 0.0, 0.9] {
                     let p = point(a, b);
                     let inside = view.project(p, width, height).is_some_and(|q| {
-                        (40.0..width - 40.0).contains(&q.x) && (40.0..height - 40.0).contains(&q.y)
+                        (20.0..width - 20.0).contains(&q.x) && (20.0..height - 20.0).contains(&q.y)
                     });
                     seen += usize::from(inside && clear(view.position, p));
                 }
@@ -1024,44 +1169,60 @@ fn screens_in_view(city: &Manhattan) -> Vec<build::Screen> {
                 let edges =
                     [point(-1.0, 0.0), point(1.0, 0.0)].map(|p| view.project(p, width, height));
                 if let [Some(a), Some(b)] = edges {
-                    sum += (b.x - a.x).abs() * seen as f32 / 9.0;
+                    // A fifth of the picture is enough.
+                    let size = (b.x - a.x).abs().min(width * 0.22);
+                    sum += size * seen as f32 / 9.0 * light;
                 }
             }
         }
         sum
     };
-    let mut places: Vec<(f32, build::Screen)> = build::screen_walls(city, TIMES_SQUARE, heading())
-        .into_iter()
-        .map(|s| (score(&s), s))
-        .filter(|(score, _)| *score > 0.0)
-        .collect();
+    let candidates = build::screen_walls(city, TIMES_SQUARE);
+    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let chunk = candidates.len().div_ceil(threads).max(1);
+    let mut places: Vec<(f32, build::Screen)> = std::thread::scope(|s| {
+        let handles: Vec<_> = candidates
+            .chunks(chunk)
+            .map(|part| s.spawn(|| part.iter().map(|c| (score(c), *c)).collect::<Vec<_>>()))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .filter(|(score, _)| *score > 0.0)
+            .collect()
+    });
     places.sort_by(|a, b| b.0.total_cmp(&a.0));
-    // The best places that do not overlap, at most two on one building.
     let overlap = |a: &build::Screen, b: &build::Screen| {
-        let gap = (a.size + b.size) * 0.5 + 3.0;
+        let gap = (a.size + b.size) * 0.5 + 2.0;
         let d = a.center - b.center;
         vec2(d.x, d.z).length() < gap.x && d.y.abs() < gap.y
     };
     let mut out: Vec<build::Screen> = Vec::new();
-    for (_, place) in places {
+    for (score, place) in &places {
         let same = out.iter().filter(|o| o.building == place.building).count();
-        if out.len() < 5 && same < 2 && !out.iter().any(|o| overlap(o, &place)) {
-            out.push(place);
+        if out.len() < SCREEN_COUNT
+            && same < 4
+            && *score > places[0].0 * 0.08
+            && !out.iter().any(|o| overlap(o, place))
+        {
+            out.push(*place);
         }
     }
     out
 }
 
-/// Two low buildings near Broadway, ahead of the flight, that become construction sites:
+/// Two low buildings near the track, ahead of the flight, that become construction sites:
 /// their index and their footprint box.
 fn construction_lots(city: &Manhattan) -> Vec<(usize, Vec2, Vec2)> {
     let mut lots: Vec<(f32, usize, Vec2, Vec2)> = Vec::new();
     for (i, b) in city.buildings.iter().enumerate() {
-        let along = (b.center - DIVE).dot(heading());
-        let side = (b.center - DIVE).perp_dot(heading());
+        let (off, along) = flight::track().project(b.center);
+        let (p, d) = flight::track().at(along);
+        let side = (b.center - p).perp_dot(d).signum() * off;
         if b.far
             || b.height > 25.0
-            || !(250.0..700.0).contains(&along)
+            || !(350.0..800.0).contains(&along)
             || !(70.0..220.0).contains(&side.abs())
         {
             continue;
@@ -1177,88 +1338,6 @@ fn orientation(camera: &Camera) -> Mat3 {
     let forward = camera.forward();
     let right = forward.cross(camera.up).normalize();
     Mat3::from_cols(right, right.cross(forward), -forward)
-}
-
-/// The camera at `t` seconds.
-pub fn camera(t: f32) -> Camera {
-    let end = END_DIRECTION.normalize();
-    let end_yaw = end.x.atan2(end.z);
-    let end_pitch = end.y.asin();
-    // During the dive the picture turns toward the Empire State Building. The camera levels
-    // out at the height of its crown, then turns up Broadway.
-    let yaw = -deg(23.0) * ease(1.6, 4.0, t) + (end_yaw + deg(23.0)) * ease(4.8, 8.0, t);
-    let flight = deg(-90.0) + deg(90.0) * ease(1.4, 4.0, t) - deg(10.0) * ease(4.6, 7.5, t)
-        + deg(3.0) * smoothstep(7.5, 10.2, t);
-    // The tilt up ends exactly on the direction of shot 5.
-    let tilt = ease(10.2, DURATION, t);
-    let pitch = flight * (1.0 - tilt) + end_pitch * tilt;
-    let forward = vec3(
-        yaw.sin() * pitch.cos(),
-        pitch.sin(),
-        yaw.cos() * pitch.cos(),
-    );
-    // The up direction of the image. Looking straight down, it is the heading. At the end
-    // it gives the same image as +Y.
-    let up = vec3(
-        -yaw.sin() * pitch.sin(),
-        pitch.cos(),
-        -yaw.cos() * pitch.sin(),
-    );
-    let position = flight_position(t);
-    // 35 mm at the cut, 24 mm for the whole crown of the Empire State Building, 28 mm for
-    // the glide, 35 mm for the stars.
-    let mm =
-        35.0 - 11.0 * ease(1.5, 3.8, t) + 4.0 * ease(5.0, 7.5, t) + 7.0 * smoothstep(10.4, 12.8, t);
-    let mut camera = look::lens(mm)
-        .position(position)
-        .look_at(position + forward * 1000.0)
-        .clip(1.0, 9000.0);
-    camera.up = up;
-    // The focus: the ground on the dive, the Empire State Building, the towers ahead in
-    // the glide, the stars at the end.
-    let ground = position.y / (-pitch.sin()).max(0.2);
-    let focus = ground
-        + (300.0 - ground) * smoothstep(2.6, 4.0, t)
-        + (400.0 - 300.0) * smoothstep(10.5, 12.5, t);
-    let blur = 2.0 + 1.5 * smoothstep(3.0, 4.6, t) - 2.5 * smoothstep(10.5, 12.5, t);
-    let shake = 0.0012 * smoothstep(4.5, 6.0, t) * (1.0 - smoothstep(10.0, 12.4, t));
-    camera.focus(focus, blur).shake(t, shake, 41)
-}
-
-/// The position of the camera at `t` seconds: the dive, then the flight up Broadway.
-fn flight_position(t: f32) -> Vec3 {
-    let dive_end = 4.0;
-    let crown = 350.0;
-    // The height falls at 1.18 times itself per second at the start, as at the end of
-    // shot 3, and slows down to the crown of the Empire State Building.
-    let height = if t < dive_end {
-        let u = t / dive_end;
-        let drop = (START_HEIGHT / crown).ln();
-        let k = 1.0 - (1.0 - u).powf(1.18 * dive_end / drop);
-        (START_HEIGHT.ln() - drop * k).exp()
-    } else {
-        crown
-            + (170.0 - crown) * smoothstep(4.2, 7.5, t)
-            + (180.0 - 170.0) * smoothstep(7.5, 10.2, t)
-            + (300.0 - 180.0) * smoothstep(10.2, DURATION, t)
-    };
-    // The distance along Broadway: the integral of the speed. It rises to 80 m/s for the
-    // pass of the Empire State Building, to 110 m/s for the glide toward Times Square, and
-    // falls to 25 m/s at the end.
-    let speed = |s: f32| {
-        80.0 * smoothstep(1.3, 4.4, s) + 30.0 * smoothstep(5.5, 8.0, s)
-            - 85.0 * smoothstep(10.2, DURATION, s)
-    };
-    let step = 1.0f32 / 240.0;
-    let mut along = 0.0;
-    let mut s = 0.0;
-    while s < t {
-        let dt = step.min(t - s);
-        along += speed(s + dt * 0.5) * dt;
-        s += dt;
-    }
-    let ground = DIVE + heading() * along;
-    vec3(ground.x, height, ground.y)
 }
 
 /// The chip of shot 3: the die, the traces, the components and the pins. It is 0.04 m
