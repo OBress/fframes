@@ -72,7 +72,8 @@ impl TheWhy {
         let wave = Shot::new("Wave", 8.5, renderer(), move |r, t| {
             look::picture(r, set.shutter_wave(t), t, |t| set.moment_wave(t))
         });
-        // The billboards of the city play an earlier fframes film, made-of-motion.
+        // The billboards of the city play an earlier fframes film, made-of-motion. Each one
+        // plays another part of it: `make-billboards.sh` puts 20 parts in one video.
         let city = Arc::new(CitySet::new(&assets));
         let set = city.clone();
         let city_shot = Shot::with_media(
@@ -81,13 +82,15 @@ impl TheWhy {
             CitySet::renderer(width, height),
             move |r, frame, ctx| {
                 let t = frame.seconds();
-                let film = shots::video_texture(frame, ctx, "made_of_motion.mp4");
+                let parts = shots::video_tiles(frame, ctx, "billboards.mp4", 5, 4);
                 look::picture(r, set.shutter(t), t, |t| {
                     let (mut scene, camera) = set.moment(t);
-                    if let Some(film) = &film {
-                        for screen in set.screens() {
+                    if let Some(parts) = &parts {
+                        for (i, screen) in set.screens().iter().enumerate() {
+                            // neighbor screens get parts far apart in the film
+                            let part = &parts[i * 7 % parts.len()];
                             if let Some(material) = scene[*screen].material_mut() {
-                                material.map = Some(film.clone());
+                                material.map = Some(part.clone());
                             }
                         }
                     }

@@ -120,9 +120,16 @@ impl Shot {
     }
 }
 
-/// The frame of the video `file` at the time of `frame`, as a texture for a screen in a 3D
+/// The frame of the video `file` at the time of `frame`, cut into the tiles of a grid of
+/// `columns` x `rows`, left to right and top to bottom, as textures for screens in a 3D
 /// scene. The video loops. `None` when the media has no such video.
-pub fn video_texture(frame: &Frame, ctx: &FFramesContext, file: &str) -> Option<Arc<Texture>> {
+pub fn video_tiles(
+    frame: &Frame,
+    ctx: &FFramesContext,
+    file: &str,
+    columns: u32,
+    rows: u32,
+) -> Option<Vec<Arc<Texture>>> {
     let video = frame.get_synced_video_frame(
         ctx,
         file,
@@ -132,7 +139,24 @@ pub fn video_texture(frame: &Frame, ctx: &FFramesContext, file: &str) -> Option<
             editor_fallback_image: None,
         },
     )?;
-    Some(Arc::new(Texture::from_image(&video.into_image())))
+    let image = video.into_image();
+    let source = &image.image;
+    let (width, height) = (source.width / columns, source.height / rows);
+    let tiles = (0..rows)
+        .flat_map(|row| (0..columns).map(move |column| (column, row)))
+        .map(|(column, row)| {
+            // a video frame is opaque, so its premultiplied pixels are straight pixels
+            let rgba: Vec<u8> = (0..height)
+                .flat_map(|y| {
+                    let start = (((row * height + y) * source.width + column * width) * 4) as usize;
+                    &source.data[start..start + (width * 4) as usize]
+                })
+                .copied()
+                .collect();
+            Arc::new(Texture::from_rgba8(width, height, &rgba, true))
+        })
+        .collect();
+    Some(tiles)
 }
 
 impl Scene for Shot {
