@@ -18,6 +18,8 @@ pub mod desert;
 pub mod figure;
 #[path = "../src/look.rs"]
 pub mod look;
+#[path = "../src/montage/mod.rs"]
+pub mod montage;
 #[path = "../src/stars.rs"]
 pub mod stars;
 

@@ -131,9 +131,8 @@ pub struct Landmarks {
     pub dome_light: NodeId,
 }
 
-/// Adds the bridge over the canyon to the village, the village, the greenhouse dome and the
-/// contrail of the rocket. They are simple shapes for the distance. The models of the
-/// montage of shot 8 can replace them.
+/// Adds the Golden Gate over the canyon to the village, the village, the greenhouse dome and
+/// the contrail of the rocket. Except the bridge, they are simple shapes for the distance.
 pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
     let s_dir = sunward();
     let right = s_dir.cross(Vec3::Y);
@@ -144,62 +143,20 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
     let moved = |g: Geometry, v: Vec3| g.transform(Mat4::from_translation(v));
     let to_right = Quat::from_rotation_arc(Vec3::X, right);
 
-    // The bridge: a cable-stayed deck from rim to rim with an H-shaped pylon at each rim.
+    // The Golden Gate of the montage at one fifth of its size, over the canyon to the village.
     let s_bridge = 600.0;
-    let (center, width) = (canyon_center(s_bridge), canyon_width(s_bridge));
-    let (a0, a1) = (center - width * 0.5 - 20.0, center + width * 0.5 + 20.0);
-    let deck_y = at(s_bridge, a0).y.max(at(s_bridge, a1).y) + 2.0;
-    let deck_at = |a: f32, z: f32| {
-        let p = terrain.sunward_point(s_bridge, a);
-        vec3(p.x, deck_y, p.y) - s_dir * z
-    };
-    let deck = Geometry::cuboid(a1 - a0, 2.4, 13.0).rotate(to_right);
-    let mut parts = vec![moved(deck, deck_at(f32::midpoint(a0, a1), 0.0))];
-    let mut cables = Vec::new();
-    for pylon in [a0 + 26.0, a1 - 26.0] {
-        let top = 58.0;
-        for z in [-7.5f32, 7.5] {
-            let foot = deck_at(pylon, z) - Vec3::Y * 40.0;
-            let head = deck_at(pylon, z * 0.35) + Vec3::Y * top;
-            parts.push(beam(foot, head, 1.6));
-        }
-        parts.push(beam(
-            deck_at(pylon, -3.0) + Vec3::Y * (top - 4.0),
-            deck_at(pylon, 3.0) + Vec3::Y * (top - 4.0),
-            1.2,
-        ));
-        // fans of cables to both sides of the pylon
-        for k in 1..=11 {
-            for side in [-1.0f32, 1.0] {
-                let a = pylon + side * k as f32 * 7.5;
-                if a < a0 + 2.0 || a > a1 - 2.0 {
-                    continue;
-                }
-                for z in [-6.0f32, 6.0] {
-                    let head = deck_at(pylon, z * 0.35) + Vec3::Y * (top - 2.0 - 1.4 * k as f32);
-                    cables.push(segment(head, deck_at(a, z), 0.18));
-                }
-            }
-        }
-    }
-    let stone = Material::standard(0x7a726a).roughness(0.8);
-    scene.add(Node::mesh(Geometry::merge(parts), stone).shadows(false, false));
-    scene.add(
-        Node::instanced(
-            Geometry::cylinder(1.0, 1.0, 1.0, 6).translate(0.0, 0.5, 0.0),
-            Material::standard(0x8a8680).roughness(0.5),
-            Instances::new(cables),
-        )
-        .shadows(false, false),
+    let center = canyon_center(s_bridge);
+    // the plain under the towers, 128 m to each side of the canyon middle
+    let foot = at(s_bridge, center - 128.0)
+        .y
+        .max(at(s_bridge, center + 128.0).y);
+    let p = terrain.sunward_point(s_bridge, center);
+    let gate = scene.add(
+        Node::group()
+            .with_position(vec3(p.x, foot, p.y))
+            .with_rotation(to_right),
     );
-    // lamps along the deck
-    let lamps: Vec<Particle> = (0..24)
-        .map(|i| {
-            let a = a0 + (a1 - a0) * (i as f32 + 0.5) / 24.0;
-            Particle::new(deck_at(a, 6.8) + Vec3::Y * 2.5, 0.5, Rgb::hex(AMBER) * 6.0)
-        })
-        .collect();
-    scene.add(Node::particles(lamps, Blending::Additive));
+    scene.append(Some(gate), &crate::montage::golden_gate_landmark());
 
     // The village on the far rim: white and ochre houses with warm windows, and trees.
     let mut houses = Vec::new();
@@ -318,13 +275,6 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
     ));
 
     Landmarks { dome_light }
-}
-
-/// A square beam from `a` to `b` with the half width `half`.
-fn beam(a: Vec3, b: Vec3, half: f32) -> Geometry {
-    Geometry::cuboid(1.0, 1.0, 1.0)
-        .translate(0.0, 0.5, 0.0)
-        .transform(segment(a, b, half * 2.0))
 }
 
 /// The multiplier of the scene light at `t`: the shot starts overexposed by the flare of

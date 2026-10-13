@@ -1,8 +1,9 @@
 //! Shot 8, "The why" (67 to 82 s of the film). After the engineer draws his line, the
 //! machines build what people need. Each part starts from a warm line:
 //!
-//! - 0 to 5 s, [`bridge`]: the line is the pilot cable over a canyon at blue hour. Machines
-//!   build a cable-stayed bridge, and the village on the far rim lights up.
+//! - 0 to 5 s, [`bridge`]: the line is the pilot line of the Golden Gate Bridge at blue hour.
+//!   Machines build the bridge in the real strait, and San Francisco and Sausalito light
+//!   up.
 //! - 5 to 10 s, [`greenhouse`]: the headlights of the first car become a point of light that
 //!   draws a ring on the sand. Drones build a glass dome on it, and the dome turns green.
 //! - 10 to 15 s, [`rocket`]: a whip pan lands on a launch tower at dawn. Warm lights run up
@@ -10,7 +11,9 @@
 //!
 //! The machines carry cold blue-white light. What they build carries warm light.
 
+mod bay;
 mod bridge;
+mod golden_gate;
 mod greenhouse;
 mod rocket;
 
@@ -50,9 +53,8 @@ pub struct MontageSet {
 /// a scene with `scene.append(Some(anchor), &landmarks.bridge)` below a group node that
 /// places and turns it.
 pub struct Landmarks {
-    /// The bridge (570 m along X), its canyon (along Z, 900 m long, 200 m deep, the rims at
-    /// y = 0 and about 330 m apart) and the village on the +X rim. The ground of the shot
-    /// must leave the canyon open. The canyon bends up to 70 m to +X at its ends.
+    /// The Golden Gate Bridge, finished and lit, at a fifth of its size, see
+    /// [`golden_gate_landmark`].
     pub bridge: Scene,
     /// The glass dome, 40 m wide, with the plants and the warm light inside.
     pub greenhouse: Scene,
@@ -132,6 +134,20 @@ impl MontageSet {
             contrail: self.rocket.landmark(),
         }
     }
+}
+
+/// The Golden Gate Bridge for the distance of shot 9: finished, with its lamps and red
+/// lights, without terrain and without lights. It is a fifth of the real size: the main
+/// span is 256 m, the towers are 45 m high, and the road is 15 m above the feet of the
+/// towers. X runs along the bridge, Z across it, and the origin is the middle of the main
+/// span at the level of the feet of the towers. The towers stand at X = ±128 m, the
+/// anchorages at ±197 m, and the approaches end at ±276 m on the ground (Y = 0).
+pub fn golden_gate_landmark() -> Scene {
+    golden_gate::bridge(
+        &golden_gate::Paints::plain(),
+        bridge::LANDMARK_SCALE,
+        &|_, _| 0.0,
+    )
 }
 
 /// The opacity of the warm white that [`MontageSet::overlay`] draws at `t`, `0..1`.

@@ -200,8 +200,8 @@ impl Video for TheWhy {
             sound("sfx_streak.mp3", 56.6, -7.0),
             // the wave, the builds, the sunrise
             sound("sfx_wave.mp3", 59.6, -9.0),
-            sound("sfx_cables.mp3", 69.2, -11.0),
-            sound("sfx_village.mp3", 70.8, -16.0).fade_out(1.0),
+            sound("sfx_cables.mp3", 68.9, -11.0),
+            sound("sfx_village.mp3", 71.0, -16.0).fade_out(1.0),
             sound("sfx_glass.mp3", 73.5, -11.0),
             sound("sfx_streak.mp3", 76.8, -10.0),
             sound("sfx_rocket.mp3", 78.9, -7.0).fade_out(1.0),
