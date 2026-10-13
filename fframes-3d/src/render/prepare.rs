@@ -105,6 +105,7 @@ pub(crate) struct WorldSprite {
     pub size: f32,
     /// The color times the opacity.
     pub color: Vec3,
+    pub opacity: f32,
     pub additive: bool,
 }
 
@@ -134,6 +135,7 @@ pub(crate) fn build_world(scene: &Scene) -> (World<'_>, Lights) {
                         tail_end: m.transform_point3(p.position + p.tail),
                         size: p.size * scale,
                         color: p.color.0 * p.opacity,
+                        opacity: p.opacity,
                         additive: particles.blending == Blending::Additive,
                     });
                 }
@@ -597,7 +599,10 @@ pub(crate) struct ScreenSprite {
     /// The depth key of the nearer end, larger is nearer.
     pub z: f32,
     pub radius: f32,
+    /// The color times the opacity.
     pub color: Vec3,
+    /// The part of the pixel that a blended sprite covers at its center.
+    pub opacity: f32,
     pub additive: bool,
     pub bounds: Rect,
     /// The view depth, for the order of blended particles.
@@ -637,8 +642,8 @@ pub(crate) fn setup_sprites(
         let energy = (radius / drawn).powi(2);
         // The tail spreads the energy along its length.
         let smear = (2.0 * drawn) / (2.0 * drawn + p0.distance(p1));
-        let color = s.color * energy * smear;
-        if color.max_element() <= 1e-5 {
+        let opacity = s.opacity * energy * smear;
+        if opacity <= 1e-5 {
             return None;
         }
         Some(ScreenSprite {
@@ -646,7 +651,8 @@ pub(crate) fn setup_sprites(
             p1,
             z: z0.max(z1),
             radius: drawn,
-            color,
+            color: s.color * energy * smear,
+            opacity,
             additive: s.additive,
             bounds: Rect::covering(p0.min(p1) - drawn, p0.max(p1) + drawn, vp.size)?,
             depth: w0,
