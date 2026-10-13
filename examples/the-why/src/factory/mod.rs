@@ -14,7 +14,7 @@ use fframes::{Svgr, svgr};
 
 use crate::WIDTH;
 use crate::assets::Assets;
-use crate::figure::{Figure, FigureStyle, Joint, Pose};
+use crate::figure::{Figure, FigureStyle, Pose};
 use crate::look::{BAR, HUD, PICTURE_HEIGHT, lens};
 use arm::{Arm, Expression, Joints, Palette};
 use crowd::{Crowd, Posed, Station};
@@ -35,7 +35,7 @@ const WATCHER_PHASE: f32 = 3.1;
 const WAVE_ARRIVAL: f32 = 0.9;
 const WAVE_SPEED: f32 = 45.0;
 /// Where the engineer stands on the catwalk (his feet).
-pub const ENGINEER: Vec3 = Vec3::new(3.2, hall::CATWALK_Y, hall::CATWALK_Z + 0.35);
+pub const ENGINEER: Vec3 = Vec3::new(4.7, hall::CATWALK_Y, hall::CATWALK_Z + 0.35);
 
 /// A hero arm: the detailed model at a station.
 struct Hero {
@@ -157,11 +157,10 @@ impl FactorySet {
         }
     }
 
-    /// Poses the engineer: he stands at the rail and looks down at the arms.
+    /// Poses the engineer: he leans on the rail and looks down at the arms. The top of the
+    /// rail is 0.43 m in front of him and 1.10 m above the deck.
     fn pose_engineer(&self, scene: &mut Scene, t: f32) {
-        let mut pose = Pose::stand(t + 3.0).placed(ENGINEER, 0.0);
-        pose[Joint::Head] *= Quat::from_rotation_x(0.35);
-        pose[Joint::Neck] *= Quat::from_rotation_x(0.12);
+        let pose = Pose::at_rail(t + 3.0, vec3(0.0, 1.10, 0.43)).placed(ENGINEER, 0.0);
         self.engineer.apply(scene, &pose);
     }
 

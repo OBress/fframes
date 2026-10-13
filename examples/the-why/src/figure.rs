@@ -118,6 +118,9 @@ const STRIKE: f32 = 0.25;
 /// The angle of the foot, heel up, at the toe off, in radians.
 const TOE_OFF: f32 = 0.75;
 
+/// The hip to ankle distance of a standing leg, as a part of the leg length. The knees
+/// then bend about 5 degrees.
+const STAND_EXTENSION: f32 = 0.999;
 /// The heel points and the turns of the feet (radians) when he stands.
 const STAND_FEET: [(Vec3, f32); 2] = [
     (Vec3::new(0.11, 0.0, -0.065), 0.14),
@@ -133,6 +136,13 @@ const KNEEL_LEFT: (Vec3, f32) = (Vec3::new(0.17, 0.0, 0.52), 0.15);
 const KNEEL_RIGHT_YAW: f32 = -0.06;
 /// The angle of the right foot, heel up, when he kneels on its toes.
 const TUCK: f32 = 1.2;
+/// How far the ankles stand behind a railing, in meters. Then the arms on the rail are
+/// almost straight.
+const RAIL_DISTANCE: f32 = 0.58;
+/// The distance of each hand on the rail from the middle, in meters.
+const RAIL_HANDS: f32 = 0.22;
+/// The middle of the palm surface in the space of the left wrist. The right hand mirrors X.
+const PALM_CENTER: Vec3 = Vec3::new(-0.017, -0.055, 0.0);
 
 const THUMB: usize = 0;
 const INDEX: usize = 1;
@@ -452,6 +462,15 @@ impl Figure {
             ]
         })
     }
+
+    /// The middle of the left and the right palm surface, in world space. [`Pose::at_rail`]
+    /// puts them on the rail.
+    pub fn palms(&self, scene: &Scene) -> [Vec3; 2] {
+        [LEFT, RIGHT].map(|i| {
+            let palm = PALM_CENTER * vec3(SIDE[i], 1.0, 1.0);
+            scene.local_to_world(self.joint(ARMS[i][3]), palm)
+        })
+    }
 }
 
 /// The joint rotations and the place of the figure at one moment.
@@ -542,7 +561,7 @@ impl Pose {
             foot.ankle.z -= cycle * stride;
             foot
         });
-        pose.pelvis.y = pose.pelvis_reach(&feet, 0.997);
+        pose.pelvis.y = pose.pelvis_reach(&feet, 0.997, 0.04);
         pose.solve_legs(&feet, [vec3(0.1, 0.0, 1.0), vec3(-0.1, 0.0, 1.0)]);
 
         // The spine turns against the pelvis, so the shoulders stay calm and the head
@@ -608,7 +627,7 @@ impl Pose {
         let feet = [left, right];
 
         let height = start.pelvis.y + (end.pelvis.y - start.pelvis.y) * down;
-        pose.pelvis.y = height.min(pose.pelvis_reach(&feet, 0.993));
+        pose.pelvis.y = height.min(pose.pelvis_reach(&feet, STAND_EXTENSION, 0.0));
         let hip = pose.hip(RIGHT);
         let knee = KNEE_POLES[RIGHT]
             .normalize()
@@ -642,22 +661,67 @@ impl Pose {
             pose[ClavicleR] = euler(0.0, 0.2 * bend, 0.12 * bend);
             pose
         };
-        let reach = 0.92 * (UPPER_ARM + FOREARM);
-        let (mut low, mut high) = (0.0, 1.4);
-        for _ in 0..20 {
-            let mid = f32::midpoint(low, high);
-            let shoulder = bent(mid).joint_matrices()[ShoulderR as usize].w_axis;
-            if shoulder.truncate().distance(wrist) > reach {
-                low = mid;
-            } else {
-                high = mid;
-            }
-        }
-        let mut pose = bent(high);
+        let bend = least(1.4, |bend| {
+            let shoulder = bent(bend).joint_matrices()[ShoulderR as usize].w_axis;
+            shoulder.truncate().distance(wrist) <= 0.92 * (UPPER_ARM + FOREARM)
+        });
+        let mut pose = bent(bend);
         pose.fingers[RIGHT] = fingers;
         pose.reach(RIGHT, wrist, hand, vec3(-0.8, 0.3, -0.5));
         pose.rest_hand_on_thigh(1.2);
         pose.look_at(tip);
+        pose
+    }
+
+    /// He stands at a railing with both hands on its top and looks down over it.
+    ///
+    /// `rail` is the middle of the top of the railing in root space. The railing runs along X
+    /// in front of him. He stands back from the railing, so the arms are almost straight.
+    /// Thus the feet can be behind the root. He leans from the hips only as far as the arms
+    /// need. The shoulders rise a little, and the head looks about 20 degrees down. He
+    /// breathes and moves his weight as in [`Pose::stand`]. `time` is in seconds. The palms
+    /// stay on the rail, see [`Figure::palms`].
+    pub fn at_rail(time: f32, rail: Vec3) -> Pose {
+        let stand = Pose::stand(time);
+        let back = vec3(0.0, 0.0, rail.z - RAIL_DISTANCE);
+        let feet = STAND_FEET.map(|(heel, yaw)| planted(heel + back, yaw, 0.0));
+        // The palms are on the top of the rail. The fingers point forward and a little in,
+        // and they hang over the front edge.
+        let hands = [LEFT, RIGHT].map(|i| {
+            let side = SIDE[i];
+            let hand = hand_rotation(vec3(-side * 0.25, 0.0, 1.0), Vec3::X * -side);
+            let palm = vec3(side * RAIL_HANDS, rail.y, rail.z);
+            (palm - hand * (PALM_CENTER * vec3(side, 1.0, 1.0)), hand)
+        });
+        // The shoulders rise and come forward a little.
+        let leaning = |lean: f32| {
+            let mut pose = stand.clone();
+            pose.pelvis += back;
+            pose[Pelvis] = euler(lean, 0.0, 0.0) * stand[Pelvis];
+            pose.pelvis.y = pose.pelvis_reach(&feet, STAND_EXTENSION, 0.0);
+            for i in [LEFT, RIGHT] {
+                pose[ARMS[i][0]] *= euler(0.0, -SIDE[i] * 0.05, SIDE[i] * 0.08);
+            }
+            pose
+        };
+        let lean = least(0.6, |lean| {
+            let m = leaning(lean).joint_matrices();
+            [LEFT, RIGHT].into_iter().all(|i| {
+                let shoulder = m[ARMS[i][1] as usize].w_axis.truncate();
+                shoulder.distance(hands[i].0) <= 0.985 * (UPPER_ARM + FOREARM)
+            })
+        });
+        let mut pose = leaning(lean);
+        pose.solve_legs(&feet, KNEE_POLES);
+        for (i, (wrist, hand)) in hands.into_iter().enumerate() {
+            pose.reach(i, wrist, hand, vec3(SIDE[i] * 0.6, 0.0, -1.0));
+        }
+        // The head looks 20 degrees down, at the floor far below. The neck does 40 % of the
+        // turn.
+        let forward = pose.joint_matrices()[Head as usize].transform_vector3(Vec3::Z);
+        let turn = deg(20.0) + forward.y.asin();
+        pose[Neck] *= Quat::from_rotation_x(0.4 * turn);
+        pose[Head] *= Quat::from_rotation_x(0.6 * turn);
         pose
     }
 
@@ -716,7 +780,7 @@ impl Pose {
         };
         pose[Pelvis] = euler(-0.03 * look, 0.0, 0.03 * weight);
         let feet = STAND_FEET.map(|(heel, yaw)| planted(heel, yaw, 0.0));
-        pose.pelvis.y = pose.pelvis_reach(&feet, 0.993);
+        pose.pelvis.y = pose.pelvis_reach(&feet, STAND_EXTENSION, 0.0);
         pose.solve_legs(&feet, KNEE_POLES);
 
         // The spine keeps the shoulders level, and the chest rises when he breathes in.
@@ -759,14 +823,16 @@ impl Pose {
 
     /// The highest pelvis offset (y) at which each leg reaches its ankle with the hip to
     /// ankle distance at `extension` times the leg length. The knees then bend a little.
-    fn pelvis_reach(&self, feet: &[Foot; 2], extension: f32) -> f32 {
+    /// `blend` is the height range in meters over which the two legs share the limit. It
+    /// keeps the pelvis smooth in a walk, but it also lowers the pelvis by up to `blend / 4`.
+    fn pelvis_reach(&self, feet: &[Foot; 2], extension: f32, blend: f32) -> f32 {
         let reach = (THIGH + SHIN) * extension;
         let [left, right] = [LEFT, RIGHT].map(|i| {
             let hip = self.hip(i) - Vec3::Y * self.pelvis.y;
             let flat = (feet[i].ankle - hip).with_y(0.0).length().min(reach);
             feet[i].ankle.y + (reach * reach - flat * flat).sqrt() - hip.y
         });
-        smooth_min(left, right, 0.04)
+        smooth_min(left, right, blend)
     }
 
     /// Bends the legs so that the ankles reach `feet`. `poles` are the directions that the
@@ -1032,9 +1098,28 @@ fn index_tip_in_wrist(side: f32, curl: f32) -> Vec3 {
     m.transform_point3(index_tip())
 }
 
+/// The smallest value in `0..=max` for which `enough` is true, found by bisection.
+/// `enough` must be false below a value and true above it. Returns `max` when `enough(max)`
+/// is false.
+fn least(max: f32, enough: impl Fn(f32) -> bool) -> f32 {
+    let (mut low, mut high) = (0.0, max);
+    for _ in 0..20 {
+        let mid = f32::midpoint(low, high);
+        if enough(mid) {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    high
+}
+
 /// A smooth minimum of `a` and `b` that is never above `min(a, b)`. `k` is the width of
-/// the blend.
+/// the blend. With `k` = 0 it is `min(a, b)`.
 fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
+    if k <= 0.0 {
+        return a.min(b);
+    }
     let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
     b + (a - b) * h - k * h * (1.0 - h)
 }

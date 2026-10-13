@@ -254,3 +254,79 @@ fn fingertip_follows_the_line() {
         );
     }
 }
+
+/// The rail of shot 3: the top of the railing in the root space of the figure.
+const RAIL: Vec3 = Vec3::new(0.0, 1.08, 0.42);
+
+/// A catwalk floor and a railing with a flat top rail 8 cm deep, in the space of the figure.
+fn catwalk(scene: &mut Scene) {
+    let steel = Material::metal(0x8a9098, 0.45);
+    scene.add(Node::mesh(Geometry::cuboid(4.0, 0.04, 1.3), steel.clone()).at(0.0, -0.02, -0.1));
+    let top = Geometry::cuboid(4.0, 0.04, 0.08);
+    scene.add(Node::mesh(top, steel.clone()).with_position(RAIL - Vec3::Y * 0.02));
+    let middle = Geometry::cuboid(4.0, 0.03, 0.03);
+    scene.add(Node::mesh(middle, steel.clone()).at(0.0, 0.55, RAIL.z));
+    for x in [-1.5, -0.6, 0.6, 1.5] {
+        let post = Geometry::cuboid(0.05, RAIL.y, 0.05);
+        scene.add(Node::mesh(post, steel.clone()).at(x, RAIL.y * 0.5, RAIL.z));
+    }
+}
+
+/// The palms stay on the rail while he breathes and moves his weight for 10 s.
+#[test]
+fn rail_keeps_the_palms_on_the_rail() {
+    let mut scene = Scene::new();
+    let figure = Figure::build(&mut scene, None, &FigureStyle::default());
+    let (origin, heading) = (vec3(4.0, 3.0, -2.0), -0.8);
+    let root = Mat4::from_rotation_translation(Quat::from_rotation_y(heading), origin);
+    let (point, along) = (root.transform_point3(RAIL), root.transform_vector3(Vec3::X));
+    for k in 0..=200 {
+        let time = k as f32 * 0.05;
+        figure.apply(
+            &mut scene,
+            &Pose::at_rail(time, RAIL).placed(origin, heading),
+        );
+        for palm in figure.palms(&scene) {
+            let off = palm - point;
+            let distance = (off - along * off.dot(along)).length();
+            assert!(
+                distance < 0.01,
+                "time {time}: a palm is {distance} m from the rail"
+            );
+        }
+        let lowest = figure
+            .feet(&scene)
+            .iter()
+            .flatten()
+            .map(|p| p.y - origin.y)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            lowest.abs() < 0.02,
+            "time {time}: the lowest sole point is at {lowest} m"
+        );
+    }
+}
+
+#[test]
+fn rail_sheet() {
+    let renderer = Renderer::new(480, 640).cpu();
+    let (mut scene, figure) = studio();
+    catwalk(&mut scene);
+    let below = vec3(0.6, -7.0, 4.0);
+    let mut tiles = Vec::new();
+    for time in [0.0, 3.0, 6.0, 9.0] {
+        let pose = Pose::at_rail(time, RAIL);
+        let cameras = [
+            Camera::perspective(26.0).orbit(vec3(0.0, 1.0, 0.1), 4.5, 35.0, 8.0),
+            Camera::perspective(26.0).orbit(vec3(0.0, 1.0, 0.1), 4.5, 90.0, 4.0),
+            Camera::perspective(26.0).orbit(vec3(0.0, 1.1, 0.1), 7.0, 20.0, -30.0),
+            Camera::perspective(12.0)
+                .position(below)
+                .look_at(vec3(0.0, 1.35, 0.1)),
+        ];
+        for camera in &cameras {
+            tiles.push(render(&renderer, &scene, &figure, &pose, camera));
+        }
+    }
+    save_sheet("rail", &tiles, 4);
+}
