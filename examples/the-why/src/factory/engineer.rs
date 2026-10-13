@@ -22,6 +22,9 @@ const ARRIVE: f32 = 5.6;
 const TOUCH: f32 = 7.3;
 const RELEASE: f32 = 7.75;
 const LEAVE: f32 = 8.0;
+/// The camera lets go of the eye when the gripper starts to rise, so it does not ride the
+/// rise and stop dead when the dive starts.
+const DETACH: f32 = LEAVE - 0.1;
 /// A small work light in the J6 frame: 2.5 cm past the tips of the jaws and 13 cm to the
 /// side of the eye.
 const WORK_LIGHT: Vec3 = Vec3::new(0.0, 0.13, 0.30);
@@ -165,7 +168,8 @@ impl FactorySet {
     }
 
     pub fn shutter_engineer(&self, t: f32) -> usize {
-        if (WHIP..ARRIVE).contains(&t) || t > LEAVE + 0.4 {
+        // the start of the dive too: the pins and the traces shrink fast and would crawl
+        if (WHIP..ARRIVE).contains(&t) || t > DETACH {
             3
         } else {
             2
@@ -204,7 +208,7 @@ impl FactorySet {
             return (blend(&gaze, &hover, swing), grip);
         }
         // After the release the gripper rises and moves back toward the base.
-        let away = smoothstep(LEAVE - 0.1, LEAVE + 0.8, t);
+        let away = smoothstep(DETACH, LEAVE + 0.8, t);
         let target = grip.chip + vec3(0.0, 0.3, -0.35) * away;
         (holding(target, turn, &hover), grip)
     }
@@ -218,14 +222,14 @@ impl FactorySet {
         let eye_local = arm::EYE + Vec3::Z * 0.06;
         let local = eye_local.lerp(MACRO, k);
         let look_local = Vec3::Z.lerp((HELD - MACRO).normalize(), k).normalize();
-        let (eye, forward) = if t < LEAVE {
+        let (eye, forward) = if t < DETACH {
             (
                 flange.transform_point3(local),
                 flange.transform_vector3(look_local).normalize(),
             )
         } else {
             // the camera stays where the eye let it go
-            let (q, _) = self.pov_joints(LEAVE);
+            let (q, _) = self.pov_joints(DETACH);
             let flange = self.watcher.base * arm::flange(&q);
             (
                 flange.transform_point3(MACRO),
@@ -248,11 +252,12 @@ impl FactorySet {
         let top = self.watcher.base.transform_point3(seated()) + vec3(0.0, CHIP_TOP, 0.0);
         let dive = smoothstep(LEAVE, 9.0, t);
         let position = eye.lerp(top + Vec3::Y * dive_height(t), dive);
-        let look = if dive > 0.0 {
-            (top - position).normalize()
-        } else {
-            forward
-        };
+        // the view turns from the axis of the eye to the top of the chip over 0.4 s, so
+        // the picture does not jump when the dive starts
+        let aim = smoothstep(LEAVE, LEAVE + 0.4, t);
+        let look = forward
+            .lerp((top - position).normalize_or(forward), aim)
+            .normalize_or(forward);
         let mut camera = lens(mm + (35.0 - mm) * dive)
             .position(position)
             .look_at(position + look);

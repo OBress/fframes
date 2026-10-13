@@ -18,7 +18,7 @@
 //!   it is done. The printer booms follow the top of the build.
 //! - 1.6 to 2.6: the soil and the raised beds rise inside, from the middle outward.
 //! - 2.5 to 4.0: the printers fold their booms and drive away.
-//! - 2.0 to 3.2: drones bring the glass and set it tier by tier from the bottom.
+//! - 1.2 to 3.8: drones bring the glass and set it tier by tier from the bottom.
 //! - 2.4: bloom. The grow lights come on around their ring, and the plants sprout and
 //!   unfold, from the middle outward.
 //! - 2.6 to 3.6: the dome turns green. 3.2: the mist of the irrigation.
@@ -70,8 +70,8 @@ const SOIL: (f32, f32) = (1.6, 2.2);
 /// The first glass panel is set.
 const GLASS: f32 = 2.0;
 /// The flight of a drone with its glass to the dome, and its flight away, in seconds.
-const CARRY: f32 = 0.55;
-const LEAVE: f32 = 0.45;
+const CARRY: f32 = 0.8;
+const LEAVE: f32 = 0.7;
 /// The grow lights come on and the plants sprout.
 const BLOOM: f32 = 2.4;
 /// The glass glows green.
@@ -946,11 +946,8 @@ impl Greenhouse {
                     );
                 }
             }
-            let blink = if (t * 3.0 + k as f32 * 0.37).fract() < 0.5 {
-                30.0
-            } else {
-                6.0
-            };
+            let phase = (t * 1.5 + k as f32 * 0.37).fract();
+            let blink = 6.0 + 24.0 * (-((phase - 0.5) / 0.15).powi(2)).exp();
             glows.push(Particle::new(
                 base + Vec3::Y * 3.3 + out * 0.8,
                 0.1,
@@ -970,7 +967,9 @@ impl Greenhouse {
     /// The glass panels at `t` and the drones that carry them. A drone carries two panels
     /// down from above the frame in an arc, brakes nose up at their place, then lifts away
     /// and leaves the frame. Returns the panels and the drones, and adds the drone lights to
-    /// `leds`.
+    /// `leds`. The drones grow in from nothing high above the frame and shrink to nothing
+    /// as they leave, so none of them pops in or out between two frames. They move at most
+    /// about 1 m per frame.
     fn pose_glass(&self, t: f32, leds: &mut Vec<Particle>) -> (Vec<Mat4>, Vec<Mat4>) {
         let mut panels = Vec::new();
         let mut drones = Vec::new();
@@ -982,17 +981,26 @@ impl Greenhouse {
             let center = p.place.transform_point3(vec3(1.0 / 3.0, 1.0 / 3.0, 0.0));
             let pair = i - i % 2;
             let side =
-                p.normal.cross(Vec3::Y).normalize_or(Vec3::X) * (8.0 * (hash(pair as u32) - 0.5));
-            let from = p.normal * 14.0 + Vec3::Y * (34.0 - center.y).max(14.0) + side;
-            let left = 1.0 - ease_out(g);
+                p.normal.cross(Vec3::Y).normalize_or(Vec3::X) * (6.0 * (hash(pair as u32) - 0.5));
+            let from = p.normal * 10.0 + Vec3::Y * (28.0 - center.y).max(10.0) + side;
+            // slow at both ends: the drone starts while it is still small, and brakes at
+            // the place of the panel
+            let left = 1.0 - ease(g);
             let away = from * left + side * (0.6 * (PI * left).sin());
-            panels.push(Mat4::from_translation(away) * p.place);
+            let arrive = smoothstep(0.0, 0.3, g);
+            panels.push(
+                Mat4::from_translation(center + away)
+                    * Mat4::from_scale(Vec3::splat(arrive))
+                    * Mat4::from_translation(-center)
+                    * p.place,
+            );
             let leave = progress(t, p.set, p.set + LEAVE);
-            if !p.drone || leave >= 1.0 {
+            let size = arrive * (1.0 - smoothstep(0.55, 1.0, leave));
+            if !p.drone || size < 0.01 {
                 continue;
             }
-            let up = p.normal.with_y(0.0) * 8.0 + Vec3::Y * 30.0;
-            let drone = center + away + p.normal * 0.5 + Vec3::Y * 0.9 + up * ease_in(leave);
+            let up = p.normal.with_y(0.0) * 5.0 + Vec3::Y * 14.0;
+            let drone = center + away + p.normal * 0.5 + Vec3::Y * 0.9 + up * (leave * leave);
             let brake = Quat::from_axis_angle(
                 Vec3::Y.cross(from.with_y(0.0)).normalize_or(Vec3::X),
                 -2.0 * left * (1.0 - left),
@@ -1002,24 +1010,24 @@ impl Greenhouse {
                 0.35 * smoothstep(0.0, 0.5, leave),
             );
             let heading = Quat::from_rotation_y((i as f32 * 2.4 + t * 3.0).sin() * 0.3);
-            drones.push(Mat4::from_rotation_translation(
+            drones.push(Mat4::from_scale_rotation_translation(
+                Vec3::splat(size),
                 climb * brake * heading,
                 drone,
             ));
-            let blink = if (t * 6.0 + hash(i as u32) * 2.0).fract() < 0.5 {
-                40.0
-            } else {
-                8.0
-            };
+            // the beacon pulses three times a second; it ramps over a few frames, so a
+            // hundred of them do not strobe
+            let phase = (t * 3.0 + hash(i as u32)).fract();
+            let blink = 8.0 + 32.0 * (-((phase - 0.5) / 0.12).powi(2)).exp();
             leds.push(Particle::new(
-                drone - vec3(0.0, 0.18, 0.0),
-                0.08,
-                Rgb::hex(COLD_BLUE) * blink,
+                drone - vec3(0.0, 0.18, 0.0) * size,
+                0.08 * size,
+                Rgb::hex(COLD_BLUE) * (blink * size),
             ));
             leds.push(Particle::new(
-                drone + vec3(0.0, 0.1, 0.0),
-                0.05,
-                Rgb::hex(COLD) * 20.0,
+                drone + vec3(0.0, 0.1, 0.0) * size,
+                0.05 * size,
+                Rgb::hex(COLD) * (20.0 * size),
             ));
         }
         (panels, drones)
@@ -1322,7 +1330,9 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         .named("desert"),
     );
 
-    let steel = Material::standard(0xd6dade).roughness(0.35).metalness(0.2);
+    // the struts are thin: a rough finish keeps their highlights wide, so they do not
+    // sparkle when the camera moves
+    let steel = Material::standard(0xd6dade).roughness(0.6).metalness(0.2);
     let galvanized = Material::standard(0xa8acb0).roughness(0.45).metalness(0.6);
     let concrete = assets.concrete.material(0xd8d4cc, 0.9, 0.0);
     let cylinder = Arc::new(Geometry::cylinder(1.0, 1.0, 1.0, 8).translate(0.0, 0.5, 0.0));
@@ -1503,8 +1513,10 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         vec![Vec2::ZERO, Vec2::X, Vec2::Y],
         vec![0, 1, 2],
     );
+    // rough enough that the glint of a ring light spreads over a panel instead of
+    // flashing on the panels that fly past it
     let glass = Material::standard(0x000000)
-        .roughness(0.05)
+        .roughness(0.14)
         .env_intensity(1.8)
         .emissive(0x52ff86, 0.0)
         .rim(Rgb::hex(0xa8d8e0) * 0.05, 4.0)

@@ -31,6 +31,16 @@ const FIELD_HALF: f32 = 330.0;
 const FIELD_END: f32 = -340.0;
 /// The distance between two furrows.
 const ROW: f32 = 2.4;
+/// The far furrows blend into a flat field: from `FADE.0` to `FADE.1` meters from the
+/// canal the water of a furrow widens to the whole row and the ridges between the furrows
+/// flatten under it. So no thin lines are left far away to make moiré when the camera
+/// pans.
+const FADE: (f32, f32) = (25.0, 200.0);
+/// The width of the water of a furrow near the canal.
+const FURROW: f32 = 0.75;
+/// The pieces of a furrow along its length: a furrow fills piece by piece, so the shape
+/// of each piece stays true while the water runs.
+const PIECES: usize = 8;
 /// The half width of the canal between its walls, and the height of the walls.
 const CANAL: f32 = 1.6;
 const CANAL_WALL: f32 = 1.2;
@@ -81,8 +91,8 @@ struct Ids {
     rims: NodeId,
     canal_water: NodeId,
     glow: NodeId,
-    furrows: NodeId,
-    shine: NodeId,
+    furrows: [NodeId; PIECES],
+    shine: [NodeId; PIECES],
     crops: NodeId,
     paver: NodeId,
     paver_light: NodeId,
@@ -227,48 +237,66 @@ impl Water {
         scene[ids.head_light].visible = running;
 
         // the furrows fill behind the head, and the rows of the crop sprout
-        let (mut furrows, mut crops, mut colors) = (Vec::new(), Vec::new(), Vec::new());
-        let (mut shine, mut warmth) = (Vec::new(), Vec::new());
+        let (mut crops, mut colors) = (Vec::new(), Vec::new());
+        let mut furrows = vec![Vec::new(); PIECES];
+        let mut shine = vec![(Vec::new(), Vec::new()); PIECES];
+        let piece = FURROW_LENGTH / PIECES as f32;
         for (i, &x) in self.furrows.iter().enumerate() {
             let at = water_time(x) + 0.02 * hash(i as u32 * 7 + 1);
             let fill = ease_out(progress(t, at, at + 0.28));
             if fill > 0.0 {
-                let length = (FIELD_END + CANAL + 0.6).abs() * fill;
-                let place = Mat4::from_scale_rotation_translation(
-                    vec3(1.0, 1.0, length),
-                    Quat::IDENTITY,
-                    vec3(x, 0.0, -CANAL - 0.6 - length * 0.5),
-                );
-                furrows.push(place);
+                let length = FURROW_LENGTH * fill;
                 // the water carries the warm light into the furrow, brightest at its front
                 let warm = (-(t - at).max(0.0) / 0.16).exp();
-                if warm > 0.03 {
-                    shine.push(place);
-                    warmth.push(Rgb::hex(AMBER_EDGE) * (2.2 * warm));
-                    if fill < 1.0 {
-                        let front = vec3(x, 0.15, -CANAL - 0.6 - length);
-                        glows.push(Particle::new(
-                            front,
-                            0.5,
-                            Rgb::hex(0xffd8a0) * (20.0 * warm),
-                        ));
+                for k in 0..PIECES {
+                    let start = k as f32 * piece;
+                    let part = ((length - start) / piece).min(1.0);
+                    if part <= 0.0 {
+                        break;
                     }
+                    let place = Mat4::from_scale_rotation_translation(
+                        vec3(1.0, 1.0, part),
+                        Quat::IDENTITY,
+                        vec3(x, 0.0, -CANAL - 0.6 - start),
+                    );
+                    furrows[k].push(place);
+                    if warm > 0.03 {
+                        shine[k].0.push(place);
+                        shine[k].1.push(Rgb::hex(AMBER_EDGE) * (2.2 * warm));
+                    }
+                }
+                if warm > 0.03 && fill < 1.0 {
+                    let front = vec3(x, 0.15, -CANAL - 0.6 - length);
+                    glows.push(Particle::new(
+                        front,
+                        0.5,
+                        Rgb::hex(0xffd8a0) * (20.0 * warm),
+                    ));
                 }
             }
             let grow = ease_out(progress(t, at + 0.12, at + 0.45));
             if grow > 0.0 {
-                // the row beside the furrow, grown as far as the water ran
+                // the row beside the furrow, grown as far as the water ran. Each row is
+                // shifted along its length by a random part of the step of its tufts, so
+                // the tufts of the rows do not line up into a grid that makes moiré.
+                let shift = 0.5 + 2.4 * hash(i as u32 * 17 + 3);
                 crops.push(Mat4::from_scale_rotation_translation(
                     vec3(1.0, grow, fill.max(0.02)),
                     Quat::IDENTITY,
-                    vec3(x + ROW * 0.5, 0.0, -CANAL - 0.6),
+                    vec3(x + ROW * 0.5, 0.0, -CANAL - 0.6 - shift),
                 ));
                 let tint = 0.85 + 0.3 * hash(i as u32 * 13 + 5);
                 colors.push(Rgb::hex(0x62b034) * tint);
             }
         }
-        set(&mut scene, ids.furrows, Instances::new(furrows));
-        set(&mut scene, ids.shine, Instances::new(shine).colors(warmth));
+        for (k, (furrows, (shine, warmth))) in furrows.into_iter().zip(shine).enumerate() {
+            set(&mut scene, ids.furrows[k], Instances::new(furrows));
+            set(
+                &mut scene,
+                ids.shine[k],
+                Instances::new(shine).colors(warmth),
+            );
+        }
         set(&mut scene, ids.crops, Instances::new(crops).colors(colors));
 
         if let Object::Particles(p) = &mut scene[ids.glows].object {
@@ -277,9 +305,10 @@ impl Water {
         (scene, self.camera_at(t))
     }
 
-    /// The motion blur samples at `t`: more on the fast tilt at the start.
+    /// The motion blur samples at `t`: more on the fast tilt at the start, and on the pan
+    /// after the head, where the thin lines of the far furrows would crawl.
     pub fn shutter(&self, t: f32) -> usize {
-        if t < 0.2 { 3 } else { 2 }
+        if t < 0.2 || t > 0.5 { 3 } else { 2 }
     }
 
     /// The camera at `t`, in the world. It comes down out of the stars, still turning at
@@ -309,6 +338,81 @@ fn land(x: f32, z: f32) -> f32 {
     let r = vec2(x, z + 300.0).length();
     smoothstep(700.0, 2000.0, r) * 80.0 * (fbm(61, x / 700.0, z / 700.0, 3) * 0.5 + 0.6)
         + 0.3 * smoothstep(420.0, 600.0, r) * fbm(62, x / 40.0, z / 40.0, 3)
+}
+
+/// The length of a furrow from the canal to the end of the field.
+const FURROW_LENGTH: f32 = -FIELD_END - CANAL - 0.6;
+
+/// How far the furrows are blended into a flat field `d` meters from the canal, `0..1`,
+/// see [`FADE`].
+fn flat(d: f32) -> f32 {
+    smoothstep(FADE.0, FADE.1, d)
+}
+
+/// The piece `k` of the water of a furrow, see [`PIECES`]: a strip that faces up at
+/// `height`, from the start of the piece at Z = 0 along -Z. Its width is `width` times the
+/// width of the water, which grows from [`FURROW`] to the whole row with the distance.
+fn furrow_piece(k: usize, width: f32, height: f32) -> Geometry {
+    let piece = FURROW_LENGTH / PIECES as f32;
+    let steps = 6;
+    let mut positions = Vec::new();
+    let mut uvs = Vec::new();
+    for j in 0..=steps {
+        let z = piece * j as f32 / steps as f32;
+        let half = 0.5 * width * mix(FURROW, ROW, flat(k as f32 * piece + z));
+        for x in [-half, half] {
+            positions.push(vec3(x, height, -z));
+            uvs.push(vec2(x, -z));
+        }
+    }
+    let indices = (0..steps as u32)
+        .flat_map(|j| {
+            let (l0, r0, l1, r1) = (2 * j, 2 * j + 1, 2 * j + 2, 2 * j + 3);
+            [l0, r0, l1, r0, r1, l1]
+        })
+        .collect();
+    let normals = vec![Vec3::Y; positions.len()];
+    Geometry::new(positions, normals, uvs, indices)
+}
+
+/// A ridge of the tilled field, `length` meters long from Z = -2 along -Z. Near the canal it
+/// is 1.5 m wide and 0.22 m high. Far away it flattens and widens to the whole row, under
+/// the water of the furrows beside it, see [`FADE`].
+fn field_ridge(length: f32) -> Geometry {
+    let steps = 48;
+    let mut positions = Vec::new();
+    let mut uvs = Vec::new();
+    let mut indices = Vec::new();
+    for j in 0..=steps {
+        let d = length * j as f32 / steps as f32;
+        let f = flat(d);
+        // it sinks faster than the water widens, so the water shows wider with the
+        // distance and covers the whole row at the end
+        let (base, top, height) = (
+            mix(0.75, 0.5 * ROW + 0.05, f),
+            mix(0.25, 0.5 * ROW - 0.2, f),
+            0.22 * (1.0 - f).powi(2) + 0.005,
+        );
+        // each face of the profile has its own vertices, so the edges stay sharp
+        for (x0, y0, x1, y1) in [
+            (-base, 0.0, -top, height),
+            (-top, height, top, height),
+            (top, height, base, 0.0),
+        ] {
+            for (x, y) in [(x0, y0), (x1, y1)] {
+                positions.push(vec3(x, y, -2.0 - d));
+                uvs.push(vec2(x, -2.0 - d));
+            }
+        }
+    }
+    for j in 0..steps as u32 {
+        for face in 0..3u32 {
+            let a = j * 6 + face * 2;
+            let (a0, a1, b0, b1) = (a, a + 1, a + 6, a + 7);
+            indices.extend([a0, a1, b0, a1, b1, b0]);
+        }
+    }
+    Geometry::new(positions, Vec::new(), uvs, indices)
 }
 
 /// The scene in the space of the field, below a group with `turn`.
@@ -362,26 +466,11 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
     );
     // the ridges of the tilled field and dry shrubs on the plain
     let count = (2.0 * FIELD_HALF / ROW) as usize;
-    let length = (FIELD_END + 2.0).abs();
     let ridges_of_field: Vec<Mat4> = (0..count)
-        .map(|i| {
-            Mat4::from_scale_rotation_translation(
-                vec3(1.0, 1.0, length),
-                Quat::IDENTITY,
-                vec3(-FIELD_HALF + i as f32 * ROW, 0.0, -2.0 - length * 0.5),
-            )
-        })
+        .map(|i| Mat4::from_translation(vec3(-FIELD_HALF + i as f32 * ROW, 0.0, 0.0)))
         .collect();
-    let ridge = Geometry::extrude(
-        &[
-            vec2(-0.75, 0.0),
-            vec2(0.75, 0.0),
-            vec2(0.25, 0.22),
-            vec2(-0.25, 0.22),
-        ],
-        1.0,
-        0.0,
-    );
+    let length = (FIELD_END + 2.0).abs();
+    let ridge = field_ridge(length);
     add(
         &mut scene,
         Node::instanced(
@@ -515,25 +604,24 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
         )
         .shadows(false, false),
     );
-    // a furrow of water: a unit long along Z
-    let furrows = add(
-        &mut scene,
-        Node::instanced(
-            Geometry::cuboid(0.75, 0.04, 1.0).translate(0.0, 0.03, 0.0),
-            water.roughness(0.12),
-            Instances::default(),
-        )
-        .shadows(false, false),
-    );
-    let shine = add(
-        &mut scene,
-        Node::instanced(
-            Geometry::cuboid(0.6, 0.02, 1.0).translate(0.0, 0.06, 0.0),
-            Material::unlit(Rgb::WHITE).additive(),
-            Instances::default(),
-        )
-        .shadows(false, false),
-    );
+    // the water of a furrow in pieces, see [`PIECES`], and the warm light on it
+    let furrow_water = water.roughness(0.12);
+    let shine_light = Material::unlit(Rgb::WHITE).additive();
+    let mut piece_nodes = |width: f32, height: f32, material: &Material| {
+        std::array::from_fn(|k| {
+            add(
+                &mut scene,
+                Node::instanced(
+                    furrow_piece(k, width, height),
+                    material.clone(),
+                    Instances::default(),
+                )
+                .shadows(false, false),
+            )
+        })
+    };
+    let furrows = piece_nodes(1.0, 0.05, &furrow_water);
+    let shine = piece_nodes(0.8, 0.07, &shine_light);
     // a row of the crop: tufts of leaves along -Z, as long as the field
     let mut tufts = Vec::new();
     let tuft = Geometry::icosahedron(1.0, 0);

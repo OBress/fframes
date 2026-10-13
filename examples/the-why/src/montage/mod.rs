@@ -258,8 +258,16 @@ impl MontageSet {
             Part::Wind => self.wind.shutter(x),
             Part::School => self.school.shutter(x),
             Part::Water => self.water.shutter(x),
-            // the pen is fastest at the start of the ring
-            Part::Greenhouse => whip(x - 5.0).clamp(if x < 1.4 { 3 } else { 1 }, 6),
+            // the pen is fastest at the start of the ring, and a hundred drones fly in
+            // with the glass from 1.2 to 3.8
+            Part::Greenhouse => whip(x - 5.0).clamp(
+                match x {
+                    x if x < 1.4 => 3,
+                    x if x < 3.9 => 2,
+                    _ => 1,
+                },
+                6,
+            ),
             // the shake of the launch and the climb
             Part::Rocket => whip(x).clamp(if x > rocket::LIFTOFF { 2 } else { 1 }, 6),
         }

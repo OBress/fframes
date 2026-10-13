@@ -27,7 +27,15 @@ const FRONT: i32 = 7;
 const BACK: i32 = 46;
 /// The scroll steps for each line. The screens far away show the page through one of
 /// `PAGE_LINES * STEPS` windows.
-const STEPS: usize = 4;
+const STEPS: usize = 8;
+/// The fastest scroll of the screens of the field in lines per second. The main terminal
+/// writes faster and faster, but a field of screens that jump many lines each frame boils.
+/// At this speed a screen moves about one step each frame.
+const SCROLL_RATE: f32 = 10.0;
+/// The screens farther than this from the main monitor, in meters, show a soft page: the
+/// lines of code as rows of light without letters. Their letters would be smaller than a
+/// pixel and make moiré.
+const SHARP: f32 = 14.0;
 /// The width of the frame around the screen, in meters.
 const BEZEL: f32 = 0.014;
 /// The height of the frame below the screen, in meters.
@@ -85,6 +93,8 @@ struct Monitor {
     phase: f32,
     /// The light of the screen relative to the others.
     light: f32,
+    /// The screen is far from the main monitor and shows the soft page.
+    soft: bool,
     /// The color of the code, linear.
     tint: Rgb,
 }
@@ -105,6 +115,8 @@ pub struct Field {
     /// monitor (`0..1`).
     markers: Vec<(Mat4, f32)>,
     content: Material,
+    /// The code of the screens far away, see [`SHARP`].
+    soft: Material,
     /// The code of the main screen in the wide views.
     hero: Material,
     bleed: Material,
@@ -128,6 +140,7 @@ impl Field {
                     ahead: hash(seed * 13) * 2.0,
                     phase: (hash(seed * 7 + 3) * PAGE_LINES as f32).floor(),
                     light: 0.55 + 0.8 * hash(seed * 5 + 1).powi(2),
+                    soft: x.hypot(row as f32 * ROW_PITCH) > SHARP,
                     tint: tint(hash(seed * 11 + 2)),
                 });
             }
@@ -170,6 +183,7 @@ impl Field {
             marker_lamp: Arc::new(Geometry::cuboid(0.05, 0.012, 0.3)),
             markers,
             content: Material::unlit(Rgb::WHITE * CODE_LIGHT).map(page.clone()),
+            soft: Material::unlit(Rgb::WHITE * CODE_LIGHT).map(Arc::new(soft_page(&page))),
             hero: Material::unlit(Rgb::hex(HERO) * HERO_LIGHT)
                 .map(page)
                 .additive(),
@@ -205,6 +219,7 @@ impl Field {
         let count = self.windows.len();
         let window = |lines: f32| (lines * STEPS as f32).floor().rem_euclid(count as f32) as usize;
         let mut windows: Vec<(Vec<Mat4>, Vec<Rgb>)> = vec![(Vec::new(), Vec::new()); count];
+        let mut soft: Vec<(Vec<Mat4>, Vec<Rgb>)> = vec![(Vec::new(), Vec::new()); count];
         let mut panels = (Vec::new(), Vec::new());
         let mut pools = (Vec::new(), Vec::new());
         let at = Mat4::from_translation(vec3(0.0, SCREEN_Y, 0.0));
@@ -251,10 +266,15 @@ impl Field {
             if light <= 0.0 {
                 continue;
             }
-            let lines = super::written(t.min(super::ANSWER_END) + m.ahead) + m.phase;
+            let lines = scroll(t.min(super::ANSWER_END) + m.ahead) + m.phase;
             let k = window(lines);
-            windows[k].0.push(at);
-            windows[k].1.push(m.tint * (light * adapt));
+            let list = if m.soft {
+                &mut soft[k]
+            } else {
+                &mut windows[k]
+            };
+            list.0.push(at);
+            list.1.push(m.tint * (light * adapt));
             pools.0.push(at);
             pools.1.push(m.tint * light);
         }
@@ -282,8 +302,9 @@ impl Field {
         add(&self.panel, &self.bleed, panels);
         add(&self.pool, &self.pool_light, pools);
         add(&self.marker_lamp, &self.marker, markers);
-        for (k, list) in windows.into_iter().enumerate() {
-            add(&self.windows[k], &self.content, list);
+        for (k, (sharp, soft)) in windows.into_iter().zip(soft).enumerate() {
+            add(&self.windows[k], &self.content, sharp);
+            add(&self.windows[k], &self.soft, soft);
         }
     }
 }
@@ -339,6 +360,31 @@ fn pool() -> Texture {
             smoothstep(0.0, 0.2, 1.0 - (u - 0.5).abs() * 2.0) * (1.0 - smoothstep(0.75, 1.0, v));
         let l = (light(x, z) / peak).powf(1.5) * edge;
         Rgb::linear(l, l, l).to_color()
+    })
+}
+
+/// The page line at the top of a screen of the field at `t` seconds. It follows the
+/// main terminal (`written`, whose speed doubles every 0.45 s) at the start, and its speed
+/// eases to [`SCROLL_RATE`]: it is the integral of `R w' / (w' + R)`, with `w'` the speed of
+/// the terminal and `R` the rate.
+fn scroll(t: f32) -> f32 {
+    let a = std::f32::consts::LN_2 / 0.45;
+    let start = 4.0 * a;
+    let u = (t - super::ANSWER_START).max(0.0);
+    SCROLL_RATE / a * ((start * (a * u).exp() + SCROLL_RATE) / (start + SCROLL_RATE)).ln()
+}
+
+/// The page for the screens far away: the code blurred along the lines and across them,
+/// so each line is a soft row of light with gaps where the words end. It is a quarter of
+/// the size of `page`.
+fn soft_page(page: &Texture) -> Texture {
+    let line = 1.0 / PAGE_LINES as f32;
+    Texture::from_fn(512, (PAGE_LINES * 8) as u32, |u, v| {
+        let mut sum = Vec4::ZERO;
+        for (dv, weight) in [(-0.3, 0.25), (0.0, 0.5), (0.3, 0.25)] {
+            sum += page.sample_lod(vec2(u, v + dv * line), 3.0) * weight;
+        }
+        Rgb::linear(sum.x, sum.y, sum.z).to_color()
     })
 }
 
