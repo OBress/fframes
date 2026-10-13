@@ -25,11 +25,12 @@
 // Colors are hex numbers as in three.js.
 #![allow(clippy::unreadable_literal)]
 
+use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::ops::{Index, IndexMut};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use fframes_3d::math::{noise1, progress, smoothstep};
+use fframes_3d::math::{hash, noise1, progress, smoothstep};
 use fframes_3d::*;
 
 use Joint::*;
@@ -106,6 +107,11 @@ const BALL: Vec3 = Vec3::new(0.0, -0.025, 0.0);
 const TOE_TIP: Vec3 = Vec3::new(0.0, -0.025, 0.09);
 /// The height of the knee joint when the knee is on the ground.
 const KNEE_RADIUS: f32 = 0.055;
+
+/// The size of a tile of the cloth textures, in meters. The UVs of a [`loft`] are in meters.
+const TILE: f32 = 0.04;
+/// The distance between two folds of a [`Fold`] band, in meters.
+const FOLD_PERIOD: f32 = 0.024;
 
 /// The part of a gait cycle where a foot carries weight.
 const STANCE: f32 = 0.62;
@@ -240,6 +246,11 @@ fn rest(joint: Joint) -> Vec3 {
 }
 
 /// The materials of the figure.
+///
+/// [`Figure::build`] adds surface detail to them. The jacket gets a canvas weave and the
+/// trousers a denim weave: a normal map with occlusion and roughness maps. The hair gets a
+/// normal map of strands. A material that has its own normal map keeps it. The sole is a
+/// darker copy of `boots`, and the nails are a lighter and smoother copy of `skin`.
 #[derive(Debug, Clone)]
 pub struct FigureStyle {
     pub skin: Material,
@@ -257,7 +268,9 @@ impl Default for FigureStyle {
             Material::standard(color).roughness(roughness).rim(rim, 4.0)
         };
         Self {
-            skin: dark(0x2a1d17, 0.55),
+            // A warm rim on the skin, as light that goes through the edge of an ear or a
+            // finger.
+            skin: dark(0x2a1d17, 0.55).rim(Rgb::hex(0xc0705a) * 0.3, 2.5),
             jacket: dark(0x1b1e23, 0.85),
             trousers: dark(0x15171a, 0.9),
             boots: dark(0x1c1612, 0.6),
@@ -322,17 +335,53 @@ impl Figure {
             );
         };
 
-        let jacket = loft(&JACKET, 40);
-        let weights = chain_weights(
-            &jacket,
-            Vec3::Y,
-            &[Pelvis, Spine, Chest],
-            &[(rest(Spine), 0.08), (rest(Chest), 0.08)],
-        );
-        skinned(scene, jacket, weights, &style.jacket);
-        rigid(scene, Chest, collar(), &style.jacket);
+        // Woven cloth, hair strands, a rubber sole and nails. A material that has its own
+        // normal map keeps it.
+        let detail = detail();
+        let cloth = |material: &Material, maps: &[Arc<Texture>; 2], scale: f32| {
+            let mut material = material.clone();
+            if material.normal_map.is_none() {
+                material.normal_map = Some(maps[0].clone());
+                material.normal_scale = scale;
+                material.metal_rough_map = Some(maps[1].clone());
+                material.ao_map = Some(maps[1].clone());
+            }
+            material
+        };
+        let jacket_cloth = cloth(&style.jacket, &detail.canvas, 0.9);
+        let denim = cloth(&style.trousers, &detail.denim, 0.8);
+        let mut hair_material = style.hair.clone();
+        if hair_material.normal_map.is_none() {
+            hair_material = hair_material
+                .normal_map(detail.strands.clone())
+                .normal_scale(1.0);
+        }
+        let rubber = style
+            .boots
+            .clone()
+            .color(style.boots.color * 0.45)
+            .roughness(0.85);
+        let nail = style
+            .skin
+            .clone()
+            .color(style.skin.color * 1.6)
+            .roughness(0.3);
 
-        let neck = loft(&NECK, 24);
+        // The seams and the zip are dark lines on the jacket, as a shadow in a groove. They
+        // are unlit, because a thin lit ridge flickers and escapes the shadow of the body.
+        let seam = Material::unlit(style.jacket.color * 0.35);
+        for (part, material) in [(loft(&JACKET, 40, 0.02), &jacket_cloth), (seams(), &seam)] {
+            let weights = chain_weights(
+                &part,
+                Vec3::Y,
+                &[Pelvis, Spine, Chest],
+                &[(rest(Spine), 0.08), (rest(Chest), 0.08)],
+            );
+            skinned(scene, part, weights, material);
+        }
+        rigid(scene, Chest, collar(), &jacket_cloth);
+
+        let neck = loft(&NECK, 24, 0.02);
         let weights = chain_weights(
             &neck,
             Vec3::Y,
@@ -341,43 +390,74 @@ impl Figure {
         );
         skinned(scene, neck, weights, &style.skin);
         rigid(scene, Head, head(), &style.skin);
-        rigid(scene, Head, hair(), &style.hair);
-        rigid(scene, Pelvis, loft(&SEAT, 40), &style.trousers);
+        rigid(scene, Head, hair(), &hair_material);
+        rigid(scene, Pelvis, loft(&SEAT, 40, 0.02), &denim);
 
         for i in [LEFT, RIGHT] {
             let [clavicle, shoulder, elbow, wrist] = ARMS[i];
             let at = rest(shoulder);
-            let sleeve = loft(&SLEEVE, 24).translate(at.x, 0.0, at.z);
+            // Folds at the inside of the elbow.
+            let elbow_folds = Fold {
+                center: vec3(at.x, rest(elbow).y, at.z),
+                side: Vec3::Z,
+                width: 0.07,
+                depth: 0.004,
+            };
+            let sleeve = folded(
+                loft(&SLEEVE, 28, FOLD_PERIOD / 4.0).translate(at.x, 0.0, at.z),
+                &[elbow_folds],
+            );
             let weights = chain_weights(
                 &sleeve,
                 Vec3::NEG_Y,
                 &[clavicle, shoulder, elbow],
                 &[(at + Vec3::Y * 0.03, 0.035), (rest(elbow), 0.045)],
             );
-            skinned(scene, sleeve, weights, &style.jacket);
+            skinned(scene, sleeve, weights, &jacket_cloth);
             // The sphere fills the outside of the elbow when the arm bends.
             let ball = Geometry::sphere(0.046, 16, 10).translate(at.x, rest(elbow).y, at.z);
-            rigid(scene, elbow, ball, &style.jacket);
+            rigid(scene, elbow, ball, &jacket_cloth);
 
             let [hip, knee, ankle, toe] = LEGS[i];
             let at = rest(hip);
-            let leg = loft(&LEG, 28).translate(at.x, 0.0, at.z);
+            // Folds behind the knee, and where the trousers break on the boot.
+            let leg_folds = [
+                Fold {
+                    center: vec3(at.x, rest(knee).y + 0.02, at.z),
+                    side: Vec3::NEG_Z,
+                    width: 0.08,
+                    depth: 0.006,
+                },
+                Fold {
+                    center: vec3(at.x, 0.17, at.z),
+                    side: Vec3::Z,
+                    width: 0.05,
+                    depth: 0.003,
+                },
+            ];
+            let leg = folded(
+                loft(&LEG, 28, FOLD_PERIOD / 4.0).translate(at.x, 0.0, at.z),
+                &leg_folds,
+            );
             let weights = chain_weights(
                 &leg,
                 Vec3::NEG_Y,
                 &[Pelvis, hip, knee],
                 &[(at + Vec3::Y * 0.03, 0.06), (rest(knee), 0.05)],
             );
-            skinned(scene, leg, weights, &style.trousers);
+            skinned(scene, leg, weights, &denim);
             let cap = Geometry::sphere(0.056, 20, 12).translate(at.x, rest(knee).y, 0.006);
-            rigid(scene, knee, cap, &style.trousers);
+            rigid(scene, knee, cap, &denim);
 
             let at = rest(ankle);
             let boot = boot().translate(at.x, at.y, at.z);
             let weights = chain_weights(&boot, Vec3::Z, &[ankle, toe], &[(rest(toe), 0.025)]);
             skinned(scene, boot, weights, &style.boots);
+            let sole = sole().translate(at.x, at.y, at.z);
+            let weights = chain_weights(&sole, Vec3::Z, &[ankle, toe], &[(rest(toe), 0.025)]);
+            skinned(scene, sole, weights, &rubber);
             // The top of the shaft follows the shin, so it stays inside the trousers.
-            let shaft = loft(&BOOT_SHAFT, 24).translate(at.x, at.y, at.z);
+            let shaft = loft(&BOOT_SHAFT, 24, 0.02).translate(at.x, at.y, at.z);
             let weights = chain_weights(
                 &shaft,
                 Vec3::NEG_Y,
@@ -388,7 +468,7 @@ impl Figure {
 
             scene.add_to(
                 joints[wrist as usize],
-                Node::mesh(loft(&PALM, 20), style.skin.clone()),
+                Node::mesh(loft(&PALM, 20, 0.01), style.skin.clone()),
             );
         }
 
@@ -410,6 +490,14 @@ impl Figure {
                         r0 + (r1 - r0) * (k + 1) as f32 / 3.0,
                     );
                     scene.add_to(parent, Node::mesh(segment, style.skin.clone()));
+                    if k == 2 {
+                        // The nail on the back of the last segment.
+                        let (length, tip) = (finger.lengths[2], finger.radius[1]);
+                        let shell = Geometry::sphere(1.0, 12, 8)
+                            .scale(0.22 * tip, 0.42 * length, 0.7 * tip)
+                            .translate(side * 0.76 * tip, -0.62 * length, 0.0);
+                        scene.add_to(parent, Node::mesh(shell, nail.clone()));
+                    }
                     offset = vec3(0.0, -finger.lengths[k], 0.0);
                 }
             }
@@ -1158,16 +1246,20 @@ fn chain_weights(
 ///
 /// Each ring is `[y, half width along X, half depth along Z, center on Z]`. A ring of zero
 /// size is one point that closes the tube. A Catmull-Rom spline through the rings adds
-/// three rings between two rings, so a few rings give a smooth shape.
-fn loft(rings: &[[f32; 4]], segments: u32) -> Geometry {
-    const STEPS: usize = 4;
+/// rings: at least one between two rings, and at most `spacing` meters apart along Y.
+///
+/// The UVs are in meters: U goes around the tube from the back (-Z), and V goes along it.
+/// Each ring has a whole number of texture tiles ([`TILE`]) around, so the texture has no
+/// seam.
+fn loft(rings: &[[f32; 4]], segments: u32, spacing: f32) -> Geometry {
     let last = rings.len() - 1;
     let ring = |i: usize| Vec4::from_array(rings[i.min(last)]);
-    let mut smooth = Vec::with_capacity(last * STEPS + 1);
+    let mut smooth = Vec::new();
     for i in 0..last {
         let (p0, p1, p2, p3) = (ring(i.saturating_sub(1)), ring(i), ring(i + 1), ring(i + 2));
-        for k in 0..STEPS {
-            let t = k as f32 / STEPS as f32;
+        let steps = (((p2.x - p1.x).abs() / spacing).ceil() as usize).max(2);
+        for k in 0..steps {
+            let t = k as f32 / steps as f32;
             let (t2, t3) = (t * t, t * t * t);
             smooth.push(
                 0.5 * (2.0 * p1
@@ -1179,25 +1271,46 @@ fn loft(rings: &[[f32; 4]], segments: u32) -> Geometry {
     }
     smooth.push(ring(last));
 
-    // The first vertex of each ring, and whether the ring is a single point.
+    // The first vertex of each ring, and whether the ring is a single point. A full ring
+    // has `segments + 1` vertices: the last one is a copy of the first with a larger U.
     let mut starts = Vec::with_capacity(smooth.len());
     let mut positions = Vec::new();
-    for r in &smooth {
+    let mut uvs = Vec::new();
+    let mut along = 0.0;
+    for (j, r) in smooth.iter().enumerate() {
         let [y, rx, rz, cz] = r.to_array();
+        if j > 0 {
+            let [py, prx, prz, pcz] = smooth[j - 1].to_array();
+            along += vec3(y - py, 0.5 * (rx + rz - prx - prz), cz - pcz).length();
+        }
         let point = rx <= 1e-5 && rz <= 1e-5;
         starts.push((positions.len() as u32, point));
         if point {
             positions.push(vec3(0.0, y, cz));
+            uvs.push(vec2(0.0, along));
             continue;
         }
-        for s in 0..segments {
-            let a = s as f32 / segments as f32 * TAU;
-            positions.push(vec3(rx.max(0.0) * a.sin(), y, cz + rz.max(0.0) * a.cos()));
+        let mut ring: Vec<Vec3> = (0..segments)
+            .map(|s| {
+                let a = PI + s as f32 / segments as f32 * TAU;
+                vec3(rx.max(0.0) * a.sin(), y, cz + rz.max(0.0) * a.cos())
+            })
+            .collect();
+        ring.push(ring[0]);
+        let mut around = vec![0.0];
+        for pair in ring.windows(2) {
+            around.push(around[around.len() - 1] + pair[0].distance(pair[1]));
+        }
+        let perimeter = around[around.len() - 1].max(1e-6);
+        let tiles = (perimeter / TILE).round().max(1.0) * TILE;
+        for (p, a) in ring.into_iter().zip(around) {
+            positions.push(p);
+            uvs.push(vec2(a / perimeter * tiles, along));
         }
     }
     let vertex = |j: usize, s: u32| {
         let (start, point) = starts[j];
-        if point { start } else { start + s % segments }
+        if point { start } else { start + s }
     };
     let up = smooth[smooth.len() - 1].x > smooth[0].x;
     let mut indices = Vec::new();
@@ -1212,7 +1325,79 @@ fn loft(rings: &[[f32; 4]], segments: u32) -> Geometry {
             }
         }
     }
-    Geometry::new(positions, Vec::new(), Vec::new(), indices)
+    let normals = smooth_normals(&positions, &indices);
+    Geometry::new(positions, normals, uvs, indices)
+}
+
+/// Smooth vertex normals. Vertices at the same position share a normal, so a UV seam does
+/// not show in the shading.
+fn smooth_normals(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
+    let mut first = HashMap::new();
+    let same: Vec<u32> = positions
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            *first
+                .entry(p.to_array().map(f32::to_bits))
+                .or_insert(i as u32)
+        })
+        .collect();
+    let welded = indices.iter().map(|&i| same[i as usize]).collect();
+    let normals = Geometry::new(positions.to_vec(), Vec::new(), Vec::new(), welded).normals;
+    same.iter().map(|&i| normals[i as usize]).collect()
+}
+
+/// The ring of a ring table (see [`loft`]) at `y`, linear between the rows.
+fn ring_at(rings: &[[f32; 4]], y: f32) -> [f32; 4] {
+    let i = rings
+        .iter()
+        .position(|r| r[0] > y)
+        .unwrap_or(rings.len() - 1)
+        .max(1);
+    let (a, b) = (Vec4::from_array(rings[i - 1]), Vec4::from_array(rings[i]));
+    a.lerp(b, ((y - a.x) / (b.x - a.x)).clamp(0.0, 1.0))
+        .to_array()
+}
+
+/// A band of soft folds on a limb, as in a sleeve at the inside of the elbow.
+struct Fold {
+    /// The middle of the band on the axis of the limb, in root space.
+    center: Vec3,
+    /// The side of the limb where the folds are deepest: a unit vector across the limb.
+    side: Vec3,
+    /// The half length of the band along Y, in meters.
+    width: f32,
+    /// The depth of the folds, in meters.
+    depth: f32,
+}
+
+/// Presses soft folds into a loft along Y and darkens them with vertex colors. The folds
+/// only go in, so the outline stays the same.
+fn folded(geometry: Geometry, folds: &[Fold]) -> Geometry {
+    let mut positions = geometry.positions;
+    let mut colors = vec![Vec4::ONE; positions.len()];
+    for (p, color) in positions.iter_mut().zip(&mut colors) {
+        for fold in folds {
+            let d = *p - fold.center;
+            let out = d.with_y(0.0).normalize_or_zero();
+            let facing = out.dot(fold.side);
+            let band = (1.0 - (d.y / fold.width).powi(2)).max(0.0).powi(2);
+            let around = (0.5 + 0.5 * facing).powi(2);
+            // The fold lines curve down toward the sides of the limb and wave a little
+            // around it, so they do not look like rings.
+            let angle = out.x.atan2(out.z);
+            let phase = d.y / FOLD_PERIOD + 0.3 * facing + 0.12 * (3.0 * angle).sin();
+            let wave = 0.5 + 0.5 * (TAU * phase).cos();
+            let groove = band * around * wave;
+            *p -= out * fold.depth * groove;
+            let shade = 1.0 - 0.45 * groove - 0.15 * band * around;
+            *color = (color.truncate() * shade).extend(1.0);
+        }
+    }
+    let normals = smooth_normals(&positions, &geometry.indices);
+    let mut out = Geometry::new(positions, normals, geometry.uvs, geometry.indices);
+    out.colors = colors;
+    out
 }
 
 /// The jacket from the hem to the collar, in root space.
@@ -1353,20 +1538,52 @@ const BOOT_SHAFT: [[f32; 4]; 6] = [
     [0.095, 0.0, 0.0, -0.01],
 ];
 
-/// A boot without the shaft in the space of the ankle: the upper and a sole with a heel.
+/// A boot without the shaft and the sole in the space of the ankle: the upper and the
+/// laces.
 fn boot() -> Geometry {
     // The loft turns from +Y to +Z, and its Z (the height) to -Y.
-    let upper = loft(&BOOT, 24).rotate_x(FRAC_PI_2);
-    // The outline of the sole follows the upper with a small margin.
-    let outline: Vec<Vec2> = BOOT
-        .iter()
-        .map(|r| vec2(r[1] + 0.004, r[0]))
-        .chain(BOOT.iter().rev().map(|r| vec2(-r[1] - 0.004, r[0])))
-        .collect();
-    let sole = Geometry::extrude(&outline, 0.022, 0.004)
-        .rotate_x(FRAC_PI_2)
-        .translate(0.0, -0.084, 0.0);
-    Geometry::merge([upper, sole])
+    let upper = loft(&BOOT, 24, 0.01).rotate_x(FRAC_PI_2);
+    // The laces cross between eyelets on the instep.
+    let eyelet = |s: f32, side: f32| {
+        let [_, half_width, half_height, depth] = ring_at(&BOOT, s);
+        vec3(
+            side * 0.5 * half_width,
+            0.87 * half_height - depth + 0.001,
+            s,
+        )
+    };
+    let rows = [0.035, 0.06, 0.085, 0.11];
+    let mut laces = Vec::new();
+    for pair in rows.windows(2) {
+        for side in [1.0, -1.0] {
+            let (a, b) = (eyelet(pair[0], side), eyelet(pair[1], -side));
+            let over = if side > 0.0 { 0.0045 } else { 0.003 };
+            let path = [a, (a + b) * 0.5 + Vec3::Y * over, b];
+            laces.push(Geometry::tube(&path, 0.0018, 6));
+        }
+    }
+    Geometry::merge([upper, Geometry::merge(laces)])
+}
+
+/// A rubber sole in the space of the ankle: a heel, a thin part under the arch and the front
+/// part. It is 6 mm wider than the upper, and its bottom is the ground of a flat foot.
+fn sole() -> Geometry {
+    let part = |from: f32, to: f32, bottom: f32, height: f32| {
+        let at = |k: usize| from + (to - from) * k as f32 / 12.0;
+        let width = |k: usize| ring_at(&BOOT, at(k))[1] + 0.006;
+        let right = (0..=12).map(|k| vec2(width(k), at(k)));
+        let left = (0..=12).rev().map(|k| vec2(-width(k), at(k)));
+        let outline: Vec<Vec2> = right.chain(left).collect();
+        // The extrusion turns from Z to Y.
+        Geometry::extrude(&outline, height, 0.003)
+            .rotate_x(FRAC_PI_2)
+            .translate(0.0, bottom + 0.5 * height, 0.0)
+    };
+    Geometry::merge([
+        part(-0.094, -0.012, -0.095, 0.03),
+        part(-0.02, 0.06, -0.084, 0.013),
+        part(0.045, 0.234, -0.095, 0.02),
+    ])
 }
 
 /// The collar of the jacket, in root space. It is lower in front.
@@ -1395,7 +1612,7 @@ fn head() -> Geometry {
         .rotate_x(-0.2);
     let ears = SIDE.map(|side| ear.clone().translate(side * 0.073, 1.63, -0.016));
     Geometry::merge(
-        [skull, loft(&FACE, 32), loft(&NOSE, 12)]
+        [skull, loft(&FACE, 32, 0.01), loft(&NOSE, 12, 0.01)]
             .into_iter()
             .chain(ears),
     )
@@ -1410,7 +1627,8 @@ fn hair() -> Geometry {
     for p in &mut cap.positions {
         *p *= 1.012 + 0.05 * smoothstep(1.85, 1.0, p.y.acos());
     }
-    Geometry::new(cap.positions, Vec::new(), cap.uvs, cap.indices)
+    let normals = smooth_normals(&cap.positions, &cap.indices);
+    Geometry::new(cap.positions, normals, cap.uvs, cap.indices)
         .rotate_x(-0.4)
         .scale(0.076, 0.098, 0.099)
         .translate(0.0, 1.685, -0.008)
@@ -1429,5 +1647,171 @@ fn finger_segment(length: f32, base: f32, tip: f32) -> Geometry {
             [-length - 0.9 * tip, 0.0, 0.0, 0.0],
         ],
         12,
+        0.01,
     )
+}
+
+/// A point on the jacket at the height `y` and the angle `angle` around from the front,
+/// `out` meters outside the surface, in root space.
+fn on_jacket(y: f32, angle: f32, out: f32) -> Vec3 {
+    let [_, half_width, half_depth, center] = ring_at(&JACKET, y);
+    let (sin, cos) = angle.sin_cos();
+    vec3(
+        (half_width + out) * sin,
+        y,
+        center + (half_depth + out) * cos,
+    )
+}
+
+/// The zip line down the front of the jacket and the seams of two chest pockets with flaps,
+/// in root space. The lines are half in the cloth, so only a small ridge shows.
+fn seams() -> Geometry {
+    let zip: Vec<Vec3> = (0..=56)
+        .map(|k| on_jacket(0.89 + 0.01 * k as f32, 0.0, 0.0012))
+        .collect();
+    let mut seams = vec![Geometry::tube(&zip, 0.0024, 8)];
+    for side in [1.0f32, -1.0] {
+        // The pocket under the flap: angles around the jacket and heights.
+        let (left, right, bottom, top) = (0.34, 0.8, 1.18, 1.255);
+        // The sides and the bottom of the pocket, with round corners.
+        let mut outline = vec![vec2(left, top)];
+        for k in 0..=8 {
+            let a = PI + FRAC_PI_2 * k as f32 / 8.0;
+            outline.push(vec2(
+                left + 0.06 + 0.06 * a.cos(),
+                bottom + 0.012 + 0.012 * a.sin(),
+            ));
+        }
+        for k in 0..=8 {
+            let a = 1.5 * PI + FRAC_PI_2 * k as f32 / 8.0;
+            outline.push(vec2(
+                right - 0.06 + 0.06 * a.cos(),
+                bottom + 0.012 + 0.012 * a.sin(),
+            ));
+        }
+        outline.push(vec2(right, top));
+        // The flap over the opening.
+        let (flap_left, flap_right) = (left - 0.02, right + 0.02);
+        let flap = [
+            vec2(flap_left, top + 0.035),
+            vec2(flap_left, top),
+            vec2(flap_right, top),
+            vec2(flap_right, top + 0.035),
+            vec2(flap_left, top + 0.035),
+        ];
+        for line in [&outline[..], &flap[..]] {
+            // A point is an angle around the jacket (x) and a height (y). The points are
+            // close, so the seam follows the curve of the chest.
+            let mut points: Vec<Vec2> = line
+                .windows(2)
+                .flat_map(|pair| {
+                    let steps = ((pair[1] - pair[0]).length() / 0.01).ceil().max(1.0);
+                    (0..steps as usize).map(move |k| pair[0].lerp(pair[1], k as f32 / steps))
+                })
+                .collect();
+            points.extend(line.last());
+            let path: Vec<Vec3> = points
+                .iter()
+                .map(|p| on_jacket(p.y, side * p.x, 0.0008))
+                .collect();
+            seams.push(Geometry::tube(&path, 0.0014, 6));
+        }
+    }
+    Geometry::merge(seams)
+}
+
+/// The detail textures of all figures. They are built once and shared, so the GPU loads
+/// them once.
+struct Detail {
+    /// The canvas of the jacket: a normal map, and occlusion (R) with roughness (G).
+    canvas: [Arc<Texture>; 2],
+    /// The denim of the trousers, in the same two maps.
+    denim: [Arc<Texture>; 2],
+    /// The strands of the hair: a normal map for the UVs of a sphere.
+    strands: Arc<Texture>,
+}
+
+fn detail() -> &'static Detail {
+    static DETAIL: OnceLock<Detail> = OnceLock::new();
+    DETAIL.get_or_init(|| Detail {
+        canvas: twill(60, 2),
+        denim: twill(80, 3),
+        strands: Arc::new(strands()),
+    })
+}
+
+/// A value of `0..1` as a texture byte.
+fn byte(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// A tangent space normal as texture bytes.
+fn normal_bytes(n: Vec3) -> [u8; 4] {
+    let n = n.normalize() * 0.5 + 0.5;
+    [byte(n.x), byte(n.y), byte(n.z), 255]
+}
+
+/// The maps of a twill weave, one tile of [`TILE`] meters with `threads` threads each way.
+///
+/// Each thread goes over `float` threads and under one, and each row starts one thread
+/// later. This makes the diagonal ribs of canvas and denim. `threads` must be a multiple of
+/// `float + 1`, so the tile repeats without a seam. Returns a normal map, and occlusion (R)
+/// with roughness (G).
+fn twill(threads: u32, float: u32) -> [Arc<Texture>; 2] {
+    const SIZE: u32 = 512;
+    let count = threads as f32;
+    let period = (float + 1) as f32;
+    // The height of the cloth in a tile, 0..1. Each thread also has its own thickness.
+    let height = |u: f32, v: f32| {
+        let (x, y) = (u * count, v * count);
+        let (column, row) = (x.floor(), y.floor());
+        let rise = |t: f32| 0.55 + 0.45 * (TAU * t / period).cos();
+        let thickness = |i: f32, seed: u32| 0.8 + 0.4 * hash((i as u32) % threads + seed);
+        let warp = (PI * x).sin().powi(2) * rise(y - column) * thickness(column, 0);
+        let weft = (PI * y).sin().powi(2) * rise(x - row + 0.5 * period) * thickness(row, 7919);
+        warp.max(weft)
+    };
+    // The threads are 0.12 mm high. The slope is in tile units.
+    let depth = 0.12e-3 / TILE;
+    let texel = 1.0 / SIZE as f32;
+    let normal = Texture::from_fn_data(SIZE, SIZE, false, |u, v| {
+        let du = (height(u + texel, v) - height(u - texel, v)) / (2.0 * texel);
+        let dv = (height(u, v + texel) - height(u, v - texel)) / (2.0 * texel);
+        normal_bytes(vec3(-du * depth, dv * depth, 1.0))
+    });
+    // The low parts are darker and a little rougher.
+    let occlusion_roughness = Texture::from_fn_data(SIZE, SIZE, false, |u, v| {
+        let h = height(u, v);
+        [byte(0.55 + 0.45 * h), byte(1.0 - 0.2 * h), 0, 255]
+    });
+    [normal, occlusion_roughness].map(|t| Arc::new(t.repeat(1.0 / TILE, 1.0 / TILE)))
+}
+
+/// A normal map of short hair for the UVs of a sphere: fine strands from the crown down,
+/// with a slow wave.
+fn strands() -> Texture {
+    const WIDTH: u32 = 1024;
+    const HEIGHT: u32 = 256;
+    // The hair shell is about 0.5 m around and 0.2 m from the crown to the hairline.
+    const AROUND: f32 = 0.5;
+    const DOWN: f32 = 0.2;
+    // Smooth noise across the strands that repeats `count` times around.
+    let across = |x: f32, count: f32, seed: u32| {
+        let i = x.floor();
+        let f = x - i;
+        let at = |k: f32| hash(k.rem_euclid(count) as u32 + seed);
+        at(i) + (at(i + 1.0) - at(i)) * f * f * (3.0 - 2.0 * f)
+    };
+    let height = |u: f32, v: f32| {
+        let wave = 0.8 * (TAU * 2.0 * v).sin();
+        across(u * 360.0 + wave, 360.0, 0) + 0.5 * across(u * 720.0 + 2.0 * wave, 720.0, 997)
+    };
+    // The strands are 0.25 mm high.
+    let depth = 0.25e-3;
+    let (du, dv) = (1.0 / WIDTH as f32, 1.0 / HEIGHT as f32);
+    Texture::from_fn_data(WIDTH, HEIGHT, false, |u, v| {
+        let su = (height(u + du, v) - height(u - du, v)) / (2.0 * du * AROUND);
+        let sv = (height(u, v + dv) - height(u, v - dv)) / (2.0 * dv * DOWN);
+        normal_bytes(vec3(-su * depth, sv * depth, 1.0))
+    })
 }
