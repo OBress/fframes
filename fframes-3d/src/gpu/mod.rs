@@ -1524,7 +1524,7 @@ impl Gpu {
                                 .transform_point3(p.position + p.tail)
                                 .extend(0.0)
                                 .to_array(),
-                            color: (p.color.0 * p.opacity).extend(0.0).to_array(),
+                            color: (p.color.0 * p.opacity).extend(p.opacity).to_array(),
                         });
                     }
                 }

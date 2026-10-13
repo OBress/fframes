@@ -268,7 +268,8 @@ fn render_tile(
                         let r = s.radius;
                         let falloff = 1.0 - ((d - r * 0.3) / (r * 0.7 + 0.5)).clamp(0.0, 1.0);
                         let a = falloff * falloff;
-                        let src = (s.color * a).extend(if s.additive { 0.0 } else { a });
+                        let src =
+                            (s.color * a).extend(if s.additive { 0.0 } else { a * s.opacity });
                         for k in 0..ns {
                             if s.z > depth[base + k] {
                                 colors[base + k] = blend(colors[base + k], src, s.additive);

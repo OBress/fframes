@@ -187,3 +187,26 @@ fn textures_from_fframes_images() {
     assert!((red.w - 0.5).abs() < 0.01, "{red}");
     assert!(blue.z > 0.95 && blue.x < 0.05, "{blue}");
 }
+
+/// A blended particle covers only its opacity: a faint dark puff must not draw as a dark
+/// disc. Both renderers (the GPU one when the `gpu` feature finds a GPU).
+#[test]
+fn faint_particles_stay_faint() {
+    let mut scene = Scene::new().background(Background::Color(Rgb::hex(0x808080)));
+    scene.add(Node::particles(
+        vec![Particle::new(Vec3::ZERO, 1.0, Rgb::hex(0x000000)).opacity(0.1)],
+        Blending::Normal,
+    ));
+    let camera = Camera::perspective(40.0)
+        .at(0.0, 0.0, 6.0)
+        .look_at(Vec3::ZERO);
+    let renderer = Renderer::new(200, 200);
+    for renderer in [renderer.clone(), renderer.cpu()] {
+        let pixels = renderer.render_pixels(&scene, &camera);
+        let (center, corner) = (pixels.get(100, 100)[0], pixels.get(5, 5)[0]);
+        assert!(
+            f32::from(center) > 0.8 * f32::from(corner),
+            "center {center}, background {corner}"
+        );
+    }
+}

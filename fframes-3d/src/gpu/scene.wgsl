@@ -696,7 +696,7 @@ struct ParticleIn {
     @location(0) start: vec4f,
     // xyz of the tail end, 0
     @location(1) end: vec4f,
-    // rgb times opacity, 0
+    // rgb times opacity, opacity
     @location(2) color: vec4f,
 }
 
@@ -705,7 +705,8 @@ struct ParticleOut {
     @location(0) @interpolate(flat) p0: vec2f,
     @location(1) @interpolate(flat) p1: vec2f,
     @location(2) @interpolate(flat) radius: f32,
-    @location(3) @interpolate(flat) color: vec3f,
+    // rgb times opacity, the coverage of a blended particle
+    @location(3) @interpolate(flat) color: vec4f,
 }
 
 fn to_screen(clip: vec4f) -> vec2f {
@@ -741,7 +742,7 @@ fn vs_particle(in: ParticleIn, @builtin(vertex_index) index: u32) -> ParticleOut
     let energy = (radius / drawn) * (radius / drawn);
     let length_px = distance(s0, s1);
     let smear = (2.0 * drawn) / (2.0 * drawn + length_px);
-    out.color = in.color.rgb * energy * smear;
+    out.color = in.color * (energy * smear);
     out.p0 = s0;
     out.p1 = s1;
     out.radius = drawn;
@@ -777,7 +778,7 @@ fn particle_alpha(in: ParticleOut) -> f32 {
 fn fs_particle_additive(in: ParticleOut) -> FragmentOut {
     var out: FragmentOut;
     out.key = vec4f(0.0);
-    out.color = vec4f(in.color * particle_alpha(in), 0.0);
+    out.color = vec4f(in.color.rgb * particle_alpha(in), 0.0);
     return out;
 }
 
@@ -786,6 +787,6 @@ fn fs_particle_normal(in: ParticleOut) -> FragmentOut {
     var out: FragmentOut;
     out.key = vec4f(0.0);
     let a = particle_alpha(in);
-    out.color = vec4f(in.color * a, a);
+    out.color = vec4f(in.color.rgb * a, in.color.a * a);
     return out;
 }
