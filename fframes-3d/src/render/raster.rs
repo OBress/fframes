@@ -305,23 +305,26 @@ fn blend(dst: Vec4, src: Vec4, additive: bool) -> Vec4 {
 /// Shades the triangle `t` at the screen point `at`.
 fn shade_tri(frame: &Frame, t: &ScreenTri, at: Vec2) -> Vec4 {
     let b = t.perspective_bary(at.x, at.y);
+    // the next pixel right and down, for the derivatives of the normal and the UV (as the
+    // GPU computes them)
+    let b_right = t.perspective_bary(at.x + 1.0, at.y);
+    let b_down = t.perspective_bary(at.x, at.y + 1.0);
     let s = frame.streams;
     let [i0, i1, i2] = t.v.map(|v| v as usize);
     let position = s.pos[i0] * b.x + s.pos[i1] * b.y + s.pos[i2] * b.z;
     let normal_at =
         |b: Vec3| (s.nrm[i0] * b.x + s.nrm[i1] * b.y + s.nrm[i2] * b.z).normalize_or(Vec3::Y);
     let normal = normal_at(b);
-    // how much the normal turns to the next pixel right and down (the GPU's derivatives)
-    let right = normal_at(t.perspective_bary(at.x + 1.0, at.y)) - normal;
-    let down = normal_at(t.perspective_bary(at.x, at.y + 1.0)) - normal;
+    let right = normal_at(b_right) - normal;
+    let down = normal_at(b_down) - normal;
     let cross = (s.pos[i1] - s.pos[i0]).cross(s.pos[i2] - s.pos[i0]);
     let draw = &frame.draws[t.draw as usize];
-    // the UV units that one meter of the triangle spans, to select texture mip levels
-    let uv_per_meter = if draw.has_uv {
-        let uv_area = (s.uv[i1] - s.uv[i0]).perp_dot(s.uv[i2] - s.uv[i0]).abs();
-        (uv_area / cross.length().max(1e-12)).sqrt()
+    let uv_at = |b: Vec3| s.uv[i0] * b.x + s.uv[i1] * b.y + s.uv[i2] * b.z;
+    let (uv, uv_dx, uv_dy) = if draw.has_uv {
+        let uv = uv_at(b);
+        (uv, uv_at(b_right) - uv, uv_at(b_down) - uv)
     } else {
-        0.0
+        (Vec2::ZERO, Vec2::ZERO, Vec2::ZERO)
     };
     let (dpdu, dpdv) = if draw.has_uv && draw.material.normal_map.is_some() {
         uv_directions(
@@ -337,17 +340,14 @@ fn shade_tri(frame: &Frame, t: &ScreenTri, at: Vec2) -> Vec4 {
         position,
         normal,
         face_normal: cross.normalize_or(normal),
-        uv: if draw.has_uv {
-            s.uv[i0] * b.x + s.uv[i1] * b.y + s.uv[i2] * b.z
-        } else {
-            Vec2::ZERO
-        },
+        uv,
         color: if draw.has_color {
             s.col[i0] * b.x + s.col[i1] * b.y + s.col[i2] * b.z
         } else {
             Vec4::ONE
         },
-        uv_per_meter,
+        uv_dx,
+        uv_dy,
         dpdu,
         dpdv,
         normal_variation: right.length_squared() + down.length_squared(),

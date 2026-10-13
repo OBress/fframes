@@ -55,7 +55,7 @@ pub struct Renderer {
     /// Render on the GPU when the `gpu` feature is on, see [`Renderer::gpu`].
     pub gpu: bool,
     /// Render some frames on the CPU while the GPU is busy, see [`Renderer::hybrid`].
-    pub hybrid: bool,
+    pub hybrid: Option<Hybrid>,
 }
 
 /// Premultiplied sRGB RGBA8 pixels from [`Renderer::render_pixels`].
@@ -158,7 +158,7 @@ impl Renderer {
             tone_mapping: ToneMapping::Aces,
             bloom: None,
             gpu: cfg!(feature = "gpu"),
-            hybrid: std::env::var_os("FFRAMES_3D_HYBRID").is_some_and(|v| v == "1"),
+            hybrid: Hybrid::from_env(),
         }
     }
 
@@ -181,19 +181,15 @@ impl Renderer {
         self
     }
 
-    /// Lets the CPU render frames while the GPU is busy. Off by default, on when the
-    /// `FFRAMES_3D_HYBRID` environment variable is `1`.
+    /// Lets the CPU rasterizer render frames while the GPU is busy, see [`Hybrid`]. `None`
+    /// renders every frame on the GPU. Off by default. The `FFRAMES_3D_HYBRID` environment
+    /// variable turns it on for every renderer: `1` with [`Hybrid::default`], or
+    /// `threads,frames,run`.
     ///
-    /// A frame renders on the CPU when the GPU has frames of other threads to finish and
-    /// a CPU slot is free (see [`cpu_frames`]). The frames of a video render on many
-    /// threads, so a render then uses the CPU cores and the GPU at the same time. A single
-    /// frame, for example a preview, always renders on the GPU.
-    ///
-    /// The CPU and GPU pictures differ by about one 8-bit step on average. So a frame can
-    /// be a little different in two renders of the same video. Keep it off for pixel
-    /// snapshots. Scenes with a feature that the CPU draws less close to the GPU stay on
-    /// the GPU, see [`Renderer::renders_alike`].
-    pub fn hybrid(mut self, hybrid: bool) -> Self {
+    /// Turn it on for the renderers of the shots whose CPU frames look like their GPU frames
+    /// (compare them with [`Renderer::cpu`]). Keep it off for pixel snapshots: which frames
+    /// render on the CPU depends on the timing.
+    pub fn hybrid(mut self, hybrid: Option<Hybrid>) -> Self {
         self.hybrid = hybrid;
         self
     }
@@ -285,21 +281,13 @@ impl Renderer {
         self.pixels(&moments)
     }
 
-    /// Whether the CPU draws the moments close to the GPU, so that [`Renderer::hybrid`] can
-    /// render them on the CPU. Frames of both kinds then alternate in a video without a
-    /// visible flicker.
-    pub fn renders_alike(&self, moments: &[(&Scene, &Camera)]) -> bool {
-        let _ = moments;
-        true
-    }
-
     /// The average of the moments as an image. It stays on the GPU when the backend shares
     /// its GPU.
     fn image(&self, moments: &[(&Scene, &Camera)]) -> fframes::media::ImageData<'static> {
         #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
         if self.gpu {
-            if let Some(_turn) = self.cpu_turn(moments) {
-                return self.cpu_pixels(moments).into_image();
+            if let Some(pool) = self.cpu_turn() {
+                return pool.install(|| self.cpu_pixels(moments)).into_image();
             }
             if let Some(image) = crate::gpu::layer(self, moments) {
                 return image;
@@ -314,22 +302,38 @@ impl Renderer {
         if self.gpu
             && let Some(gpu) = crate::gpu::gpu()
         {
-            if let Some(_turn) = self.cpu_turn(moments) {
-                return self.cpu_pixels(moments);
+            if let Some(pool) = self.cpu_turn() {
+                return pool.install(|| self.cpu_pixels(moments));
             }
             return gpu.render(self, moments);
         }
         self.cpu_pixels(moments)
     }
 
-    /// A CPU slot for a frame of a [`Renderer::hybrid`] renderer, when the GPU is busy.
+    /// The thread pool of the CPU rasterizer when this frame of a [`Renderer::hybrid`]
+    /// renderer renders on the CPU.
     #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
-    fn cpu_turn(&self, moments: &[(&Scene, &Camera)]) -> Option<CpuTurn> {
-        if !self.hybrid || crate::gpu::gpu()?.frames_in_flight() < GPU_QUEUE {
-            return None;
-        }
-        let turn = CpuTurn::take()?;
-        self.renders_alike(moments).then_some(turn)
+    fn cpu_turn(&self) -> Option<&'static rayon::ThreadPool> {
+        let hybrid = self.hybrid.as_ref();
+        let on_cpu = RUN.with_borrow_mut(|run| {
+            // A run goes on with the next frame of this thread.
+            if let (Some(run), Some(_)) = (run.as_mut(), hybrid)
+                && run.left > 0
+            {
+                run.left -= 1;
+                return true;
+            }
+            *run = None;
+            let Some(hybrid) = hybrid else {
+                return false;
+            };
+            if crate::gpu::gpu().is_none_or(|gpu| gpu.frames_in_flight() < GPU_QUEUE) {
+                return false;
+            }
+            *run = CpuRun::start(hybrid);
+            run.is_some()
+        });
+        on_cpu.then(|| cpu_pool(hybrid.map_or(1, |h| h.threads)))
     }
 
     /// The average of the moments as pixels of the CPU rasterizer. The moments render at
@@ -459,52 +463,121 @@ impl Renderer {
     }
 }
 
+/// How [`Renderer::hybrid`] renders frames on the CPU while the GPU is busy.
+///
+/// The frames of a video render on many threads, see [`fframes::get_thread_count`]. When
+/// the GPU has two frames of other threads to finish and fewer than `frames` frames render
+/// on the CPU, the thread renders its next `run` frames on the CPU rasterizer, in a pool
+/// of `threads` threads. A single frame, for example a preview, renders on the GPU.
+///
+/// The CPU and the GPU draw the same picture, but not to the last bit: textures, depth of
+/// field and bloom of very bright points differ a little. Frames of both kinds that
+/// alternate would flicker. In a run the picture changes only where the run starts and
+/// where it ends.
+///
+/// A frame on all cores of the CPU takes 3 to 6 times as long as on an integrated GPU, and
+/// a CPU that shares its power limit with the GPU slows the GPU down. On an i7-14700K with
+/// its UHD 770 and a package limit of 99.5 W, renders with it were not faster: the busy
+/// cores took the power of the GPU, its clock fell from 1600 to 500 MHz. It helps where the
+/// GPU has a power budget of its own. Measure the render time with and without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hybrid {
+    /// The threads of the CPU rasterizer pool. The first hybrid frame makes the pool, later
+    /// frames use it, also with another value.
+    pub threads: usize,
+    /// The frames that render on the CPU at the same time.
+    pub frames: usize,
+    /// The frames that a thread renders on the CPU in a row.
+    pub run: usize,
+}
+
+impl Default for Hybrid {
+    /// Half of the CPU threads, two frames at a time, runs of 30 frames.
+    fn default() -> Self {
+        let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        Self {
+            threads: (threads / 2).max(1),
+            frames: 2,
+            run: 30,
+        }
+    }
+}
+
+impl Hybrid {
+    /// The settings of the `FFRAMES_3D_HYBRID` environment variable: `1` for the default,
+    /// or `threads,frames,run`.
+    fn from_env() -> Option<Self> {
+        let value = std::env::var("FFRAMES_3D_HYBRID").ok()?;
+        if value == "1" {
+            return Some(Self::default());
+        }
+        let numbers: Vec<usize> = value.split(',').filter_map(|n| n.parse().ok()).collect();
+        match numbers[..] {
+            [threads, frames, run] => Some(Self {
+                threads,
+                frames,
+                run,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// The frames that the GPU has to finish before a [`Renderer::hybrid`] frame renders on the
 /// CPU. With 2, the GPU has the next frame ready when it finishes one.
 #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 const GPU_QUEUE: usize = 2;
 
-/// The frames that render on the CPU now, for [`Renderer::hybrid`].
+/// The runs of [`Renderer::hybrid`] frames that render on the CPU now.
 #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
-static CPU_FRAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static CPU_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The number of frames of [`Renderer::hybrid`] renderers that render on the CPU at the same
-/// time: one per 8 threads of the CPU, at least one. Each frame uses all threads, but parts
-/// of a frame run on one thread. The `FFRAMES_3D_CPU_FRAMES` environment variable sets
-/// another number, 0 for none.
-pub fn cpu_frames() -> usize {
-    static FRAMES: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
-        std::env::var("FFRAMES_3D_CPU_FRAMES")
-            .ok()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| {
-                std::thread::available_parallelism().map_or(1, |n| (n.get() / 8).max(1))
-            })
-    });
-    *FRAMES
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+thread_local! {
+    /// The run of CPU frames of this thread.
+    static RUN: std::cell::RefCell<Option<CpuRun>> = const { std::cell::RefCell::new(None) };
 }
 
-/// A frame that renders on the CPU. It frees its slot when it is dropped.
+/// The pool of the CPU rasterizer for [`Renderer::hybrid`] frames, so that their threads
+/// do not wait for the work of other pools and the other way around.
 #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
-struct CpuTurn;
+fn cpu_pool(threads: usize) -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads.max(1))
+            .thread_name(|i| format!("fframes-3d-cpu-{i}"))
+            .build()
+            .expect("the CPU rasterizer thread pool")
+    })
+}
+
+/// Frames that a thread renders on the CPU in a row. It frees its slot when it is dropped.
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+struct CpuRun {
+    /// The frames of the run after this one.
+    left: usize,
+}
 
 #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
-impl CpuTurn {
-    /// A free CPU slot, `None` when [`cpu_frames`] frames render on the CPU.
-    fn take() -> Option<Self> {
-        CPU_FRAMES
+impl CpuRun {
+    /// A run with a free slot, `None` when `hybrid.frames` runs are going on.
+    fn start(hybrid: &Hybrid) -> Option<Self> {
+        CPU_RUNS
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < cpu_frames()).then_some(n + 1)
+                (n < hybrid.frames).then_some(n + 1)
             })
             .ok()
-            .map(|_| Self)
+            .map(|_| Self {
+                left: hybrid.run.max(1) - 1,
+            })
     }
 }
 
 #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
-impl Drop for CpuTurn {
+impl Drop for CpuRun {
     fn drop(&mut self) {
-        CPU_FRAMES.fetch_sub(1, Ordering::AcqRel);
+        CPU_RUNS.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

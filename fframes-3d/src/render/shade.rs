@@ -61,8 +61,9 @@ pub(crate) struct Surface {
     pub face_normal: Vec3,
     pub uv: Vec2,
     pub color: Vec4,
-    /// The UV units that one meter of the triangle spans.
-    pub uv_per_meter: f32,
+    /// The UV changes to the next pixel right and down, to filter the textures.
+    pub uv_dx: Vec2,
+    pub uv_dy: Vec2,
     /// The directions of +U and +V on the triangle, for the normal map. Zero without one.
     pub dpdu: Vec3,
     pub dpdv: Vec3,
@@ -88,18 +89,14 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
         s.face_normal
     };
     let mut n = if m.flat_shading { face } else { s.normal };
-    // A back face, or a smooth normal that points away from the camera near a silhouette,
-    // turns around. A normal map bends the normal before, as for the front face.
-    let side = if n.dot(face) < 0.0 { -1.0 } else { 1.0 };
-    // The footprint of the pixel in UV units. Surfaces seen at a low angle get blurrier.
-    let footprint =
-        distance * ctx.pixel_angle / (side * n.dot(v)).max(0.03).sqrt() * s.uv_per_meter;
-    let sample = |map: &crate::Texture| map.sample_lod(s.uv, map.lod(footprint));
+    let sample = |map: &crate::Texture| map.sample_grad(s.uv, s.uv_dx, s.uv_dy);
     if draw.has_uv
         && let Some(map) = &m.normal_map
     {
         n = bend(n, s.dpdu, s.dpdv, sample(map), m.normal_scale);
     }
+    // A back face, or a smooth normal that points away from the camera near a silhouette,
+    // turns around. A normal map bends the normal before, as for the front face.
     if n.dot(face) < 0.0 {
         n = -n;
     }
@@ -163,9 +160,7 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
             }
             return Vec4::new(0.0, 0.0, 0.0, (1.0 - lit) * m.opacity);
         }
-        Shading::Standard => {
-            standard(ctx, draw, s, base, n, face, v, n_dot_v, footprint) + emissive
-        }
+        Shading::Standard => standard(ctx, draw, s, base, n, face, v, n_dot_v) + emissive,
     };
 
     if m.fog
@@ -178,6 +173,8 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
         };
     }
 
+    // As on the GPU, whose 16 bit float target would overflow to infinity.
+    let rgb = rgb.clamp(Vec3::ZERO, Vec3::splat(30000.0));
     match m.blending {
         // additive light has no coverage
         Blending::Additive => (rgb * alpha).extend(0.0),
@@ -218,7 +215,6 @@ fn standard(
     face: Vec3,
     v: Vec3,
     n_dot_v: f32,
-    footprint: f32,
 ) -> Vec3 {
     let m = draw.material;
     let mut metalness = m.metalness;
@@ -226,7 +222,7 @@ fn standard(
     if draw.has_uv
         && let Some(map) = &m.metal_rough_map
     {
-        let texel = map.sample_lod(s.uv, map.lod(footprint));
+        let texel = map.sample_grad(s.uv, s.uv_dx, s.uv_dy);
         roughness *= texel.y;
         metalness *= texel.z;
     }
@@ -320,7 +316,7 @@ fn standard(
     }
     let mut indirect = diffuse * irradiance;
     let occlusion = match &m.ao_map {
-        Some(map) if draw.has_uv => map.sample_lod(s.uv, map.lod(footprint)).x,
+        Some(map) if draw.has_uv => map.sample_grad(s.uv, s.uv_dx, s.uv_dy).x,
         _ => 1.0,
     };
 
