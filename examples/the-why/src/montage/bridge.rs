@@ -1,43 +1,73 @@
 //! Part 1, 0 to 5 s: the Golden Gate Bridge at blue hour, built by machines in time-lapse
 //! in the real strait between San Francisco and the Marin Headlands. A bank of fog rolls in
-//! from the ocean under the deck.
+//! from the ocean under the deck. The machines carry cold work lights; what they build
+//! lights up warm at the end.
 //!
 //! - 0.0: a close shot of the warm pilot line between the future towers. It crosses the
 //!   picture at its middle, against the dark blue sky of the east.
 //! - 0.12 to 2.2: the camera pulls back 1.2 km and swings to the hill of Battery Spencer
 //!   on the Marin side: the view down the bridge to the city.
-//! - 0.8 to 2.0: the towers rise lift by lift with climbing cranes and cold work lights.
-//! - 1.85 to 2.8: on the catwalks, the spinning wheels run back and forth, and the main
-//!   cables grow around the pilot line.
-//! - 2.6 to 3.25: the suspenders drop from the cables, from the towers outward.
-//! - 2.95 to 4.0: deck segments rise from barges and join from the towers outward.
+//! - 0.8 to 2.15: the towers rise lift by lift, the north tower from 1.3. A creeper
+//!   derrick on each leg swings the pieces up, a scaffold with work lamps climbs with it,
+//!   and hot rivets fall.
+//! - 2.15 to 2.4: the scaffolds come down, level by level.
+//! - 2.1 to 2.35: the catwalks unroll from the towers, with a string of lamps.
+//! - 2.15 to 2.85: the spinning wheels run along the catwalks, and the main cables grow
+//!   around the pilot line.
+//! - 2.6 to 3.25: carts clamp the cable bands, and the suspenders drop behind them, from
+//!   the towers outward.
+//! - 2.81 to 4.0: robotic barges bring the deck segments, gantries on the cables lift
+//!   them (2.95 to 4.0), and welders join them, from the towers outward.
+//! - 3.3 to 3.55: the catwalks come down, from the middle of each span.
+//! - 3.75 to 4.1: the creeper derricks fold their booms and climb down the towers.
 //! - 4.0 to 4.8: the lamps run on warm, the towers glow in their flood lights, and the
 //!   lights of the San Francisco waterfront and of Sausalito come on outward from the
 //!   bridge.
 //! - 4.3 to 5.0: the first car crosses to Marin. Its headlights flare up, and the flare is
 //!   the match cut to the pen of the greenhouse.
 
+mod machines;
+
 use std::sync::Arc;
 
-use fframes_3d::math::{progress, smoothstep};
+use fframes_3d::math::{hash, progress, smoothstep};
 use fframes_3d::*;
 
 use super::bay::{self, Bay, from_bridge, geo};
 use super::golden_gate::{
-    self, ANCHOR, CABLE_RADIUS, CABLE_Z, HALF_SPAN, Lift, Paints, TOWER_TOP, cable_at, road_y,
+    self, ANCHOR, CABLE_RADIUS, CABLE_Z, HALF_SPAN, Lift, Paints, SIDE_SPAN, TOWER_TOP,
+    TRUSS_DEPTH, cable_at, road_y,
 };
 use super::{AMBER, COLD, COLD_BLUE, camera, ease, ease_in, ease_out, mix, sky, span};
 use crate::assets::Assets;
+use machines::Work;
 
-const TOWERS: (f32, f32) = (0.8, 2.0);
-const CATWALKS: f32 = 1.85;
-const SPIN: (f32, f32) = (1.9, 2.8);
+const TOWERS: (f32, f32) = (0.8, 2.15);
+/// The far (south) tower tops out at `FAR_TOWER_END`. The near (north) tower starts at
+/// `NEAR_TOWER_START` and tops out at `TOWERS.1`: the camera sees it climb.
+const FAR_TOWER_END: f32 = 2.0;
+const NEAR_TOWER_START: f32 = 1.3;
+/// The scaffolds come down level by level after the towers top out.
+const SCAFFOLDS_OFF: (f32, f32) = (2.15, 2.4);
+/// The catwalks unroll from the towers. They come down after the suspenders hang.
+const CATWALKS: f32 = 2.1;
+const CATWALKS_OFF: f32 = 3.3;
+/// The time that the catwalks take to unroll from a tower to the middle of the span, and
+/// to come down.
+const SWEEP: f32 = 0.25;
+const SPIN: (f32, f32) = (2.15, 2.85);
 const SUSPENDERS: (f32, f32) = (2.6, 3.25);
 const DECK: f32 = 2.95;
 /// The deck closes in the middle of the main span.
 const CLOSURE: f32 = 4.0;
 /// The time of a deck segment from the barge to its place.
 const LIFT: f32 = 0.22;
+/// The time of a barge from its approach to its place under the deck, and away again.
+const SAIL: f32 = 0.14;
+/// The time that the welders join a segment after it arrives.
+const WELD: f32 = 0.22;
+/// The creeper derricks fold their booms, then climb down the towers.
+const CRANES_OFF: (f32, f32) = (3.75, 4.1);
 /// The first car starts at the south end.
 const CAR_START: f32 = 4.3;
 /// The time-lapse speed of the car in m/s.
@@ -46,6 +76,8 @@ const CAR_SPEED: f32 = 1900.0;
 const BANDS: usize = 6;
 /// The cable segments of each main cable.
 const CABLE_STEPS: usize = 240;
+/// The height of the road of a segment that waits on its barge.
+const ON_BARGE: f32 = 3.0 + TRUSS_DEPTH;
 
 /// The scale of the bridge in shot 9: the main span is 256 m, so the towers stand on the
 /// plain beside the canyon of the desert.
@@ -55,16 +87,16 @@ pub const LANDMARK_SCALE: f32 = 0.2;
 /// space of the bridge.
 struct Ids {
     lifts: Vec<NodeId>,
-    cranes: [NodeId; 2],
-    crane_lights: [NodeId; 2],
+    machines: NodeId,
+    tower_lights: [NodeId; 2],
+    front_lights: [NodeId; 2],
     pilot: NodeId,
     cables: NodeId,
     catwalks: NodeId,
     suspenders: NodeId,
     deck: [NodeId; 2],
     lamps: NodeId,
-    barges: NodeId,
-    barge_lights: [NodeId; 2],
+    barges: [NodeId; 2],
     floods: [NodeId; 4],
     crown: NodeId,
     sparks: NodeId,
@@ -76,14 +108,23 @@ struct Ids {
     sutro_lights: NodeId,
 }
 
+/// A deck segment of the suspended spans or the approaches.
+struct Segment {
+    /// The X of its middle.
+    x: f32,
+    /// The time it starts to rise. The approaches stand from the start, with a time below
+    /// zero.
+    start: f32,
+    /// The height of the ground below it. A segment over the water comes on a barge.
+    ground: f32,
+}
+
 /// The Golden Gate in the strait at blue hour.
 pub struct Bridge {
     scene: Scene,
     ids: Ids,
     lifts: Vec<Lift>,
-    /// The X of each deck segment and the time it starts to rise. The approaches stand from
-    /// the start, with a time below zero.
-    segments: Vec<(f32, f32)>,
+    segments: Vec<Segment>,
     /// The top and the bottom of each suspender, and the time it starts to drop.
     suspenders: Vec<(Vec3, Vec3, f32)>,
     /// Over Battery Spencer: the camera of the wide shot, in the world.
@@ -91,10 +132,20 @@ pub struct Bridge {
     landmark: Scene,
 }
 
+/// The distance from the nearest tower to `x` in parts of [`HALF_SPAN`]: 0 at a tower, 1
+/// in the middle of the main span, 0.54 at an anchorage.
+fn from_tower(x: f32) -> f32 {
+    (x.abs() - HALF_SPAN).abs() / HALF_SPAN
+}
+
 /// The time at which the deck segment at `x` starts to rise: from the towers outward.
 fn segment_start(x: f32) -> f32 {
-    let from_tower = (x.abs() - HALF_SPAN).abs();
-    DECK + from_tower / HALF_SPAN * (CLOSURE - DECK - LIFT)
+    DECK + from_tower(x) * (CLOSURE - DECK - LIFT)
+}
+
+/// The distance from the towers, in meters, to which the deck is in place at `t`.
+fn deck_front(t: f32) -> f32 {
+    progress(t, DECK + LIFT, CLOSURE) * HALF_SPAN
 }
 
 impl Bridge {
@@ -105,24 +156,25 @@ impl Bridge {
         let segments = golden_gate::segment_centers()
             .into_iter()
             .map(|x| {
-                (
+                let p = from_bridge(vec3(x, 0.0, 0.0));
+                Segment {
                     x,
-                    if x.abs() < ANCHOR {
+                    start: if x.abs() < ANCHOR {
                         segment_start(x)
                     } else {
                         -1.0
                     },
-                )
+                    ground: bay.land.at(p.x, p.z),
+                }
             })
             .collect();
         let suspenders = golden_gate::suspenders()
             .into_iter()
             .map(|(top, bottom)| {
-                let from_tower = (top.x.abs() - HALF_SPAN).abs() / HALF_SPAN;
                 (
                     top,
                     bottom,
-                    mix(SUSPENDERS.0, SUSPENDERS.1 - 0.2, from_tower),
+                    mix(SUSPENDERS.0, SUSPENDERS.1 - 0.2, from_tower(top.x)),
                 )
             })
             .collect();
@@ -159,170 +211,342 @@ impl Bridge {
     /// Sets the parts of `scene` to the state at `t`. `camera` sets the width of the thin
     /// lines, so they stay visible far away.
     fn pose(&self, scene: &mut Scene, t: f32, camera: &Camera) {
-        let ids = &self.ids;
-        let set = |scene: &mut Scene, id: NodeId, instances: Instances| {
-            if let Some(mesh) = scene[id].mesh_mut() {
-                mesh.instances = Some(Arc::new(instances));
-            }
-        };
-        let mut sparks = Vec::new();
         let eye = bay::bridge_turn().inverse() * camera.position;
-        // the size of one pixel of a 804 line picture at the point `p` of the bridge
-        let pixel = |p: Vec3| 2.0 * eye.distance(p) * (camera.fov.to_radians() * 0.5).tan() / 804.0;
+        let mut work = Work::new(eye, 2.0 * (camera.fov.to_radians() * 0.5).tan() / 804.0);
+        self.pose_towers(scene, t, &mut work);
+        self.pose_cables(scene, t, &mut work);
+        self.pose_deck(scene, t, &mut work);
+        self.pose_lights(scene, t, eye, &mut work);
+        let ids = &self.ids;
+        if let Some(mesh) = scene[ids.machines].mesh_mut() {
+            let instances = Instances::new(work.steel).colors(work.paint);
+            mesh.instances = Some(Arc::new(instances));
+        }
+        if let Object::Particles(p) = &mut scene[ids.sparks].object {
+            p.items = work.glows;
+        }
+    }
 
-        // the towers rise lift by lift; a crane with cold lights rides on each
+    /// The towers rise lift by lift. A creeper derrick rides on each leg, in a scaffold
+    /// with work lamps, and hot rivets fall from the top. When the towers top out, the
+    /// scaffolds come down. The derricks stay for the cables and climb down at the end.
+    fn pose_towers(&self, scene: &mut Scene, t: f32, work: &mut Work) {
+        let ids = &self.ids;
         let mut shapes: Vec<Vec<Mat4>> = vec![Vec::new(); ids.lifts.len()];
-        let mut tops = [0.0f32; 2];
+        // the top of each leg: [tower][leg], south tower and bay side first
+        let mut tops = [[13.0f32; 2]; 2];
+        let mut growing = [[false; 2]; 2];
         for lift in &self.lifts {
-            let start = mix(TOWERS.0, TOWERS.1 - 0.1, lift.bottom / TOWER_TOP);
+            // the north tower, which the camera sees from near, starts later and rises
+            // faster, so that the camera sees more of its rise
+            let (first, last) = if lift.transform.w_axis.x > 0.0 {
+                (NEAR_TOWER_START, TOWERS.1)
+            } else {
+                (TOWERS.0, FAR_TOWER_END)
+            };
+            let start = mix(first, last - 0.1, lift.bottom / TOWER_TOP);
             let g = progress(t, start, start + 0.1);
             if g <= 0.0 {
                 continue;
             }
             let grown = lift.transform * Mat4::from_scale(vec3(1.0, g.max(0.02), 1.0));
             shapes[lift.shape].push(grown);
-            let tower = usize::from(lift.transform.w_axis.x > 0.0);
-            tops[tower] = tops[tower].max(mix(lift.bottom, lift.top, g));
+            let at = lift.transform.w_axis;
+            if (at.z.abs() - CABLE_Z).abs() < 0.01 {
+                let (i, j) = (usize::from(at.x > 0.0), usize::from(at.z > 0.0));
+                tops[i][j] = tops[i][j].max(mix(lift.bottom, lift.top, g));
+                growing[i][j] |= g < 1.0;
+            }
         }
         for (id, transforms) in ids.lifts.iter().zip(shapes) {
-            set(scene, *id, Instances::new(transforms));
-        }
-        let building = smoothstep(TOWERS.0 - 0.1, TOWERS.0, t)
-            * (1.0 - smoothstep(TOWERS.1, TOWERS.1 + 0.3, t));
-        for (i, x) in [-HALF_SPAN, HALF_SPAN].into_iter().enumerate() {
-            let crane = &mut scene[ids.cranes[i]];
-            crane.visible = building > 0.0;
-            crane.position = vec3(x, tops[i], 0.0);
-            crane.rotation =
-                Quat::from_rotation_y(i as f32 * 2.5 + 0.8 * (t * 1.3 + i as f32).sin());
-            scene[ids.crane_lights[i]].visible = building > 0.0;
-            if let Some(light) = scene[ids.crane_lights[i]].light_mut() {
-                *light.intensity_mut() = 3.0e4 * building;
-            }
-            if building > 0.0 {
-                for z in [-CABLE_Z, CABLE_Z] {
-                    let blink = if (t * 7.0 + z).fract() < 0.5 {
-                        40.0
-                    } else {
-                        8.0
-                    };
-                    sparks.push(Particle::new(
-                        vec3(x, tops[i] + 1.0, z),
-                        1.0,
-                        Rgb::hex(COLD_BLUE) * blink,
-                    ));
-                }
+            if let Some(mesh) = scene[*id].mesh_mut() {
+                mesh.instances = Some(Arc::new(Instances::new(transforms)));
             }
         }
 
-        // the main cables grow around the pilot line while the wheels spin them; the
-        // catwalks hang below them
+        // the derricks fold their booms and climb down the legs, then they are gone
+        let fold = ease(progress(t, CRANES_OFF.0, CRANES_OFF.0 + 0.12));
+        let down = ease_in(progress(t, CRANES_OFF.0 + 0.1, CRANES_OFF.1));
+        let working = t > TOWERS.0 - 0.1 && down < 1.0;
+        let levels = 3 - (3.0 * progress(t, SCAFFOLDS_OFF.0, SCAFFOLDS_OFF.1)).round() as usize;
+        for (i, x) in [-HALF_SPAN, HALF_SPAN].into_iter().enumerate() {
+            for (j, z) in [-CABLE_Z, CABLE_Z].into_iter().enumerate() {
+                let top = vec3(x, tops[i][j], z);
+                let leg = golden_gate::leg_size(top.y - 0.5);
+                let phase = i as f32 * 1.7 + j as f32 * 2.9;
+                if working {
+                    // the boom swings out over the water, picks a piece and swings it in
+                    let climbing = t < TOWERS.1;
+                    let swing = (t * 5.0 + phase).sin();
+                    let slew = mix(0.2, 0.9 * swing, if climbing { 1.0 } else { 0.4 });
+                    let luff = mix(1.05 + 0.2 * (t * 1.7 + phase).sin(), 1.48, fold);
+                    let hook = mix(9.0 + 26.0 * (0.5 + 0.5 * swing), 4.0, fold);
+                    let lowered = mix(top.y, road_y(x) + 2.0, down);
+                    let out = z.signum();
+                    machines::creeper(
+                        work,
+                        top.with_y(lowered),
+                        leg,
+                        out,
+                        slew,
+                        luff,
+                        hook,
+                        climbing,
+                        t,
+                    );
+                }
+                if t > TOWERS.0 - 0.1 {
+                    machines::scaffold(work, top, leg, levels);
+                }
+                if growing[i][j] {
+                    // hot rivets that the riveters drop from the top of the leg
+                    for (k, corner) in [(-1.0, 1.0), (1.0, -1.0)].into_iter().enumerate() {
+                        let p = top + vec3(corner.0 * leg.x * 0.5, -1.0, corner.1 * leg.y * 0.5);
+                        work.sparks(p, t, (i * 4 + j * 2 + k) as u32, 14, 9.0, 0.45);
+                    }
+                }
+            }
+            let light = &mut scene[ids.tower_lights[i]];
+            light.visible = working && fold < 1.0;
+            light.position = vec3(x, tops[i][0].max(tops[i][1]) + 12.0, 0.0);
+            if let Some(light) = light.light_mut() {
+                *light.intensity_mut() =
+                    1.8e4 * smoothstep(TOWERS.0 - 0.1, TOWERS.0, t) * (1.0 - fold);
+            }
+        }
+    }
+
+    /// The catwalks unroll from the towers, the spinning wheels run along them while the
+    /// main cables grow, the suspenders drop behind the carts that clamp the cable bands,
+    /// and the catwalks come down.
+    fn pose_cables(&self, scene: &mut Scene, t: f32, work: &mut Work) {
+        let ids = &self.ids;
         let spun = ease(progress(t, SPIN.0, SPIN.1));
-        let step = |k: usize, z: f32| {
-            let x = |k: usize| -ANCHOR + 2.0 * ANCHOR * k as f32 / CABLE_STEPS as f32;
-            (cable_at(x(k), z), cable_at(x(k + 1), z))
-        };
+        let x_at = |k: usize| -ANCHOR + 2.0 * ANCHOR * k as f32 / CABLE_STEPS as f32;
+        let step = |k: usize, z: f32| (cable_at(x_at(k), z), cable_at(x_at(k + 1), z));
         let mut cables = Vec::new();
         let mut walks = Vec::new();
+        let tramway = t > SPIN.0 - 0.1 && t < SPIN.1 + 0.1;
         for z in [-CABLE_Z, CABLE_Z] {
             for k in 0..CABLE_STEPS {
                 let (a, b) = step(k, z);
                 if spun > 0.0 {
-                    let r = (CABLE_RADIUS * spun).max(0.6 * pixel(a) * spun);
+                    let r = (CABLE_RADIUS * spun).max(0.6 * work.pixel_at(a) * spun);
                     cables.push(span(a, b, r));
                 }
+                if tramway {
+                    let up = Vec3::Y * 3.5;
+                    walks.push(span(a + up, b + up, 0.05_f32.max(0.35 * work.pixel_at(a))));
+                }
+                // the catwalk: a deck of mesh under the cable with two hand ropes, from the
+                // towers out and back
+                let x = a.x.midpoint(b.x);
+                let near = from_tower(x);
+                let shown = t > CATWALKS + SWEEP * near && t < CATWALKS_OFF + SWEEP * (1.0 - near);
+                if !shown {
+                    continue;
+                }
                 let down = Vec3::Y * 1.6;
-                walks.push(span(a - down, b - down, 0.25_f32.max(0.5 * pixel(a))));
+                let thick = 0.15_f32.max(0.5 * work.pixel_at(a));
+                walks.push(band(a - down, b - down, thick, 2.6));
+                for side in [-1.3, 1.3] {
+                    let rope = vec3(0.0, -0.5, side);
+                    walks.push(span(
+                        a + rope,
+                        b + rope,
+                        0.05_f32.max(0.35 * work.pixel_at(a)),
+                    ));
+                }
+                if k % 10 == 5 && z < 0.0 {
+                    // a cross bridge to the other catwalk
+                    let c = vec3(a.x, a.y - 1.6, -z);
+                    walks.push(band(a - down, c, thick, 1.4));
+                }
+                if k % 3 == 0 {
+                    let lamp = a - down + vec3(0.0, 1.3, 1.3 * z.signum());
+                    work.glow(lamp, 0.35, 0.9, Rgb::hex(COLD) * 14.0);
+                }
             }
         }
-        set(scene, ids.cables, Instances::new(cables));
-        set(scene, ids.catwalks, Instances::new(walks));
-        scene[ids.catwalks].visible = t > CATWALKS && t < CLOSURE + 0.3;
+        if let Some(mesh) = scene[ids.cables].mesh_mut() {
+            mesh.instances = Some(Arc::new(Instances::new(cables)));
+        }
+        if let Some(mesh) = scene[ids.catwalks].mesh_mut() {
+            mesh.instances = Some(Arc::new(Instances::new(walks)));
+        }
         // the pilot line: warm and about one pixel wide at any distance
         let pilot: Vec<Mat4> = (0..CABLE_STEPS)
             .map(|k| {
                 let (a, b) = step(k, -CABLE_Z);
-                span(a, b, (0.7 * pixel(a)).max(0.02))
+                span(a, b, (0.7 * work.pixel_at(a)).max(0.02))
             })
             .collect();
-        set(scene, ids.pilot, Instances::new(pilot));
+        if let Some(mesh) = scene[ids.pilot].mesh_mut() {
+            mesh.instances = Some(Arc::new(Instances::new(pilot)));
+        }
         scene[ids.pilot].visible = spun < 0.9;
-        // the spinning wheels: two on each cable, running from anchorage to anchorage
-        if t > SPIN.0 - 0.05 && t < SPIN.1 + 0.1 {
-            for (i, z) in [-CABLE_Z, -CABLE_Z, CABLE_Z, CABLE_Z]
-                .into_iter()
-                .enumerate()
-            {
-                let phase = t * 0.9 + i as f32 * 0.37;
-                let x = ANCHOR * 0.98 * (1.0 - 2.0 * (2.0 * phase.fract() - 1.0).abs());
-                let back = if phase.fract() < 0.5 { -40.0 } else { 40.0 };
-                let p = cable_at(x, z) + Vec3::Y * 1.2;
-                let tail = cable_at(x + back, z) + Vec3::Y * 1.2 - p;
-                sparks.push(Particle::new(p, 1.4, Rgb::hex(COLD) * 40.0).tail(tail));
+
+        // the spinning wheels: three on each cable, from anchorage to anchorage and back.
+        // Each pulls a wire that glints behind it.
+        if tramway {
+            for (i, z) in [-CABLE_Z, CABLE_Z].into_iter().enumerate() {
+                for w in 0..3 {
+                    let phase = (t - SPIN.0) * 1.1 + w as f32 / 3.0 + i as f32 * 0.17;
+                    let s = 1.0 - (2.0 * phase.rem_euclid(1.0) - 1.0).abs();
+                    let back = if phase.rem_euclid(1.0) < 0.5 {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    let x = ANCHOR * 0.98 * (2.0 * s - 1.0);
+                    let head = cable_at(x, z) + Vec3::Y * 2.2;
+                    work.glow(head, 0.8, 2.2, Rgb::hex(COLD) * 50.0);
+                    for k in 0..6 {
+                        let fade = 1.0 - k as f32 / 6.0;
+                        let (p, q) = (
+                            cable_at(x + back * 12.0 * k as f32, z),
+                            cable_at(x + back * 12.0 * (k + 1) as f32, z),
+                        );
+                        let size = (0.3 * fade).max(0.8 * work.pixel_at(p));
+                        work.glows.push(
+                            Particle::new(p + Vec3::Y * 2.2, size, Rgb::hex(COLD) * (25.0 * fade))
+                                .tail(q - p),
+                        );
+                    }
+                }
             }
         }
 
-        // the suspenders drop from the cables
+        // the suspenders drop from the cables behind the carts that clamp their bands
         let ropes: Vec<Mat4> = self
             .suspenders
             .iter()
             .filter_map(|&(top, bottom, start)| {
                 let g = ease_out(progress(t, start, start + 0.25));
-                (g > 0.0).then(|| span(top, top.lerp(bottom, g), 0.07_f32.max(0.45 * pixel(top))))
+                (g > 0.0).then(|| {
+                    span(
+                        top,
+                        top.lerp(bottom, g),
+                        0.07_f32.max(0.45 * work.pixel_at(top)),
+                    )
+                })
             })
             .collect();
-        set(scene, ids.suspenders, Instances::new(ropes));
+        if let Some(mesh) = scene[ids.suspenders].mesh_mut() {
+            mesh.instances = Some(Arc::new(Instances::new(ropes)));
+        }
+        let reach = progress(t, SUSPENDERS.0, SUSPENDERS.1 - 0.2) * HALF_SPAN;
+        if reach > 0.0 && reach < HALF_SPAN {
+            for tower in [-HALF_SPAN, HALF_SPAN] {
+                for (dir, limit) in [(-tower.signum(), HALF_SPAN), (tower.signum(), SIDE_SPAN)] {
+                    if reach > limit - 10.0 {
+                        continue;
+                    }
+                    for z in [-CABLE_Z, CABLE_Z] {
+                        let p = cable_at(tower + dir * reach, z) + Vec3::Y * 0.8;
+                        work.block(p - Vec3::Y * 0.6, vec3(4.0, 1.4, 1.8), 0xd8a62c);
+                        work.glow(p + Vec3::Y * 1.2, 0.5, 1.6, Rgb::hex(COLD) * 40.0);
+                    }
+                }
+            }
+        }
+    }
 
-        // the deck segments rise from barges to their place; the lamps on them light up
-        // from the middle outward
+    /// The deck: robotic barges bring the segments under their places, gantries on the
+    /// cables lift them, and welders join each one to the deck. The lamps on the deck
+    /// light up from the middle outward at the end.
+    fn pose_deck(&self, scene: &mut Scene, t: f32, work: &mut Work) {
+        let ids = &self.ids;
+        let frame = (t * 60.0) as u32;
         let mut deck = Vec::new();
         let mut lamp_colors = Vec::new();
-        let mut lifting = Vec::new();
-        for &(x, start) in &self.segments {
-            let g = progress(t, start, start + LIFT);
-            if g <= 0.0 && start >= 0.0 {
+        let mut barges = Vec::new();
+        for (n, s) in self.segments.iter().enumerate() {
+            let x = s.x;
+            let road = road_y(x);
+            let water = s.ground < -1.0;
+            let arrive = s.start - if water { SAIL } else { 0.05 };
+            if s.start >= 0.0 && t < arrive {
                 continue;
             }
-            let rise = (1.0 - ease_out(g)) * (road_y(x) - 2.0);
-            deck.push(Mat4::from_translation(Vec3::Y * -rise) * golden_gate::segment_at(x));
-            if g > 0.0 && g < 1.0 {
-                lifting.push(x);
-            }
+            let g = progress(t, s.start, s.start + LIFT);
+            // the barge comes in from the bay and leaves to the ocean, each on its own path
+            let seed = n as u32 * 3;
+            let sail = (50.0 + 50.0 * hash(seed)) * (1.0 - ease_out(progress(t, arrive, s.start)))
+                - (50.0 + 50.0 * hash(seed + 1))
+                    * ease_in(progress(t, s.start + LIFT, s.start + LIFT + SAIL));
+            let rest = if water {
+                ON_BARGE
+            } else {
+                s.ground + TRUSS_DEPTH + 1.0
+            };
+            let y = mix(rest, road, ease(g));
+            let on_barge = if g > 0.0 { 0.0 } else { sail };
+            let segment =
+                Mat4::from_translation(vec3(0.0, y - road, on_barge)) * golden_gate::segment_at(x);
+            deck.push(segment);
             let on = CLOSURE + 0.05 + x.abs() / ANCHOR * 0.5;
-            let lamp =
-                Rgb::hex(0x0c0d10).lerp(Rgb::hex(0xffa850) * 10.0, smoothstep(on, on + 0.08, t));
-            lamp_colors.push(lamp);
+            lamp_colors.push(
+                Rgb::hex(0x0c0d10).lerp(Rgb::hex(0xffa850) * 10.0, smoothstep(on, on + 0.08, t)),
+            );
+            if s.start < 0.0 {
+                continue;
+            }
+            let after = t - (s.start + LIFT);
+            if water && after < SAIL {
+                // it turns a little on its way in and out
+                let turn = Quat::from_rotation_y((hash(seed + 2) - 0.5) * 0.004 * sail);
+                let p = vec3(x, 0.0, sail);
+                barges.push(Mat4::from_rotation_translation(turn, p));
+                machines::barge_lights(work, p, turn, t + n as f32 * 0.3);
+            }
+            if g > 0.0 && g < 1.0 {
+                let cables = [-CABLE_Z, CABLE_Z].map(|z| cable_at(x, z));
+                machines::gantry(work, cables, y + 0.3, t + n as f32 * 0.11);
+            }
+            if after > 0.0 && after < WELD {
+                // the joint toward the tower, at the top and the bottom chord of each truss
+                let tower = HALF_SPAN * x.signum();
+                let joint = x + (tower - x).signum() * golden_gate::SEGMENT * 0.5;
+                for (k, z) in [-CABLE_Z, CABLE_Z].into_iter().enumerate() {
+                    for (m, dy) in [-0.6, -TRUSS_DEPTH + 0.4].into_iter().enumerate() {
+                        let p = vec3(joint, road_y(joint) + dy, z);
+                        work.weld(p, after, (n * 4 + k * 2 + m) as u32, frame);
+                    }
+                }
+            }
         }
         for id in ids.deck {
-            set(scene, id, Instances::new(deck.clone()));
-        }
-        set(scene, ids.lamps, Instances::new(deck).colors(lamp_colors));
-        // a barge under each segment that rises, with cold flood lights
-        let mut barges = Vec::new();
-        for &x in &lifting {
-            barges.push(Mat4::from_translation(vec3(x, 0.0, 0.0)));
-            for z in [-CABLE_Z, CABLE_Z] {
-                sparks.push(Particle::new(
-                    vec3(x, road_y(x) + 6.0, z),
-                    0.9,
-                    Rgb::hex(COLD) * 30.0,
-                ));
-                sparks.push(Particle::new(
-                    vec3(x, 4.0, z),
-                    1.2,
-                    Rgb::hex(COLD_BLUE) * 25.0,
-                ));
+            if let Some(mesh) = scene[id].mesh_mut() {
+                mesh.instances = Some(Arc::new(Instances::new(deck.clone())));
             }
         }
-        set(scene, ids.barges, Instances::new(barges));
-        for (i, id) in ids.barge_lights.into_iter().enumerate() {
-            let x = lifting.get(i * 2).copied();
-            scene[id].visible = x.is_some();
-            if let Some(x) = x {
-                scene[id].position = vec3(x, 30.0, -CABLE_Z - 10.0);
+        if let Some(mesh) = scene[ids.lamps].mesh_mut() {
+            mesh.instances = Some(Arc::new(Instances::new(deck).colors(lamp_colors)));
+        }
+        let barges = Arc::new(Instances::new(barges));
+        for id in ids.barges {
+            if let Some(mesh) = scene[id].mesh_mut() {
+                mesh.instances = Some(barges.clone());
             }
         }
+        // cold lights on the two fronts of the deck that grow from the near tower: they
+        // shine down on the segments that rise, and through the fog on the barges
+        let front = deck_front(t);
+        for (i, (dir, limit)) in [(-1.0f32, HALF_SPAN), (1.0, SIDE_SPAN)]
+            .into_iter()
+            .enumerate()
+        {
+            let x = HALF_SPAN + dir * (front.min(limit - 20.0) + 14.0);
+            let node = &mut scene[ids.front_lights[i]];
+            node.visible = t > DECK + LIFT && front < limit - 5.0;
+            node.position = vec3(x, road_y(x) + 9.0, 0.0);
+        }
+    }
 
+    /// The lights of the finished bridge, the city, and the first car.
+    fn pose_lights(&self, scene: &mut Scene, t: f32, eye: Vec3, work: &mut Work) {
+        let ids = &self.ids;
         // the flood lights of the towers and the red lights on their tops
         let floods = smoothstep(CLOSURE + 0.15, CLOSURE + 0.5, t);
         for id in ids.floods {
@@ -339,7 +563,8 @@ impl Bridge {
             for x in [-HALF_SPAN, HALF_SPAN] {
                 for z in [-CABLE_Z, CABLE_Z] {
                     let p = vec3(x, TOWER_TOP + 3.0, z);
-                    sparks.push(Particle::new(p, 1.6, Rgb::hex(0xff2010) * 30.0));
+                    work.glows
+                        .push(Particle::new(p, 1.6, Rgb::hex(0xff2010) * 30.0));
                 }
             }
         }
@@ -380,10 +605,6 @@ impl Bridge {
             p.items[0].position = vec3(2.4, 0.8, 0.0) + to_camera * 30.0;
             p.items[0].size = 4.0 + 12.0 * flare;
             p.items[0].color = Rgb::hex(AMBER) * (3.0 + 32.0 * flare);
-        }
-
-        if let Object::Particles(p) = &mut scene[ids.sparks].object {
-            p.items = sparks;
         }
     }
 
@@ -432,6 +653,14 @@ impl Bridge {
 fn car_position(t: f32) -> Vec3 {
     let x = -ANCHOR + CAR_SPEED * (t - CAR_START);
     vec3(x, road_y(x) + 0.05, 5.0)
+}
+
+/// The transform of a flat bar from `a` to `b`: `thickness` across the bar in the plane of
+/// the cable, and `width` along Z. It places the unit box of [`span`].
+fn band(a: Vec3, b: Vec3, thickness: f32, width: f32) -> Mat4 {
+    let d = b - a;
+    let rotation = Quat::from_rotation_arc(Vec3::Y, d.normalize_or(Vec3::Y));
+    Mat4::from_scale_rotation_translation(vec3(thickness, d.length(), width), rotation, a)
 }
 
 /// Builds the scene: the sky, the place, the bridge parts and the lights.
@@ -531,9 +760,15 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
         gate,
         instanced(Material::unlit(Rgb::hex(AMBER) * 9.0)).shadows(false, false),
     );
+    let block = Arc::new(Geometry::cuboid(1.0, 1.0, 1.0).translate(0.0, 0.5, 0.0));
     let catwalks = scene.add_to(
         gate,
-        instanced(Material::standard(0x3a3632).roughness(0.9)).shadows(false, false),
+        Node::instanced(
+            block.clone(),
+            Material::standard(0x4a4640).roughness(0.9),
+            Instances::default(),
+        )
+        .shadows(false, false),
     );
     let suspenders = scene.add_to(gate, instanced(paints.steel.clone()).shadows(false, false));
     let (steel, road, lamp_heads) = golden_gate::deck_segment();
@@ -549,39 +784,38 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
         .shadows(false, false),
     );
 
-    // the machines: climbing cranes on the towers and barges with derricks
-    let crane_paint = Material::standard(0x3a3e44).roughness(0.6);
-    let mut cranes = [NodeId(0); 2];
-    let mut crane_lights = [NodeId(0); 2];
-    for i in 0..2 {
-        cranes[i] = scene.add_to(gate, Node::group());
-        let jib = Geometry::merge([
-            Geometry::cuboid(2.0, 16.0, 2.0).translate(0.0, 8.0, 0.0),
-            Geometry::cuboid(40.0, 1.6, 1.6).translate(14.0, 16.0, 0.0),
-            Geometry::cuboid(12.0, 1.4, 1.4).translate(-7.0, 16.0, 0.0),
-        ]);
-        scene.add_to(cranes[i], Node::mesh(jib, crane_paint.clone()));
-        scene.add_to(
-            cranes[i],
-            Node::mesh(Geometry::sphere(0.7, 8, 6), Material::glow(COLD, 16.0)).at(34.0, 15.0, 0.0),
-        );
-        crane_lights[i] = scene.add_to(
-            cranes[i],
-            Node::light(Light::point(COLD, 0.0, 300.0)).at(20.0, 12.0, 0.0),
-        );
-    }
-    let barge = Geometry::merge([
-        Geometry::cuboid(34.0, 3.0, 22.0).translate(0.0, 1.0, 0.0),
-        Geometry::cuboid(1.2, 18.0, 1.2).translate(-12.0, 11.5, -8.0),
-        Geometry::cuboid(1.2, 18.0, 1.2).translate(-12.0, 11.5, 8.0),
-        Geometry::cuboid(1.0, 1.0, 17.0).translate(-12.0, 20.0, 0.0),
-    ]);
-    let barges = scene.add_to(
+    // the machines: their steel is one list of boxes with a paint each, which the frames
+    // fill, see [`Work`]
+    let machines = scene.add_to(
         gate,
-        Node::instanced(barge, crane_paint, Instances::default()),
+        Node::instanced(
+            block,
+            Material::standard(0xffffff).roughness(0.6).metalness(0.3),
+            Instances::default(),
+        )
+        .shadows(false, false),
     );
-    let barge_lights =
-        [0; 2].map(|_| scene.add_to(gate, Node::light(Light::point(COLD, 6.0e3, 200.0)).hidden()));
+    let (hull, strips) = machines::barge();
+    let barges = [
+        (hull, Material::standard(0x2a2c30).roughness(0.7)),
+        (strips, Material::unlit(Rgb::hex(COLD_BLUE) * 6.0)),
+    ]
+    .map(|(g, m)| {
+        scene.add_to(
+            gate,
+            Node::instanced(g, m, Instances::default()).shadows(false, false),
+        )
+    });
+    // the work lights over the tops of the towers, and on the fronts of the deck that grow
+    // from the near tower
+    let tower_lights =
+        [0; 2].map(|_| scene.add_to(gate, Node::light(Light::point(COLD, 0.0, 300.0)).hidden()));
+    let front_lights = [-0.5, 0.5].map(|x| {
+        scene.add_to(
+            gate,
+            Node::light(Light::spot(COLD, 3.0e4, 0.45, 0.7).pointing(vec3(x, -1.0, 0.1))).hidden(),
+        )
+    });
     // flood lights on the deck that shine up the north faces of the legs, the faces that
     // Marin sees
     let floods = [(-1.0f32, -1.0f32), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)].map(|(side, z)| {
@@ -648,8 +882,9 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
 
     let ids = Ids {
         lifts,
-        cranes,
-        crane_lights,
+        machines,
+        tower_lights,
+        front_lights,
         pilot,
         cables,
         catwalks,
@@ -657,7 +892,6 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
         deck,
         lamps,
         barges,
-        barge_lights,
         floods,
         crown,
         sparks,

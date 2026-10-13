@@ -6,12 +6,21 @@
 //! about 210 m away on +Z. The times below are seconds into the part.
 //!
 //! - 0.0 to 0.3: the whip pan from the greenhouse lands on the pad. The spark of the
-//!   greenhouse flies on to the foot of the tower.
-//! - 0.45 to 1.45: the spark runs up the corner of the tower, and the lights of each level
-//!   come on behind it: a warm line from the ground to the top.
-//! - 0.15 to 2.2: cold vapor vents from the tanks and drifts off with the wind.
-//! - 1.0 to 1.6: the crew access arm swings away. 1.25 to 1.85: the vent hood lifts off the
-//!   nose and swings away.
+//!   greenhouse flies on to the foot of the tower. The pad is bare: the tower is one
+//!   level high.
+//! - 0.0 to 1.05: the transporter erector rolls the rocket out of the hangar on the right,
+//!   down the ramp and over the trench to the mount. It comes in fast and slows down.
+//! - 0.45 to 1.45: the spark runs up the corner of the tower, and a crawler crane builds the
+//!   tower level by level just above it. The lamps of each level come on behind the
+//!   spark: a warm line from the ground to the top. The hammerhead crane and the machine
+//!   room come last.
+//! - 1.05 to 1.45: the transporter erector raises the rocket.
+//! - 1.45 to 1.6: the arms swing to the rocket. 1.45 to 1.95: the crawler crane lowers its
+//!   boom and drives away.
+//! - 1.4 to 1.85: the tanks fill: frost grows up the oxygen tank, and cold vapor vents
+//!   from it and from the sphere of oxygen, until 2.3.
+//! - 1.6 to 1.85: the strongback tilts back. 1.65 to 1.9: the crew access arm swings away.
+//!   1.7 to 1.95: the vent hood lifts off the nose and swings away.
 //! - 1.55: the water deluge starts: arcs of water from the four corners of the deck.
 //! - 1.8 to 2.3: the igniters throw sparks, with a short green flash.
 //! - 2.0: ignition. Fire leaves both ends of the trench, then steam billows out in big
@@ -23,6 +32,8 @@
 //! - 4.6 to 5.0: the flare grows until it fills the frame with warm white: the cut to the
 //!   sunrise of shot 9.
 
+mod machines;
+
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::Arc;
 
@@ -31,8 +42,8 @@ use fframes_3d::*;
 
 use super::greenhouse::{LEVEL, SPARK_AT_CUT, SPARK_LEAD};
 use super::{
-    AMBER, AMBER_EDGE, COLD, COLD_BLUE, WHIP_HALF, camera, ease, ease_in, haze_steps, mix, polar,
-    ridges, sky, span, spark, whip, yaw_pitch,
+    AMBER, AMBER_EDGE, COLD, COLD_BLUE, WHIP_HALF, camera, ease, ease_in, ease_out, haze_steps,
+    mix, polar, ridges, sky, span, spark, whip, yaw_pitch,
 };
 use crate::assets::Assets;
 
@@ -40,6 +51,8 @@ use crate::assets::Assets;
 const PAD_Y: f32 = 6.0;
 /// The bottom of the first stage on the launch mount.
 const BASE_Y: f32 = PAD_Y + 4.0;
+/// The bottom and the top of the frost on the oxygen tank, from the engines.
+const FROST: (f32, f32) = (26.0, 40.6);
 /// The length of the rocket, from the engines to the tip.
 const LENGTH: f32 = 68.5;
 /// The radius of the stages.
@@ -61,10 +74,39 @@ const MOUTH_X: f32 = 44.0;
 const SPARK_ARRIVES: f32 = 0.45;
 /// The spark runs up the tower and the lights come on.
 const LIGHTS: (f32, f32) = (0.45, 1.45);
+/// The transporter erector rolls the rocket from the hangar to the pad.
+const ROLLOUT: (f32, f32) = (0.0, 1.05);
+/// It raises the rocket.
+const RAISE: (f32, f32) = (1.05, 1.45);
+/// The arms swing to the rocket.
+const ARMS_IN: (f32, f32) = (1.45, 1.6);
+/// The oxygen tank fills, and frost grows up on it.
+const FUELING: (f32, f32) = (1.4, 1.85);
+/// The strongback of the transporter erector tilts back from the rocket.
+const STRONGBACK: (f32, f32) = (1.6, 1.85);
 /// The crew access arm swings away.
-const ARM: (f32, f32) = (1.0, 1.6);
+const ARM: (f32, f32) = (1.65, 1.9);
 /// The vent hood lifts off the nose and swings away.
-const HOOD: (f32, f32) = (1.25, 1.85);
+const HOOD: (f32, f32) = (1.7, 1.95);
+/// The crawler crane lowers its boom and drives away.
+const CRANE_AWAY: (f32, f32) = (1.45, 1.95);
+/// The pivot of the transporter erector: the rocket and its strongback turn around it.
+const PIVOT: Vec3 = Vec3::new(BODY + 1.6, PAD_Y + 2.6, 0.0);
+/// The length of the strongback.
+const STRONGBACK_LENGTH: f32 = 68.0;
+/// The length of the chassis of the transporter erector from the pivot.
+const CHASSIS: f32 = 78.0;
+/// The door of the hangar, and the X of the pivot when the rollout starts.
+const HANGAR: f32 = 192.0;
+const HANGAR_X: f32 = HANGAR + 4.0;
+/// The ramp of the rails from the bridge over the trench down to the ground.
+const RAMP: (f32, f32) = (84.0, 184.0);
+/// The crawler crane that builds the tower, and the length of its boom.
+const CRANE_AT: Vec3 = Vec3::new(-52.0, 0.0, -42.0);
+const BOOM: f32 = 120.0;
+/// The paints of the machines.
+const YELLOW: u32 = 0xd8b030;
+const DARK: u32 = 0x2a2c30;
 /// The water deluge starts.
 const DELUGE: f32 = 1.55;
 const IGNITION: f32 = 2.0;
@@ -268,27 +310,86 @@ fn clouds() -> Vec<Cloud> {
         });
     }
     // cold vapor that jets from the vents of the tanks to +X, where the wind blows, and
-    // sinks along the rocket. The vents close before the lift off.
+    // sinks along the rocket. It starts when the tanks fill, and the vents close before
+    // the lift off.
     for i in 0..480u32 {
         let h = |k: u32| hash(i * 37 + 130_000 + k);
         let port = if i % 3 == 0 { 51.5 } else { 40.8 };
         let a = 1.1 + (h(1) - 0.5) * 0.8;
         let out = vec3(a.sin(), 0.0, a.cos());
         clouds.push(Cloud {
-            start: 0.15 + 1.25 * (i as f32 / 480.0),
+            start: FUELING.0 + 0.1 + 0.55 * (i as f32 / 480.0),
             origin: out * (BODY + 0.1) + vec3(0.0, BASE_Y + port, 0.0),
-            velocity: out * (4.0 + 4.0 * h(2)) + vec3(1.5, -0.5 - 1.5 * h(3), 0.0),
-            drag: 0.6,
-            lift: -4.0,
-            radius: 0.15 + 0.15 * h(4),
-            growth: 1.4,
-            puffs: 3,
-            albedo: 2.0,
-            life: 0.8,
+            velocity: out * (10.0 + 8.0 * h(2)) + vec3(3.0, -1.0 - 2.0 * h(3), 0.0),
+            drag: 0.7,
+            lift: -7.0,
+            radius: 0.2 + 0.15 * h(4),
+            growth: 1.5,
+            puffs: 6,
+            albedo: 1.3,
+            life: 1.0,
             seed: i + 40_000,
         });
     }
+    // cold vapor from the umbilical at the foot of the rocket rolls over the deck while
+    // the tanks fill
+    for i in 0..140u32 {
+        let h = |k: u32| hash(i * 43 + 190_000 + k);
+        let a = (h(1) - 0.5) * 2.4;
+        clouds.push(Cloud {
+            start: FUELING.0 + (IGNITION - 0.15 - FUELING.0) * (i as f32 / 140.0),
+            origin: vec3(BODY + 1.0, PAD_Y + 1.5, (h(2) - 0.5) * 2.0),
+            velocity: vec3(a.cos(), 0.0, a.sin()) * (5.0 + 6.0 * h(3)),
+            drag: 0.7,
+            lift: -0.5,
+            radius: 1.0 + 0.6 * h(4),
+            growth: 4.0,
+            puffs: 6,
+            albedo: 1.1,
+            life: 1.4,
+            seed: i + 80_000,
+        });
+    }
+    // the relief valve on the top of the sphere of oxygen vents while it fills the rocket
+    for i in 0..60u32 {
+        let h = |k: u32| hash(i * 41 + 170_000 + k);
+        clouds.push(Cloud {
+            start: FUELING.0 - 0.1 + 0.8 * (i as f32 / 60.0),
+            origin: vec3(-66.0, 20.4, -46.0),
+            velocity: vec3(1.5 + 2.0 * h(1), 6.0 + 4.0 * h(2), (h(3) - 0.5) * 3.0),
+            drag: 0.5,
+            lift: -3.0,
+            radius: 0.4 + 0.3 * h(4),
+            growth: 2.4,
+            puffs: 4,
+            albedo: 1.6,
+            life: 1.1,
+            seed: i + 60_000,
+        });
+    }
     clouds
+}
+
+/// The thin moving members of a frame: the hoist lines and the pendants of the crane, its
+/// load, and the rams of the transporter erector. They are instances of a unit box that
+/// stands on Y = 0..1 (see [`span`]), each with a paint.
+#[derive(Default)]
+struct Rigging {
+    steel: Vec<Mat4>,
+    paint: Vec<Rgb>,
+}
+
+impl Rigging {
+    fn member(&mut self, a: Vec3, b: Vec3, thickness: f32, paint: u32) {
+        self.steel.push(span(a, b, thickness));
+        self.paint.push(Rgb::hex(paint));
+    }
+}
+
+/// The height of the rails of the transporter erector at `x`: on the deck of the pad and
+/// on the bridge over the trench, then down the ramp to the ground.
+fn rail_height(x: f32) -> f32 {
+    PAD_Y * (1.0 - progress(x, RAMP.0, RAMP.1))
 }
 
 /// The arcs of the water deluge at `t`: four nozzles on the corners of the deck spray onto
@@ -333,34 +434,42 @@ struct Ids {
     flame_light: NodeId,
     mouth_lights: [NodeId; 2],
     mouths: NodeId,
-    crew_arm: NodeId,
-    umbilicals: [NodeId; 2],
-    hood: NodeId,
     tower_lamps: NodeId,
     tower_lights: [NodeId; 2],
     line_light: NodeId,
     smoke: NodeId,
     sparks: NodeId,
+    /// The frost on the oxygen tank.
+    frost: NodeId,
+    /// The groups of the transporter erector: its chassis and its strongback.
+    chassis: NodeId,
+    strongback: NodeId,
+    /// The crawler crane and its boom.
+    crane: NodeId,
+    boom: NodeId,
+    rigging: NodeId,
 }
 
 /// The launch pad, the rocket and its tower at dawn.
 pub struct Rocket {
     scene: Scene,
     ids: Ids,
-    /// The lamps of the tower, from the bottom to the top.
-    lamps: Vec<Vec3>,
+    tower: Tower,
+    /// The work lamps on the chassis of the transporter erector.
+    erector_lamps: Vec<Vec3>,
     clouds: Vec<Cloud>,
     landmark: Scene,
 }
 
 impl Rocket {
     pub fn new(assets: &Assets) -> Self {
-        let (scene, ids, lamps) = build(assets);
-        let landmark = contrail(&scene, &ids, &lamps);
+        let (scene, ids, tower, erector_lamps) = build(assets);
+        let landmark = contrail(&scene, &ids, &tower.lamps);
         Self {
             scene,
             ids,
-            lamps,
+            tower,
+            erector_lamps,
             clouds: clouds(),
             landmark,
         }
@@ -376,15 +485,49 @@ impl Rocket {
             air.steps = haze_steps(t);
         }
         let mut sparks = Vec::new();
+        let mut rigging = Rigging::default();
 
         // the spark of the greenhouse flies to the foot of the tower and runs up its
-        // corner; the lamps of each level come on behind it
+        // corner. The crane builds the tower one level above it, and the lamps of each
+        // level come on behind it.
         let head = mix(
             PAD_Y + 1.0,
             TOWER_TOP,
             ease(progress(t, LIGHTS.0, LIGHTS.1)),
         );
+        let built = (head + LEVEL_HEIGHT).min(TOWER_TOP);
+        self.pose_tower(&mut scene, t, built);
+        if t > LIGHTS.0 - 0.1 && t < LIGHTS.1 {
+            // welders join the new level at two corners: cold arcs and falling sparks
+            let frame = (t * 60.0) as u32;
+            for (k, (x, z)) in [(-1.0f32, 1.0f32), (1.0, -1.0)].into_iter().enumerate() {
+                let p = vec3(
+                    TOWER_X + x * TOWER_HALF,
+                    built - LEVEL_HEIGHT,
+                    z * TOWER_HALF,
+                );
+                let flicker = 0.4 + 0.6 * hash(frame * 7 + k as u32);
+                sparks.push(Particle::new(p, 0.3, Rgb::hex(0xe8f0ff) * (50.0 * flicker)));
+                sparks.push(Particle::new(p, 1.5, Rgb::hex(COLD_BLUE) * (1.5 * flicker)));
+                for i in 0..12u32 {
+                    let seed = k as u32 * 100 + i;
+                    let age = (t / 0.4 + hash(seed)).fract() * 0.4;
+                    let mut dir = random_direction(seed + 7);
+                    dir.y = dir.y.abs() * 0.3;
+                    let velocity = dir * (6.0 + 6.0 * hash(seed + 3));
+                    let at = p + velocity * age - Vec3::Y * (60.0 * age * age);
+                    let now = velocity - Vec3::Y * (120.0 * age);
+                    let fade = 1.0 - age / 0.4;
+                    sparks.push(
+                        Particle::new(at, 0.07, Rgb::hex(0xffb060) * (40.0 * fade))
+                            .tail(-now * 0.02),
+                    );
+                }
+            }
+        }
+        self.pose_crane(&mut scene, t, built, &mut rigging, &mut sparks);
         let lit: Vec<Mat4> = self
+            .tower
             .lamps
             .iter()
             .filter(|p| t > LIGHTS.0 && p.y <= head + 0.5)
@@ -424,27 +567,50 @@ impl Rocket {
             }
         }
 
-        // the arms swing away: the crew arm and the vent hood before the launch, the
-        // umbilicals at the lift off
-        scene[ids.crew_arm].rotation =
-            Quat::from_rotation_y(-1.4 * ease(progress(t, ARM.0, ARM.1)));
-        let hood = ease(progress(t, HOOD.0, HOOD.1));
-        scene[ids.hood].position.y += 2.5 * smoothstep(0.0, 0.3, hood);
-        scene[ids.hood].rotation = Quat::from_rotation_y(-1.5 * smoothstep(0.2, 1.0, hood));
-        let release = ease(progress(t, LIFTOFF - 0.05, LIFTOFF + 0.45));
-        for (i, id) in ids.umbilicals.into_iter().enumerate() {
+        // the arms stand folded on the tower until the rocket stands. They swing to it,
+        // and away again: the crew arm and the vent hood before the launch, the umbilicals
+        // at the lift off.
+        let tower = &self.tower;
+        let arms_in = ease(progress(t, ARMS_IN.0, ARMS_IN.1));
+        let crew = (1.0 - arms_in).max(ease(progress(t, ARM.0, ARM.1)));
+        scene[tower.crew_arm].rotation = Quat::from_rotation_y(-1.4 * crew);
+        let hood = (1.0 - arms_in).max(ease(progress(t, HOOD.0, HOOD.1)));
+        scene[tower.hood].position.y += 2.5 * smoothstep(0.0, 0.3, hood);
+        scene[tower.hood].rotation = Quat::from_rotation_y(-1.5 * smoothstep(0.2, 1.0, hood));
+        let release = (1.0 - arms_in).max(ease(progress(t, LIFTOFF - 0.05, LIFTOFF + 0.45)));
+        for (i, id) in tower.umbilicals.into_iter().enumerate() {
             scene[id].rotation = Quat::from_rotation_y((1.1 + 0.2 * i as f32) * release);
         }
+        for id in [
+            tower.crew_arm,
+            tower.hood,
+            tower.umbilicals[0],
+            tower.umbilicals[1],
+        ] {
+            let node = &mut scene[id];
+            node.visible = built > node.position.y - 2.0;
+        }
         // the blinking light of the crew arm while it moves
-        if t > ARM.0 - 0.3 && t < ARM.1 + 0.3 {
+        if t > ARMS_IN.0 - 0.1 && t < ARM.1 + 0.3 {
             let blink = if (t * 4.0).fract() < 0.5 { 30.0 } else { 4.0 };
-            let tip = scene.local_to_world(ids.crew_arm, vec3(5.0, 3.4, 1.4));
+            let tip = scene.local_to_world(tower.crew_arm, vec3(5.0, 3.4, 1.4));
             sparks.push(Particle::new(tip, 0.18, Rgb::hex(COLD_BLUE) * blink));
         }
+        // the tanks fill from the bottom, and the frost on the oxygen tank grows with them
+        let fill = ease(progress(t, FUELING.0, FUELING.1));
+        let frost = &mut scene[ids.frost];
+        frost.visible = fill > 0.01;
+        frost.scale.y = fill.max(0.01);
+        frost.position.y = FROST.0 * (1.0 - frost.scale.y);
 
         // the rocket, its flame and the light of the flame
         let rocket_y = BASE_Y + altitude(t);
         scene[ids.rocket].position.y = rocket_y;
+        self.pose_erector(&mut scene, t, &mut rigging, &mut sparks);
+        if let Some(mesh) = scene[ids.rigging].mesh_mut() {
+            let instances = Instances::new(rigging.steel).colors(rigging.paint);
+            mesh.instances = Some(Arc::new(instances));
+        }
         let power = thrust(t);
         // on the deck the flame goes down into the trench; in the air it grows long
         let reach = ((rocket_y - PAD_Y) / 30.0).clamp(0.15, 1.0)
@@ -601,6 +767,150 @@ impl Rocket {
     pub fn landmark(&self) -> Scene {
         self.landmark.clone()
     }
+
+    /// Builds the tower up to the height `built`: the levels below it stand, the elevator
+    /// shaft and the pipes grow with it, and the parts of the top come when it is done.
+    fn pose_tower(&self, scene: &mut Scene, t: f32, built: f32) {
+        let tower = &self.tower;
+        for (id, parts) in
+            tower
+                .nodes
+                .into_iter()
+                .zip([&tower.members, &tower.floors, &tower.rails])
+        {
+            let standing = parts.iter().filter(|p| p.0 <= built + 0.1).map(|p| p.1);
+            if let Some(mesh) = scene[id].mesh_mut() {
+                mesh.instances = Some(Arc::new(Instances::new(standing)));
+            }
+        }
+        for id in tower.grow {
+            scene[id].scale.y = ((built - PAD_Y) / (TOWER_TOP - PAD_Y)).max(0.01);
+        }
+        scene[tower.top].visible = t > LIGHTS.1 - 0.03;
+    }
+
+    /// The crawler crane beside the tower. It swings the levels of the tower up to its
+    /// top, then lowers its boom and drives away before the launch.
+    fn pose_crane(
+        &self,
+        scene: &mut Scene,
+        t: f32,
+        built: f32,
+        rigging: &mut Rigging,
+        sparks: &mut Vec<Particle>,
+    ) {
+        let ids = &self.ids;
+        let to_tower = vec3(TOWER_X, 0.0, 0.0) - CRANE_AT;
+        let building = t < LIGHTS.1;
+        // the boom swings between the pick on the ground and the top of the tower
+        let swing = if building {
+            0.5 - 0.5 * (t * 13.0).cos()
+        } else {
+            0.0
+        };
+        // when the tower stands, the boom turns away from the pad before it comes down
+        let back = ease(progress(t, CRANE_AWAY.0, CRANE_AWAY.0 + 0.2));
+        let slew = (-to_tower.z).atan2(to_tower.x) + 0.35 * swing - 2.0 * back;
+        let lower = ease(progress(t, CRANE_AWAY.0 + 0.08, CRANE_AWAY.0 + 0.3));
+        let away = ease_in(progress(t, CRANE_AWAY.0 + 0.1, CRANE_AWAY.1));
+        let crane = &mut scene[ids.crane];
+        crane.visible = away < 1.0;
+        crane.position = CRANE_AT + vec3(-230.0, 0.0, 30.0) * away;
+        crane.rotation = Quat::from_rotation_y(slew);
+        scene[ids.boom].rotation = Quat::from_rotation_z(mix(1.1, 0.45, lower));
+        if away >= 1.0 {
+            return;
+        }
+        let tip = scene.local_to_world(ids.boom, vec3(BOOM, -0.8, 0.0));
+        for z in [-0.6, 0.6] {
+            let gantry =
+                scene.local_to_world(ids.crane, machines::CRAWLER_GANTRY + vec3(0.0, 0.0, z));
+            rigging.member(gantry, tip, 0.1, DARK);
+        }
+        // the hook: down at the pick when the boom swings out, and with a level of the
+        // tower over the top
+        let hook_y = if building {
+            mix(built + 9.0, 3.0, swing)
+        } else {
+            tip.y - 6.0
+        };
+        let hook = vec3(tip.x, hook_y, tip.z);
+        rigging.member(hook, tip, 0.09, DARK);
+        if building {
+            let (half, top) = (TOWER_HALF - 0.4, hook - Vec3::Y * 1.2);
+            let corners = [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                .map(|(x, z)| top + vec3(x * half, 0.0, z * half));
+            for k in 0..4 {
+                let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                rigging.member(a, hook, 0.06, DARK);
+                rigging.member(a - Vec3::Y * LEVEL_HEIGHT, a, 0.8, 0x7a7e84);
+                rigging.member(a, b, 0.5, 0x7a7e84);
+                let low = Vec3::Y * LEVEL_HEIGHT;
+                rigging.member(a - low, b - low, 0.4, 0x7a7e84);
+            }
+        }
+        let blink = if (t * 1.4).fract() < 0.5 { 40.0 } else { 5.0 };
+        sparks.push(Particle::new(
+            tip + Vec3::Y * 1.2,
+            0.6,
+            Rgb::hex(0xff2010) * blink,
+        ));
+        sparks.push(Particle::new(tip, 0.5, Rgb::hex(COLD) * 30.0));
+        let cab = scene.local_to_world(ids.crane, vec3(6.6, 5.4, 3.2));
+        sparks.push(Particle::new(cab, 0.6, Rgb::hex(COLD) * 20.0));
+    }
+
+    /// The transporter erector: it rolls the rocket from the hangar down the ramp and
+    /// over the trench to the pad, raises it, and tilts its strongback back. Until the
+    /// rocket stands, the rocket rides on it.
+    fn pose_erector(
+        &self,
+        scene: &mut Scene,
+        t: f32,
+        rigging: &mut Rigging,
+        sparks: &mut Vec<Particle>,
+    ) {
+        let ids = &self.ids;
+        let x = mix(
+            HANGAR_X,
+            PIVOT.x,
+            ease_out(progress(t, ROLLOUT.0, ROLLOUT.1)),
+        );
+        let (front, back) = (rail_height(x), rail_height(x + CHASSIS));
+        let pitch = Quat::from_rotation_z(((back - front) / CHASSIS).atan());
+        let pivot = vec3(x, front + PIVOT.y - PAD_Y, 0.0);
+        let raise = -FRAC_PI_2 * (1.0 - ease(progress(t, RAISE.0, RAISE.1)));
+        let tilt = if t < RAISE.1 {
+            raise
+        } else {
+            -0.2 * ease(progress(t, STRONGBACK.0, STRONGBACK.1))
+        };
+        scene[ids.chassis].position = pivot;
+        scene[ids.chassis].rotation = pitch;
+        scene[ids.strongback].position = pivot;
+        scene[ids.strongback].rotation = pitch * Quat::from_rotation_z(tilt);
+        if t < RAISE.1 {
+            let turn = pitch * Quat::from_rotation_z(raise);
+            let rocket = &mut scene[ids.rocket];
+            rocket.rotation = turn;
+            rocket.position = pivot + turn * (vec3(0.0, BASE_Y, 0.0) - PIVOT);
+        }
+        // the rods of the two rams from the chassis to the strongback
+        for z in [-2.2, 2.2] {
+            let from = scene.local_to_world(ids.chassis, vec3(14.0, -1.0, z));
+            let to = scene.local_to_world(ids.strongback, vec3(1.0, 16.0, z));
+            rigging.member(from, to, 0.45, 0xb8bcc0);
+        }
+        for p in &self.erector_lamps {
+            let at = scene.local_to_world(ids.chassis, *p);
+            sparks.push(Particle::new(at, 0.35, Rgb::hex(COLD) * 25.0));
+        }
+        if t < ROLLOUT.1 {
+            let blink = if (t * 3.0).fract() < 0.5 { 30.0 } else { 3.0 };
+            let beacon = scene.local_to_world(ids.chassis, vec3(CHASSIS, 2.1, 0.0));
+            sparks.push(Particle::new(beacon, 0.4, Rgb::hex(0xffa020) * blink));
+        }
+    }
 }
 
 /// Texture coordinates in meters from the positions: each triangle takes the plane that
@@ -624,8 +934,9 @@ fn box_uvs(mut g: Geometry) -> Geometry {
     g
 }
 
-/// The scene template. Returns the positions of the tower lamps too.
-fn build(assets: &Assets) -> (Scene, Ids, Vec<Vec3>) {
+/// The scene template. Returns the tower and the work lamps of the transporter erector
+/// too.
+fn build(assets: &Assets) -> (Scene, Ids, Tower, Vec<Vec3>) {
     let mut scene = Scene::new()
         .environment(Environment::map(
             sky(
@@ -701,7 +1012,7 @@ fn build(assets: &Assets) -> (Scene, Ids, Vec<Vec3>) {
     );
 
     let mouths = pad(&mut scene, &concrete, &steel);
-    let (crew_arm, umbilicals, hood, lamps) = tower(&mut scene, assets, &steel, &dark, &white);
+    let tower = tower(&mut scene, assets, &steel, &dark, &white);
     let tower_lamps = scene.add(
         Node::instanced(
             Geometry::cuboid(0.55, 0.4, 0.55),
@@ -718,7 +1029,42 @@ fn build(assets: &Assets) -> (Scene, Ids, Vec<Vec3>) {
     site(&mut scene, assets, &concrete, &steel, &white);
 
     let rocket = scene.add(Node::group().at(0.0, BASE_Y, 0.0));
-    vehicle(&mut scene, rocket);
+    let frost = vehicle(&mut scene, rocket);
+
+    // the machines of the time-lapse. The landmark of shot 9 leaves them out.
+    let erector = machines::erector(PIVOT.x, BODY, PIVOT.y - PAD_Y, STRONGBACK_LENGTH);
+    let chassis = scene.add(Node::group().with_position(PIVOT).named("surroundings"));
+    scene.add_to(
+        chassis,
+        Node::mesh(
+            erector.chassis,
+            Material::standard(0xc8c6c0).roughness(0.55),
+        ),
+    );
+    scene.add_to(chassis, Node::mesh(erector.wheels, dark.clone()));
+    let strongback = scene.add(Node::group().with_position(PIVOT).named("surroundings"));
+    scene.add_to(
+        strongback,
+        Node::mesh(
+            erector.strongback,
+            Material::standard(0xdedbd4).roughness(0.5),
+        ),
+    );
+    let crawler = machines::crawler(BOOM);
+    let yellow = Material::standard(YELLOW).roughness(0.55);
+    let crane = scene.add(Node::group().with_position(CRANE_AT).named("surroundings"));
+    scene.add_to(crane, Node::mesh(crawler.body, yellow.clone()));
+    let boom = scene.add_to(crane, Node::group().with_position(machines::CRAWLER_FOOT));
+    scene.add_to(boom, Node::mesh(crawler.boom, yellow));
+    let rigging = scene.add(
+        Node::instanced(
+            Geometry::cuboid(1.0, 1.0, 1.0).translate(0.0, 0.5, 0.0),
+            Material::standard(0xffffff).roughness(0.6),
+            Instances::default(),
+        )
+        .shadows(false, false)
+        .named("surroundings"),
+    );
 
     // the flame: a white core and a slim orange body inside the soft particles of the
     // frames, scaled along Y by the frames
@@ -761,7 +1107,7 @@ fn build(assets: &Assets) -> (Scene, Ids, Vec<Vec3>) {
     let mouth_lights = [-1.0f32, 1.0].map(|side| {
         scene.add(
             Node::light(Light::point(0xffa060, 1.2e4, 160.0))
-                .at(side * (MOUTH_X + 10.0), 6.0, 0.0)
+                .at(side * (MOUTH_X + 10.0), 3.0, 0.0)
                 .hidden(),
         )
     });
@@ -805,16 +1151,19 @@ fn build(assets: &Assets) -> (Scene, Ids, Vec<Vec3>) {
         flame_light,
         mouth_lights,
         mouths,
-        crew_arm,
-        umbilicals,
-        hood,
         tower_lamps,
         tower_lights,
         line_light,
         smoke,
         sparks,
+        frost,
+        chassis,
+        strongback,
+        crane,
+        boom,
+        rigging,
     };
-    (scene, ids, lamps)
+    (scene, ids, tower, erector.lamps)
 }
 
 /// The pad: a raised concrete hardstand with the flame trench through it, the launch mount
@@ -906,41 +1255,68 @@ fn pad(scene: &mut Scene, concrete: &Material, steel: &Material) -> NodeId {
     mouths
 }
 
+/// The service tower. The frames build it up level by level: they keep the parts below
+/// the top of the build and hide the rest.
+struct Tower {
+    /// The steel members, the floors and the rails, each with the height of its top.
+    members: Vec<(f32, Mat4)>,
+    floors: Vec<(f32, Mat4)>,
+    rails: Vec<(f32, Mat4)>,
+    /// The instanced nodes of the members, the floors and the rails.
+    nodes: [NodeId; 3],
+    /// The nodes that grow from the deck with the tower: the elevator shaft and the pipes.
+    grow: [NodeId; 2],
+    /// The group of the parts that come last: the machine room, the hammerhead crane and
+    /// the lightning mast.
+    top: NodeId,
+    crew_arm: NodeId,
+    umbilicals: [NodeId; 2],
+    hood: NodeId,
+    /// The places of the lamps, from the bottom to the top.
+    lamps: Vec<Vec3>,
+}
+
 /// The fixed service tower: a square steel lattice with a floor at each level, the
 /// elevator, pipes, a hammerhead crane and a lightning mast on the top, and the arms to the
-/// rocket. Returns the crew access arm, the two umbilical arms, the vent hood, and the
-/// places of the lamps, from the bottom to the top.
+/// rocket.
 fn tower(
     scene: &mut Scene,
     assets: &Assets,
     steel: &Material,
     dark: &Material,
     white: &Material,
-) -> (NodeId, [NodeId; 2], NodeId, Vec<Vec3>) {
+) -> Tower {
     let unit = Arc::new(Geometry::cuboid(1.0, 1.0, 1.0).translate(0.0, 0.5, 0.0));
     let corners = [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
         .map(|(x, z)| vec3(TOWER_X + x * TOWER_HALF, PAD_Y, z * TOWER_HALF));
     let at = |p: Vec3, y: f32| p + Vec3::Y * y;
     let top = TOWER_TOP - PAD_Y;
     let mut members = Vec::new();
-    for c in corners {
-        members.push(span(c, at(c, top), 0.9));
-    }
     for l in 0..LEVELS {
         let (y0, y1) = (l as f32 * LEVEL_HEIGHT, (l + 1) as f32 * LEVEL_HEIGHT);
+        let level = PAD_Y + y1;
         for k in 0..4 {
             let (a, b) = (corners[k], corners[(k + 1) % 4]);
-            members.push(span(at(a, y1), at(b, y1), 0.5));
+            members.push((level, span(at(a, y0), at(a, y1), 0.9)));
+            members.push((level, span(at(a, y1), at(b, y1), 0.5)));
             // K braces: from both lower corners to the middle of the upper beam
             let mid = at(a.lerp(b, 0.5), y1);
-            members.push(span(at(a, y0), mid, 0.26));
-            members.push(span(at(b, y0), mid, 0.26));
+            members.push((level, span(at(a, y0), mid, 0.26)));
+            members.push((level, span(at(b, y0), mid, 0.26)));
         }
     }
-    // the hammerhead crane on the top: a mast, and a jib over the pad
+    let members_node = scene.add(Node::instanced(
+        unit.clone(),
+        steel.clone(),
+        Instances::new(members.iter().map(|m| m.1)),
+    ));
+
+    // the parts of the top: the hammerhead crane with a mast and a jib over the pad, its
+    // cab, the machine room and the lightning mast
+    let crown = scene.add(Node::group());
     let crane_y = TOWER_TOP + 4.0;
     let mast = vec3(TOWER_X, TOWER_TOP, 0.0);
-    members.push(span(mast, mast + Vec3::Y * 5.0, 1.6));
+    let mut jib = vec![span(mast, mast + Vec3::Y * 5.0, 1.6)];
     for z in [-0.8f32, 0.8] {
         for (a, b) in [
             (
@@ -952,22 +1328,43 @@ fn tower(
                 vec3(TOWER_X + 20.0, crane_y + 1.0, z),
             ),
         ] {
-            members.push(span(a, b, 0.3));
+            jib.push(span(a, b, 0.3));
         }
         for i in 0..16 {
             let x = TOWER_X - 10.0 + i as f32 * 2.0;
-            members.push(span(
+            jib.push(span(
                 vec3(x, crane_y, z),
                 vec3(x + 2.0, crane_y + 1.5 - 0.04 * i as f32, z),
                 0.14,
             ));
         }
     }
-    scene.add(Node::instanced(
-        unit.clone(),
-        steel.clone(),
-        Instances::new(members),
-    ));
+    scene.add_to(
+        crown,
+        Node::instanced(unit.clone(), steel.clone(), Instances::new(jib)),
+    );
+    let clad = assets.corrugated.material(0x8a8e94, 0.6, 0.5);
+    scene.add_to(
+        crown,
+        Node::mesh(
+            box_uvs(Geometry::cuboid(9.0, 4.0, 9.0).translate(TOWER_X, TOWER_TOP - 2.2, 0.0)),
+            clad.clone(),
+        ),
+    );
+    scene.add_to(
+        crown,
+        Node::mesh(
+            Geometry::cylinder(0.12, 0.45, 20.0, 8).translate(TOWER_X, crane_y + 11.0, 0.0),
+            Material::standard(0xd8d0b0).roughness(0.5),
+        ),
+    );
+    scene.add_to(
+        crown,
+        Node::mesh(
+            Geometry::cuboid(3.0, 2.2, 2.4).translate(TOWER_X + 2.5, crane_y - 0.9, 0.0),
+            Material::standard(0xd8b020).roughness(0.5),
+        ),
+    );
 
     // a floor at each level with a walkway around the tower, and its rails
     let mut floors = Vec::new();
@@ -975,81 +1372,74 @@ fn tower(
     let reach = TOWER_HALF + 1.3;
     for l in 1..=LEVELS {
         let y = PAD_Y + l as f32 * LEVEL_HEIGHT;
-        floors.push(Mat4::from_scale_rotation_translation(
-            vec3(2.0 * reach, 0.25, 2.0 * reach),
-            Quat::IDENTITY,
-            vec3(TOWER_X, y - 0.25, 0.0),
+        floors.push((
+            y,
+            Mat4::from_scale_rotation_translation(
+                vec3(2.0 * reach, 0.25, 2.0 * reach),
+                Quat::IDENTITY,
+                vec3(TOWER_X, y - 0.25, 0.0),
+            ),
         ));
         let edge = [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
             .map(|(x, z)| vec3(TOWER_X + x * reach, y + 1.0, z * reach));
         for k in 0..4 {
-            rails.push(span(edge[k], edge[(k + 1) % 4], 0.07));
+            rails.push((y, span(edge[k], edge[(k + 1) % 4], 0.07)));
         }
     }
-    scene.add(Node::instanced(
+    let floors_node = scene.add(Node::instanced(
         unit.clone(),
         Material::standard(0x3a3c40).roughness(0.8),
-        Instances::new(floors),
+        Instances::new(floors.iter().map(|f| f.1)),
     ));
-    scene.add(
+    let rails_node = scene.add(
         Node::instanced(
             Geometry::cylinder(1.0, 1.0, 1.0, 4).translate(0.0, 0.5, 0.0),
             Material::standard(0xc8a020).roughness(0.6),
-            Instances::new(rails),
+            Instances::new(rails.iter().map(|r| r.1)),
         )
         .shadows(false, false),
     );
-    // the elevator shaft on the back, clad in metal, and the machine room on the top
-    let clad = assets.corrugated.material(0x8a8e94, 0.6, 0.5);
+    // the elevator shaft on the back, clad in metal. It stands on the deck, so the frames
+    // grow it with the tower.
     let shaft = top + 3.0;
-    scene.add(Node::mesh(
-        box_uvs(Geometry::cuboid(3.6, shaft, 3.6).translate(
-            TOWER_X - TOWER_HALF - 1.9,
-            PAD_Y + shaft * 0.5,
-            -1.5,
-        )),
-        clad.clone(),
-    ));
-    scene.add(Node::mesh(
-        box_uvs(Geometry::cuboid(9.0, 4.0, 9.0).translate(TOWER_X, TOWER_TOP - 2.2, 0.0)),
-        clad,
-    ));
+    let shaft = scene.add(
+        Node::mesh(
+            box_uvs(Geometry::cuboid(3.6, shaft, 3.6).translate(
+                TOWER_X - TOWER_HALF - 1.9,
+                PAD_Y + shaft * 0.5,
+                -1.5,
+            ))
+            .translate(0.0, -PAD_Y, 0.0),
+            clad,
+        )
+        .at(0.0, PAD_Y, 0.0),
+    );
     // pipes and a cable tray up the front of the tower, with clamps at each level
     let mut pipes = Vec::new();
     for (k, r) in [0.42f32, 0.32, 0.26].into_iter().enumerate() {
         let x = FACE_X - 0.8 - k as f32 * 1.1;
         let z = TOWER_HALF + 0.7;
-        pipes.push(Geometry::cylinder(r, r, top - 12.0, 12).translate(
-            x,
-            PAD_Y + (top - 12.0) * 0.5,
-            z,
-        ));
+        pipes.push(Geometry::cylinder(r, r, top - 12.0, 12).translate(x, (top - 12.0) * 0.5, z));
         for l in 0..LEVELS - 3 {
             pipes.push(Geometry::cuboid(r * 2.6, 0.3, r * 2.6).translate(
                 x,
-                PAD_Y + 2.0 + l as f32 * LEVEL_HEIGHT,
+                2.0 + l as f32 * LEVEL_HEIGHT,
                 z,
             ));
         }
     }
     pipes.push(Geometry::cuboid(0.7, top, 0.25).translate(
         TOWER_X - 1.5,
-        PAD_Y + top * 0.5,
+        top * 0.5,
         TOWER_HALF + 0.5,
     ));
-    scene.add(Node::mesh(
-        Geometry::merge(pipes),
-        Material::standard(0x9a9890).roughness(0.5),
-    ));
-    // the lightning mast on the crane, and the cab of the crane
-    scene.add(Node::mesh(
-        Geometry::cylinder(0.12, 0.45, 20.0, 8).translate(TOWER_X, crane_y + 11.0, 0.0),
-        Material::standard(0xd8d0b0).roughness(0.5),
-    ));
-    scene.add(Node::mesh(
-        Geometry::cuboid(3.0, 2.2, 2.4).translate(TOWER_X + 2.5, crane_y - 0.9, 0.0),
-        Material::standard(0xd8b020).roughness(0.5),
-    ));
+    let pipes = scene.add(
+        Node::mesh(
+            Geometry::merge(pipes),
+            Material::standard(0x9a9890).roughness(0.5),
+        )
+        .at(0.0, PAD_Y, 0.0),
+    );
 
     // the umbilical arms: a lattice beam to the rocket, with hoses that hang to it
     let umbilicals = [BASE_Y + 36.0, BASE_Y + 48.5].map(|y| {
@@ -1153,15 +1543,26 @@ fn tower(
                 .map(|side| vec3(TOWER_X + side * (TOWER_HALF + 1.0), y, TOWER_HALF + 1.0))
         })
         .collect();
-    (crew_arm, umbilicals, hood, lamps)
+    Tower {
+        members,
+        floors,
+        rails,
+        nodes: [members_node, floors_node, rails_node],
+        grow: [shaft, pipes],
+        top: crown,
+        crew_arm,
+        umbilicals,
+        hood,
+        lamps,
+    }
 }
 
 /// The rocket below the group node `rocket`, with its engines at Y = 0: a first stage with
 /// frost on its oxygen tank, a black interstage with grid fins, the second stage and the
-/// fairing.
-fn vehicle(scene: &mut Scene, rocket: NodeId) {
+/// fairing. Returns the node of the frost.
+fn vehicle(scene: &mut Scene, rocket: NodeId) -> NodeId {
     let paint = Material::standard(0xecebe6).roughness(0.32).clearcoat(0.6);
-    let frost = Material::standard(0xf4f8ff).roughness(0.95);
+    let frost = Material::standard(0xdce8f6).roughness(1.0);
     let black = Material::standard(0x16171a).roughness(0.6);
     let soot = Material::standard(0x3a3430).roughness(0.85);
     let mut fairing = vec![
@@ -1183,14 +1584,17 @@ fn vehicle(scene: &mut Scene, rocket: NodeId) {
     ]);
     scene.add_to(rocket, Node::mesh(body, paint));
     // frost on the oxygen tank, with a ragged lower edge
-    let mut frost_band = Geometry::lathe(&[vec2(BODY + 0.012, 26.0), vec2(BODY + 0.012, 40.6)], 64);
+    let mut frost_band = Geometry::lathe(
+        &[vec2(BODY + 0.012, FROST.0), vec2(BODY + 0.012, FROST.1)],
+        64,
+    );
     for p in &mut frost_band.positions {
         if p.y < 30.0 {
             let a = p.z.atan2(p.x);
             p.y += 2.5 * (0.5 + 0.5 * (a * 5.0).sin() * (a * 3.0 + 1.0).cos());
         }
     }
-    scene.add_to(rocket, Node::mesh(frost_band, frost));
+    let frost = scene.add_to(rocket, Node::mesh(frost_band, frost));
     // panel seams of the tanks: thin gray rings
     let seams =
         Geometry::merge([3.2f32, 9.0, 14.8, 20.6, 25.8, 33.0, 48.5, 54.7].map(|y| {
@@ -1274,6 +1678,7 @@ fn vehicle(scene: &mut Scene, rocket: NodeId) {
             Instances::new(engines),
         ),
     );
+    frost
 }
 
 /// The rest of the launch site: the tanks of oxygen and kerosene with their pipes, the
@@ -1439,20 +1844,30 @@ fn site(
         Material::unlit(Rgb::hex(AMBER) * 5.0),
     ));
     // The landmark of shot 9 leaves out the nodes named "surroundings".
+    let (walls, inside) = machines::hangar(90.0, 46.0, 44.0);
     scene.add(
         Node::mesh(
-            box_uvs(Geometry::cuboid(130.0, 44.0, 64.0).translate(420.0, 22.0, -300.0)),
+            box_uvs(walls.translate(HANGAR, 0.0, 0.0)),
             assets.corrugated.material(0xb8b8b4, 0.6, 0.4),
         )
         .named("surroundings"),
     );
     scene.add(
         Node::mesh(
-            Geometry::cuboid(40.0, 34.0, 0.2).translate(400.0, 17.0, -267.9),
-            Material::unlit(Rgb::hex(COLD) * 0.9),
+            inside.translate(HANGAR, 0.0, 0.0),
+            Material::unlit(Rgb::hex(COLD) * 1.3),
         )
+        .shadows(false, false)
         .named("surroundings"),
     );
+    // a row of work lamps over the door
+    let lamps = (0..9)
+        .map(|i| {
+            let z = -14.0 + 3.5 * i as f32;
+            Particle::new(vec3(HANGAR - 1.5, 37.0, z), 0.5, Rgb::hex(COLD) * 25.0)
+        })
+        .collect();
+    scene.add(Node::particles(lamps, Blending::Additive).named("surroundings"));
     // low lamps along both edges of the road: a dotted line from the camera to the pad
     let mut lamps = Vec::new();
     for i in 0..22 {
@@ -1503,16 +1918,50 @@ fn site(
         )
         .named("surroundings"),
     );
-    // the rails of the transporter from the hangar to the pad
-    for z in [-3.0f32, 3.0] {
-        scene.add(
-            Node::mesh(
-                Geometry::cuboid(380.0, 0.35, 0.5).translate(230.0, 0.18, z),
-                steel.clone(),
-            )
+    // the way of the transporter erector from the hangar: rails on the ground, a ramp up
+    // to the height of the deck, and a bridge over the mouth of the trench
+    let ramp = Geometry::extrude_segments(
+        &[vec2(RAMP.0, 0.0), vec2(RAMP.1, 0.0), vec2(RAMP.0, PAD_Y)],
+        13.0,
+        0.2,
+        1,
+    );
+    let bridge = Geometry::cuboid(RAMP.0 - MOUTH_X, 1.3, 13.0).translate(
+        RAMP.0.midpoint(MOUTH_X),
+        PAD_Y - 0.65,
+        0.0,
+    );
+    scene.add(
+        Node::mesh(box_uvs(Geometry::merge([ramp, bridge])), concrete.clone())
             .named("surroundings"),
-        );
+    );
+    let mut rails = Vec::new();
+    for z in [-3.0f32, 3.0] {
+        let points = [
+            vec3(2.0, PAD_Y, z),
+            vec3(RAMP.0, PAD_Y, z),
+            vec3(RAMP.1, 0.0, z),
+            vec3(HANGAR + 88.0, 0.0, z),
+        ];
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let d = b - a;
+            let turn = Quat::from_rotation_z(d.y.atan2(d.x));
+            rails.push(Mat4::from_scale_rotation_translation(
+                vec3(d.length(), 0.3, 0.5),
+                turn,
+                (a + b) * 0.5 + Vec3::Y * 0.15,
+            ));
+        }
     }
+    scene.add(
+        Node::instanced(
+            Geometry::cuboid(1.0, 1.0, 1.0),
+            steel.clone(),
+            Instances::new(rails),
+        )
+        .named("surroundings"),
+    );
 }
 
 /// The landmark of shot 9: the pad, the tower and its lit lamps from the template, and

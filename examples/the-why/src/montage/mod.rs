@@ -1,25 +1,38 @@
 //! Shot 8, "The why" (67 to 82 s of the film). After the engineer draws his line, the
-//! machines build what people need. Each part starts from a warm line:
+//! machines build what people need, in six parts. Each part starts from a warm line, and
+//! the light goes from night to dawn. The machines carry cold blue-white light. What they
+//! build carries warm light.
 //!
-//! - 0 to 5 s, [`bridge`]: the line is the pilot line of the Golden Gate Bridge at blue hour.
-//!   Machines build the bridge in the real strait, and San Francisco and Sausalito light
-//!   up.
-//! - 5 to 10 s, [`greenhouse`]: first light. The headlights of the first car become a point
-//!   of light that draws a ring on the sand. Drones build a glass dome on it, and the dome
-//!   turns green. A spark of the ring flies away, and the camera whips after it.
-//! - 10 to 15 s, [`rocket`]: dawn. The whip pan lands on a launch pad, and the spark runs up
-//!   the tower as a line of warm lights. The rocket lifts off in clouds of steam, and its
-//!   flare fills the frame for the cut to the sunrise of shot 9.
+//! The times are seconds of the shot. The parts play faster than their own time where the
+//! shot needs it (see [`PARTS`]).
 //!
-//! The light goes from night to dawn: blue hour at the bridge, first light at the
-//! greenhouse, dawn at the rocket, then the sunrise of shot 9. The machines carry cold
-//! blue-white light. What they build carries warm light.
+//! - 0.0 to 3.75, [`bridge`]: blue hour. The line is the pilot line of the Golden Gate
+//!   Bridge. Machines build the bridge in the real strait, the lights of San Francisco and
+//!   Sausalito come on, and the headlights of the first car flare up.
+//! - 3.75 to 4.99, [`wind`]: night. The flare sits on the crest of a ridge and splits
+//!   into the warm line along it. Turbines rise, their blades turn, and the lights of the
+//!   village below come on. A tree wipes the picture.
+//! - 4.99 to 6.08, [`school`]: night. The wipe goes on past a tree of the school yard. A
+//!   gantry prints the walls of a school along the warm footprint, the windows light up,
+//!   and a flag runs up. The camera tilts up after the flag into the stars.
+//! - 6.08 to 7.24, [`water`]: before the dawn. The tilt comes down from the same stars to
+//!   a warm line on a dry plain. A paver builds a canal on it, the water runs down the
+//!   canal behind a warm head, and the field turns green in rows.
+//! - 7.24 to 10.89, [`greenhouse`]: first light. The head of the water is the pen that
+//!   draws a ring on the sand. Machines build a glass dome on it, and the dome turns
+//!   green. A spark of the ring flies away, and the camera whips after it.
+//! - 10.89 to 15.0, [`rocket`]: dawn. The whip pan lands on a launch pad, and the spark
+//!   runs up the tower. The rocket lifts off, and its flare fills the frame for the cut to
+//!   the sunrise of shot 9.
 
 mod bay;
 mod bridge;
 mod golden_gate;
 mod greenhouse;
 mod rocket;
+pub mod school;
+pub mod water;
+pub mod wind;
 
 use fframes::{Svgr, svgr};
 use fframes_3d::math::hash;
@@ -31,10 +44,113 @@ use crate::look::{BAR, PICTURE_HEIGHT};
 
 /// The length of the shot in seconds.
 pub const DURATION: f32 = 15.0;
-/// The start of the greenhouse part in seconds.
-pub const GREENHOUSE: f32 = 5.0;
-/// The start of the rocket part in seconds.
-pub const ROCKET: f32 = 10.0;
+/// The cuts between the six parts, in seconds of the shot. Each cut lies between two
+/// frames at 60 fps, so the motion blur of a frame never mixes two parts.
+pub const CUTS: [f32; 5] = [
+    224.5 / 60.0,
+    294.5 / 60.0,
+    364.5 / 60.0,
+    434.5 / 60.0,
+    653.5 / 60.0,
+];
+/// The start of the greenhouse part in seconds of the shot.
+pub const GREENHOUSE: f32 = CUTS[3];
+/// The start of the rocket part in seconds of the shot.
+pub const ROCKET: f32 = CUTS[4];
+/// The rate of the time of the quick builds: they play a little faster than their own
+/// time.
+const BUILD_RATE: f32 = wind::LENGTH / (CUTS[1] - CUTS[0]);
+
+/// The parts of the shot, in their order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Bridge,
+    Wind,
+    School,
+    Water,
+    Greenhouse,
+    Rocket,
+}
+
+/// A key of the time of a part: the second of the shot, the second of the part, and the
+/// seconds of the part per second of the shot there.
+type Key = (f32, f32, f32);
+
+/// The time of each part, as keys. Between two keys the time of the part is a cubic curve
+/// with the rates of the keys, so its speed changes smoothly. The bridge, the
+/// greenhouse and the rocket have 5 s each, and play faster in the middle. They play at
+/// their own speed where their transitions need it: the flare of the car, and both sides
+/// of the whip pan.
+const PARTS: [(Part, &[Key]); 6] = [
+    (Part::Bridge, &[(0.0, 0.0, 0.9), (CUTS[0], 5.0, 1.0)]),
+    (
+        Part::Wind,
+        &[
+            (CUTS[0], 0.0, BUILD_RATE),
+            (CUTS[1], wind::LENGTH, BUILD_RATE),
+        ],
+    ),
+    (
+        Part::School,
+        &[
+            (CUTS[1], 0.0, BUILD_RATE),
+            (CUTS[2], school::LENGTH, BUILD_RATE),
+        ],
+    ),
+    (
+        Part::Water,
+        &[
+            (CUTS[2], 0.0, BUILD_RATE),
+            (CUTS[3], water::LENGTH, BUILD_RATE),
+        ],
+    ),
+    // the ring and the climb of the light (0 to 2.6) stay readable, the dome turns green
+    // at about 3.0
+    (
+        Part::Greenhouse,
+        &[
+            (CUTS[3], 0.0, 1.1),
+            (CUTS[3] + 2.3, 2.6, 1.2),
+            (CUTS[4], 5.0, 1.0),
+        ],
+    ),
+    // the build of the pad plays fast, the launch near its own speed
+    (
+        Part::Rocket,
+        &[
+            (CUTS[4], 0.0, 1.0),
+            (CUTS[4] + 1.35, 2.0, 1.05),
+            (DURATION, 5.0, 1.1),
+        ],
+    ),
+];
+
+/// The part at `t` seconds of the shot, and the time in it.
+fn part_at(t: f32) -> (Part, f32) {
+    let (part, keys) = PARTS[CUTS.partition_point(|&cut| cut <= t)];
+    (part, warp(keys, t))
+}
+
+/// The time of a part at `t` seconds of the shot, from its keys, see [`PARTS`]. Outside the
+/// keys the time goes on at the rate of the nearest key, for the motion blur samples.
+fn warp(keys: &[Key], t: f32) -> f32 {
+    let i = keys.partition_point(|k| k.0 <= t).clamp(1, keys.len() - 1);
+    let ((t0, p0, v0), (t1, p1, v1)) = (keys[i - 1], keys[i]);
+    if t < t0 {
+        return p0 + v0 * (t - t0);
+    }
+    if t > t1 {
+        return p1 + v1 * (t - t1);
+    }
+    // the cubic Hermite curve from (t0, p0) with the slope v0 to (t1, p1) with the slope v1
+    let h = t1 - t0;
+    let s = (t - t0) / h;
+    let (s2, s3) = (s * s, s * s * s);
+    (2.0 * s3 - 3.0 * s2 + 1.0) * p0
+        + (s3 - 2.0 * s2 + s) * h * v0
+        + (3.0 * s2 - 2.0 * s3) * p1
+        + (s3 - s2) * h * v1
+}
 
 /// The warm core of human intent.
 const AMBER: u32 = 0xffb35c;
@@ -47,13 +163,21 @@ const COLD_BLUE: u32 = 0x7fb4ff;
 /// Half the angle of the whip pan from the greenhouse to the rocket, in radians. The camera
 /// turns this much to the left on each side of the cut.
 const WHIP_HALF: f32 = 0.72;
+/// The pitch of the view in radians at the cut from the school to the water: up in the
+/// stars. The school tilts up to it, and the water tilts down from it.
+const SKY_TILT: f32 = 0.5;
+/// The rate of that tilt at the cut in rad/s.
+const SKY_RATE: f32 = 2.6;
 /// The rate of the whip pan in 1/s. At the cut the camera turns at `WHIP_HALF * WHIP_RATE`
 /// rad/s.
 const WHIP_RATE: f32 = 12.0;
 
-/// The shot: the templates of the three parts.
+/// The shot: the templates of the six parts.
 pub struct MontageSet {
     bridge: bridge::Bridge,
+    wind: wind::Wind,
+    school: school::School,
+    water: water::Water,
     greenhouse: greenhouse::Greenhouse,
     rocket: rocket::Rocket,
 }
@@ -73,15 +197,18 @@ pub struct Landmarks {
 }
 
 impl MontageSet {
-    /// Builds the three sets. It takes about a second.
+    /// Builds the six sets. It takes about a second.
     pub fn new(assets: &Assets) -> Self {
         // The glow of the greenhouse sky is where the glow of the rocket sky is at the cut,
         // so the whip pan crosses one sky.
         let heading = |camera: Camera| camera.forward().z.atan2(camera.forward().x);
-        let glow = rocket::GLOW + heading(greenhouse::camera_at(ROCKET - GREENHOUSE))
-            - heading(rocket::camera_at(0.0));
+        let glow =
+            rocket::GLOW + heading(greenhouse::camera_at(5.0)) - heading(rocket::camera_at(0.0));
         Self {
             bridge: bridge::Bridge::new(assets),
+            wind: wind::Wind::new(assets),
+            school: school::School::new(assets),
+            water: water::Water::new(assets, school::heading()),
             greenhouse: greenhouse::Greenhouse::new(assets, glow),
             rocket: rocket::Rocket::new(assets),
         }
@@ -99,33 +226,43 @@ impl MontageSet {
 
     /// The scene and the camera at `t` seconds into the shot.
     pub fn moment(&self, t: f32) -> (Scene, Camera) {
-        if t < GREENHOUSE {
-            self.bridge.moment(t)
-        } else if t < ROCKET {
-            self.greenhouse.moment(t - GREENHOUSE)
-        } else {
-            self.rocket.moment(t - ROCKET)
+        let (part, x) = part_at(t);
+        match part {
+            Part::Bridge => self.bridge.moment(x),
+            Part::Wind => self.wind.moment(x),
+            Part::School => self.school.moment(x),
+            Part::Water => self.water.moment(x),
+            Part::Greenhouse => self.greenhouse.moment(x),
+            Part::Rocket => self.rocket.moment(x),
         }
     }
 
     /// The motion blur samples at `t`: more on the fast camera moves and the transitions.
     pub fn shutter(&self, t: f32) -> usize {
         // The whip pan: about one sample for each 20 pixels of blur at 1920 pixels, and 6 at
-        // most, so the frame stays within its time.
-        let whip = WHIP_HALF * WHIP_RATE / (WHIP_RATE * (t - ROCKET)).cosh().powi(2);
-        let whip = (whip * 0.9).ceil() as usize;
-        let other = match t {
-            // the pull back from the cable
-            t if t < 1.8 => 3,
-            // the car on the bridge: its glare is wider than the gap between two samples
-            t if (4.4..GREENHOUSE).contains(&t) => 2,
-            // the pen at the start of the ring
-            t if (GREENHOUSE..5.6).contains(&t) => 3,
-            // the shake of the launch and the climb
-            t if t > ROCKET + rocket::LIFTOFF => 2,
-            _ => 1,
+        // most, so the frame stays within its time. Both sides of the whip play at their
+        // own speed.
+        let whip = |x: f32| {
+            let rate = WHIP_HALF * WHIP_RATE / (WHIP_RATE * x).cosh().powi(2);
+            (rate * 0.9).ceil() as usize
         };
-        whip.clamp(other, 6)
+        let (part, x) = part_at(t);
+        match part {
+            Part::Bridge => match x {
+                // the pull back from the cable
+                x if x < 1.8 => 3,
+                // the car on the bridge: its glare is wider than the gap between two samples
+                x if x > 4.4 => 2,
+                _ => 1,
+            },
+            Part::Wind => self.wind.shutter(x),
+            Part::School => self.school.shutter(x),
+            Part::Water => self.water.shutter(x),
+            // the pen is fastest at the start of the ring
+            Part::Greenhouse => whip(x - 5.0).clamp(if x < 1.4 { 3 } else { 1 }, 6),
+            // the shake of the launch and the climb
+            Part::Rocket => whip(x).clamp(if x > rocket::LIFTOFF { 2 } else { 1 }, 6),
+        }
     }
 
     /// The flare of the last frames turns the picture to warm white for the cut to the sun of
@@ -167,7 +304,10 @@ pub fn golden_gate_landmark() -> Scene {
 
 /// The opacity of the warm white that [`MontageSet::overlay`] draws at `t`, `0..1`.
 pub fn final_white(t: f32) -> f32 {
-    rocket::final_white(t - ROCKET)
+    match part_at(t) {
+        (Part::Rocket, x) => rocket::final_white(x),
+        _ => 0.0,
+    }
 }
 
 /// The turn of the whip pan to the left at `x` seconds from the cut, in radians. It goes
@@ -348,6 +488,33 @@ fn ridges(radius: f32, low: f32, high: f32) -> Geometry {
         }
     }
     Geometry::new(positions, Vec::new(), uvs, indices)
+}
+
+/// A point in the unit ball for the seed `i`, denser at the middle.
+fn random_in_ball(i: u32) -> Vec3 {
+    math::random_direction(i) * hash(i + 1).cbrt()
+}
+
+/// The stars of the night sky on a sphere 4500 m around `center`: few bright ones and many
+/// faint ones, in the colors of their temperatures. `light` scales them, so they can fade
+/// at dawn.
+fn stars(center: Vec3, light: f32) -> Vec<Particle> {
+    let colors = [0xa8b8ff, 0xd8e0ff, 0xfff8f0, 0xffe0c0, 0xffc890];
+    (0..5000u32)
+        .filter_map(|i| {
+            let dir = math::random_direction(i * 3 + 77);
+            if dir.y < 0.02 {
+                return None;
+            }
+            let bright = hash(i * 3 + 78).powi(6);
+            let color = Rgb::hex(colors[(hash(i * 3 + 79) * 5.0) as usize % 5]);
+            Some(Particle::new(
+                center + dir * 4500.0,
+                2.0 + 1.5 * bright,
+                color * (light * (0.6 + 9.0 * bright)),
+            ))
+        })
+        .collect()
 }
 
 /// A camera with a lens of `mm` millimeters from `position` to `target`, with the clip

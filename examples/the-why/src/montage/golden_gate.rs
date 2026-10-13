@@ -52,6 +52,16 @@ const SECTIONS: [(f32, f32, f32); 5] = [
     (205.0, 10.2, 7.6),
 ];
 
+/// The size of the cross section of a tower leg at the height `y`: along X and along Z.
+pub fn leg_size(y: f32) -> Vec2 {
+    let s = SECTIONS
+        .iter()
+        .rev()
+        .find(|s| s.0 <= y)
+        .unwrap_or(&SECTIONS[0]);
+    vec2(s.1, s.2)
+}
+
 /// The height of the road at `x`: an arch of 3 m over the main span, and down to the
 /// ground on the approaches.
 pub fn road_y(x: f32) -> f32 {

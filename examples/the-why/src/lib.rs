@@ -221,7 +221,7 @@ impl Video for TheWhy {
                 .fade_in(1.0)
                 .fade_out(1.5),
             // the rush past the Empire State Building
-            sound("sfx_streak.mp3", 30.6, -15.0),
+            sound("sfx_streak.mp3", 30.9, -15.0),
             sound("sfx_crane.mp3", 34.0, -18.0).fade_out(1.0),
             sound("sfx_wind.mp3", 42.0, 3.0).fade_in(1.5).fade_out(1.0),
             // the knee on the ground, the finger in the dust, the embers of the line
@@ -236,24 +236,36 @@ impl Video for TheWhy {
             // the wave, the builds, the sunrise
             sound("sfx_swell.mp3", 59.25, -11.0).fade_out(1.0),
             sound("sfx_wave.mp3", 60.3, -9.0),
-            // the Golden Gate: the bay at dusk, the spinning wheels, the cables, the deck
-            sound("sfx_foghorn.mp3", 67.5, -19.0).fade_out(1.5),
-            sound("sfx_spin.mp3", 68.85, -16.0).fade_out(0.5),
-            sound("sfx_cables.mp3", 69.6, -11.0),
-            sound("sfx_deck.mp3", 70.0, -5.0),
-            sound("sfx_village.mp3", 71.0, -16.0).fade_out(1.0),
-            // the greenhouse: drones carry the panels in, the panels click, the plants grow,
-            // a spark leads the whip pan to the launch
-            sound("sfx_drones.mp3", 73.5, -17.0)
+            // the Golden Gate: the bay at night, derricks, spinning wheels, cables, welders,
+            // the deck, the first car
+            sound("sfx_foghorn.mp3", 67.3, -19.0).fade_out(1.5),
+            sound("sfx_crane.mp3", 67.75, -18.0).fade_out(1.0),
+            sound("sfx_spin.mp3", 68.65, -16.0).fade_out(0.5),
+            sound("sfx_cables.mp3", 68.97, -11.0),
+            sound("sfx_arc.mp3", 69.15, -18.0).fade_out(0.6),
+            sound("sfx_deck.mp3", 69.9, -5.0),
+            sound("sfx_streak.mp3", 70.14, -14.0),
+            // the wind farm, the school, the water
+            sound("sfx_spin.mp3", 71.2, -19.0).fade_out(0.5),
+            sound("sfx_village.mp3", 71.4, -16.0).fade_out(0.8),
+            sound("sfx_servo.mp3", 71.96, -14.0).fade_out(0.5),
+            sound("sfx_flood.mp3", 73.5, -14.0)
+                .fade_in(0.2)
+                .fade_out(0.7),
+            // the greenhouse: the pen, the glass, the plants, the spark and the whip
+            sound("sfx_ignite.mp3", 74.24, -16.0),
+            sound("sfx_drones.mp3", 75.7, -17.0)
                 .fade_in(0.4)
                 .fade_out(1.0),
-            sound("sfx_glass.mp3", 74.0, -11.0),
-            sound("sfx_bloom.mp3", 74.4, 4.0).fade_out(0.8),
-            sound("sfx_streak.mp3", 76.7, -10.0),
-            // the launch: the lamps run up the tower, the deluge, the ignition, the flare
-            sound("sfx_ignite.mp3", 77.45, -16.0),
-            sound("sfx_deluge.mp3", 78.55, -12.0).fade_out(1.0),
-            sound("sfx_rocket.mp3", 78.9, -7.0).fade_out(1.0),
+            sound("sfx_glass.mp3", 76.03, -11.0),
+            sound("sfx_bloom.mp3", 76.54, 4.0).fade_out(0.8),
+            sound("sfx_streak.mp3", 77.49, -10.0),
+            // the launch: rollout, the crane, the deluge, the igniters, ignition, the flare
+            sound("sfx_servo.mp3", 77.95, -17.0).fade_out(0.6),
+            sound("sfx_crane.mp3", 78.24, -18.0).fade_out(0.6),
+            sound("sfx_deluge.mp3", 78.9, -12.0).fade_out(1.0),
+            sound("sfx_ignite.mp3", 79.08, -14.0),
+            sound("sfx_rocket.mp3", 79.24, -7.0).fade_out(1.0),
             sound("sfx_sun.mp3", 81.55, -9.0),
             sound("sfx_breeze.mp3", 82.6, 10.0)
                 .fade_in(2.0)
