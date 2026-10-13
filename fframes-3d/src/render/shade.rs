@@ -327,7 +327,7 @@ fn standard(
 }
 
 /// three.js `getDistanceAttenuation`.
-fn attenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
+pub(crate) fn attenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
     let mut att = 1.0 / distance.max(0.01).powf(decay);
     if cutoff > 0.0 {
         let x = (1.0 - (distance / cutoff).powi(4)).clamp(0.0, 1.0);

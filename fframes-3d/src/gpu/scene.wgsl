@@ -55,10 +55,19 @@ struct Frame {
     background: vec4f,
     bg_top: vec4f,
     bg_bottom: vec4f,
-    // light count, environment map levels, reflection levels (0 without a reflection), 0
+    // light count, environment map levels, reflection levels (0 without a reflection),
+    // haze steps (0 without haze)
     counts: vec4f,
     // the plane of the reflector: xyz normal, w offset
     clip_plane: vec4f,
+    // the haze: rgb color, density
+    haze: vec4f,
+    // rgb ambient light, anisotropy
+    haze_ambient: vec4f,
+    // base height, falloff, noise, march distance
+    haze_shape: vec4f,
+    // noise offset / noise size, 1 / noise size
+    haze_noise: vec4f,
     lights: array<Light, 16>,
     softboxes: array<SoftBox, 8>,
     shadows: array<Shadow, 2>,
@@ -317,6 +326,18 @@ struct VertexIn {
     @location(3) color: vec4f,
 }
 
+// One copy of the mesh: the identity for a mesh without copies.
+struct InstanceIn {
+    @location(4) model_0: vec4f,
+    @location(5) model_1: vec4f,
+    @location(6) model_2: vec4f,
+    @location(7) model_3: vec4f,
+    @location(8) normal_0: vec4f,
+    @location(9) normal_1: vec4f,
+    @location(10) normal_2: vec4f,
+    @location(11) color: vec4f,
+}
+
 struct VertexOut {
     @builtin(position) clip: vec4f,
     @location(0) @interpolate(perspective, centroid) world: vec3f,
@@ -333,14 +354,16 @@ struct FragmentOut {
 }
 
 @vertex
-fn vs_main(in: VertexIn) -> VertexOut {
+fn vs_main(in: VertexIn, copy: InstanceIn) -> VertexOut {
     var out: VertexOut;
-    let world = draw.model * vec4f(in.position, 1.0);
+    let model = mat4x4f(copy.model_0, copy.model_1, copy.model_2, copy.model_3);
+    let normal = mat3x3f(copy.normal_0.xyz, copy.normal_1.xyz, copy.normal_2.xyz);
+    let world = draw.model * (model * vec4f(in.position, 1.0));
     out.clip = frame.view_proj * world;
     out.world = world.xyz;
-    out.normal = (draw.normal_matrix * vec4f(in.normal, 0.0)).xyz;
+    out.normal = (draw.normal_matrix * vec4f(normal * in.normal, 0.0)).xyz;
     out.uv = in.uv;
-    out.color = in.color;
+    out.color = in.color * copy.color;
     out.view_w = out.clip.w;
     return out;
 }

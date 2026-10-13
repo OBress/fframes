@@ -2,6 +2,7 @@
 //! (the CPU backend, the Skia backend, the wasm editor) and gives the same pixels on all
 //! of them.
 
+pub(crate) mod atmosphere;
 pub(crate) mod par;
 mod post;
 pub(crate) mod prepare;
@@ -373,6 +374,19 @@ impl Renderer {
             clip_plane: None,
         };
         let (mut hdr, depth) = render_view(&mut world, &shade, &viewport, camera, self.antialias);
+        if let Some(atmosphere) = &scene.atmosphere
+            && !ortho
+        {
+            let air = atmosphere::Air {
+                atmosphere,
+                lights: &lights,
+                shadows: &shadows,
+                camera: camera.position,
+                forward: camera.forward(),
+                inverse_view_proj: view_proj.inverse(),
+            };
+            air.apply(&mut hdr, &depth, width, height);
+        }
         if let Some(focus) = camera.focus
             && !ortho
             && focus.blur > 0.0
