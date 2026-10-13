@@ -416,7 +416,10 @@ impl FactorySet {
             noise_size: 7.0,
             offset: vec3(0.4, 0.05, 0.25) * t,
             distance: 220.0,
-            steps: 24,
+            // The shafts of the roof glazing repeat every 12 m along the hall. With fewer
+            // steps the far steps are longer than half of this period, and the shafts
+            // make a moire that crawls when the camera moves.
+            steps: 64,
         });
         scene.background = Background::Color(Rgb::hex(0xc8d6ea));
         scene.add(Node::light(Light::hemisphere(
