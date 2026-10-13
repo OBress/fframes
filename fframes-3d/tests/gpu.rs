@@ -47,3 +47,36 @@ fn gpu_matches_cpu() {
     let gpu = gpu_renderer.render_pixels(&scene, &focused);
     assert!(compare("showcase_dof", &cpu, &gpu) < 8.0);
 }
+
+#[test]
+fn gpu_instances_match_cpu() {
+    let gpu_renderer = Renderer::new(960, 540).bloom(Bloom::default());
+    if !gpu_renderer.uses_gpu() {
+        eprintln!("no GPU, skipped");
+        return;
+    }
+    let (scene, camera) = common::cubes(true);
+    let cpu = gpu_renderer.clone().cpu().render_pixels(&scene, &camera);
+    let gpu = gpu_renderer.render_pixels(&scene, &camera);
+    assert!(compare("instances", &cpu, &gpu) < 6.0);
+}
+
+#[test]
+fn gpu_atmosphere_matches_cpu() {
+    let gpu_renderer = Renderer::new(960, 540).bloom(Bloom::default());
+    if !gpu_renderer.uses_gpu() {
+        eprintln!("no GPU, skipped");
+        return;
+    }
+    let (scene, camera) = common::hall();
+    let start = std::time::Instant::now();
+    let cpu = gpu_renderer.clone().cpu().render_pixels(&scene, &camera);
+    eprintln!("cpu frame {:?}", start.elapsed());
+    let mut gpu = gpu_renderer.render_pixels(&scene, &camera);
+    let start = std::time::Instant::now();
+    for _ in 0..10 {
+        gpu = gpu_renderer.render_pixels(&scene, &camera);
+    }
+    eprintln!("gpu frame {:?}", start.elapsed() / 10);
+    assert!(compare("atmosphere", &cpu, &gpu) < 4.0);
+}

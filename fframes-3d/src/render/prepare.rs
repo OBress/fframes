@@ -197,51 +197,62 @@ fn push_mesh<'s>(world: &mut World<'s>, mesh: &'s Mesh, m: &Mat4, worlds: &[Mat4
     if g.indices.is_empty() || g.positions.is_empty() {
         return;
     }
+    let deformed = deformed(mesh, m, worlds);
+    // Every copy with its world matrix and color. A deformed mesh has no copies.
+    let instances = mesh.instances.as_deref().filter(|_| deformed.is_none());
+    let copies: Vec<(Mat4, Vec4)> = match instances {
+        Some(instances) => (instances.transforms.iter().enumerate())
+            .map(|(i, t)| (*m * *t, instances.color(i)))
+            .collect(),
+        None => vec![(*m, Vec4::ONE)],
+    };
     let draw = world.draws.len() as u32;
     world.draws.push(Draw {
         material: &mesh.material,
         cast_shadow: mesh.cast_shadow,
         receive_shadow: mesh.receive_shadow,
         has_uv: !g.uvs.is_empty(),
-        has_color: !g.colors.is_empty(),
+        has_color: !g.colors.is_empty() || instances.is_some_and(|i| !i.colors.is_empty()),
     });
 
-    let base = world.streams.pos.len() as u32;
     let count = g.positions.len();
-    let s = &mut world.streams;
-    if let Some((pos, nrm)) = deformed(mesh, m, worlds) {
-        s.pos.extend(pos);
-        s.nrm.extend(nrm);
-    } else {
-        let normal_matrix = Mat3::from_mat4(*m).inverse().transpose();
-        s.pos
-            .extend(g.positions.iter().map(|p| m.transform_point3(*p)));
-        s.nrm.extend((0..count).map(|i| {
-            (normal_matrix * g.normals.get(i).copied().unwrap_or(Vec3::Y)).normalize_or(Vec3::Y)
-        }));
-    }
-    if g.uvs.len() == count {
-        s.uv.extend_from_slice(&g.uvs);
-    } else {
-        s.uv.extend(std::iter::repeat_n(Vec2::ZERO, count));
-    }
-    if g.colors.len() == count {
-        s.col.extend_from_slice(&g.colors);
-    } else {
-        s.col.extend(std::iter::repeat_n(Vec4::ONE, count));
-    }
+    for (m, tint) in copies {
+        let base = world.streams.pos.len() as u32;
+        let s = &mut world.streams;
+        if let Some((pos, nrm)) = &deformed {
+            s.pos.extend_from_slice(pos);
+            s.nrm.extend_from_slice(nrm);
+        } else {
+            let normal_matrix = Mat3::from_mat4(m).inverse().transpose();
+            s.pos
+                .extend(g.positions.iter().map(|p| m.transform_point3(*p)));
+            s.nrm.extend((0..count).map(|i| {
+                (normal_matrix * g.normals.get(i).copied().unwrap_or(Vec3::Y)).normalize_or(Vec3::Y)
+            }));
+        }
+        if g.uvs.len() == count {
+            s.uv.extend_from_slice(&g.uvs);
+        } else {
+            s.uv.extend(std::iter::repeat_n(Vec2::ZERO, count));
+        }
+        if g.colors.len() == count {
+            s.col.extend(g.colors.iter().map(|c| *c * tint));
+        } else {
+            s.col.extend(std::iter::repeat_n(tint, count));
+        }
 
-    // A mirroring world matrix turns the winding around. Skinned vertices do not use it.
-    let mirrored = mesh.skin.is_none() && m.determinant() < 0.0;
-    let tris = g.indices.as_chunks::<3>().0.iter();
-    world.tris.extend(
-        tris.filter(|t| t.iter().all(|&i| (i as usize) < count))
-            .map(|t| {
-                let [a, b, c] = t.map(|i| base + i);
-                let v = if mirrored { [a, c, b] } else { [a, b, c] };
-                WorldTri { v, draw }
-            }),
-    );
+        // A mirroring world matrix turns the winding around. Skinned vertices do not use it.
+        let mirrored = mesh.skin.is_none() && m.determinant() < 0.0;
+        let tris = g.indices.as_chunks::<3>().0.iter();
+        world.tris.extend(
+            tris.filter(|t| t.iter().all(|&i| (i as usize) < count))
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| base + i);
+                    let v = if mirrored { [a, c, b] } else { [a, b, c] };
+                    WorldTri { v, draw }
+                }),
+        );
+    }
 }
 
 /// The world space positions and normals of a skinned or morphed mesh. `None` for a rigid

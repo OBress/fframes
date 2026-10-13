@@ -3,7 +3,7 @@
 use fframes_3d::*;
 
 mod common;
-use common::{save, showcase};
+use common::{cubes, hall, save, showcase};
 
 #[test]
 fn renders_showcase() {
@@ -104,4 +104,39 @@ fn renders_an_stl() {
         .bloom(Bloom::default())
         .render_pixels(&scene, &camera);
     save("stl", &pixels);
+}
+
+#[test]
+fn instances_render_like_separate_meshes() {
+    let renderer = Renderer::new(480, 270).cpu();
+    let (instanced, camera) = cubes(true);
+    let (separate, _) = cubes(false);
+    let a = renderer.render_pixels(&instanced, &camera);
+    let b = renderer.render_pixels(&separate, &camera);
+    save("instances", &a);
+    let diff = a
+        .rgba
+        .iter()
+        .zip(&b.rgba)
+        .map(|(x, y)| f64::from(x.abs_diff(*y)))
+        .sum::<f64>()
+        / a.rgba.len() as f64;
+    eprintln!("instances against separate meshes: mean difference {diff:.3} / 255");
+    assert!(diff < 0.1, "{diff}");
+}
+
+#[test]
+fn renders_atmosphere() {
+    let renderer = Renderer::new(960, 540).cpu();
+    let (scene, camera) = hall();
+    let hazy = renderer.render_pixels(&scene, &camera);
+    let mut clear = scene;
+    clear.atmosphere = None;
+    let clear = renderer.render_pixels(&clear, &camera);
+    save("atmosphere", &hazy);
+    let mean = |p: &Pixels| p.rgba.iter().map(|&v| f64::from(v)).sum::<f64>() / p.rgba.len() as f64;
+    let (hazy, clear) = (mean(&hazy), mean(&clear));
+    eprintln!("mean brightness: {hazy:.1} with haze, {clear:.1} without");
+    // the air scatters the light of the sun and the lamps into the dark hall
+    assert!(hazy > clear + 5.0);
 }

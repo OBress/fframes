@@ -47,6 +47,62 @@ pub struct Mesh {
     pub skin: Option<Skin>,
     /// The weights of the morph targets of the geometry, in target order.
     pub morph_weights: Vec<f32>,
+    /// Copies of the mesh, see [`Instances`]. `None` draws the mesh once.
+    pub instances: Option<Arc<Instances>>,
+}
+
+impl Mesh {
+    /// The bounds of the mesh and all its copies, with the world matrix `m` of the node.
+    pub fn bounds(&self, m: &Mat4) -> Aabb {
+        let local = self.geometry.bounds();
+        match &self.instances {
+            Some(instances) => instances.transforms.iter().fold(Aabb::EMPTY, |aabb, t| {
+                aabb.union(local.transformed(&(*m * *t)))
+            }),
+            None => local.transformed(m),
+        }
+    }
+}
+
+/// Copies of one mesh in one draw, three.js `InstancedMesh`: a forest, a crowd, a factory of
+/// machines. The copies share the geometry and the material.
+///
+/// ```rust
+/// use fframes_3d::*;
+///
+/// let posts = Instances::new((0..100).map(|i| Mat4::from_translation(vec3(i as f32, 0.0, 0.0))));
+/// let fence = Node::instanced(Geometry::cuboid(0.1, 1.0, 0.1), Material::standard(0x806040), posts);
+/// ```
+///
+/// The copies are rigid. A skinned or morphed mesh ignores them.
+#[derive(Debug, Clone, Default)]
+pub struct Instances {
+    /// The transform of each copy, in the space of the node. A transform must not mirror.
+    pub transforms: Vec<Mat4>,
+    /// Empty, or one color for each copy. It multiplies the color of the material, like a
+    /// vertex color (three.js `instanceColor`).
+    pub colors: Vec<Rgb>,
+}
+
+impl Instances {
+    /// Copies at `transforms`, with no colors.
+    pub fn new(transforms: impl IntoIterator<Item = Mat4>) -> Self {
+        Self {
+            transforms: transforms.into_iter().collect(),
+            colors: Vec::new(),
+        }
+    }
+
+    /// One color for each copy, in the order of the transforms.
+    pub fn colors(mut self, colors: impl IntoIterator<Item = Rgb>) -> Self {
+        self.colors = colors.into_iter().collect();
+        self
+    }
+
+    /// The color of copy `i`, white without colors.
+    pub(crate) fn color(&self, i: usize) -> Vec4 {
+        self.colors.get(i).map_or(Vec4::ONE, |c| c.0.extend(1.0))
+    }
 }
 
 /// The joints of a skinned mesh.
@@ -169,7 +225,21 @@ impl Node {
             receive_shadow: true,
             skin: None,
             morph_weights: Vec::new(),
+            instances: None,
         }))
+    }
+
+    /// Copies of a mesh in one draw, see [`Instances`].
+    pub fn instanced(
+        geometry: impl Into<Arc<Geometry>>,
+        material: Material,
+        instances: impl Into<Arc<Instances>>,
+    ) -> Self {
+        let mut node = Self::mesh(geometry, material);
+        if let Some(mesh) = node.mesh_mut() {
+            mesh.instances = Some(instances.into());
+        }
+        node
     }
 
     /// A light source, see [`Light`].
@@ -339,6 +409,72 @@ impl Fog {
     }
 }
 
+/// Light that scatters in the air: haze, light shafts and the glow around lamps. Game
+/// engines call it volumetric fog. three.js has no equivalent.
+///
+/// The air is densest at the `base` height and thinner above it. A directional light with
+/// a shadow makes light shafts where the shadow casters let it through. Point lights and
+/// spot lights glow in the air. The haze needs a perspective camera.
+///
+/// ```rust
+/// use fframes_3d::*;
+///
+/// let scene = Scene::new().atmosphere(Atmosphere {
+///     density: 0.05,
+///     ambient: Rgb::hex(0x1a2433),
+///     noise: 0.6,
+///     ..Default::default()
+/// });
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Atmosphere {
+    /// The part of the light that the air scatters per meter at the `base` height. 0.01 is
+    /// a light haze, 0.2 a dense fog. Default 0.03.
+    pub density: f32,
+    /// The color of the air. It multiplies the scattered light. Default white.
+    pub color: Rgb,
+    /// The height in meters below which the density stays the same. Default 0.
+    pub base: f32,
+    /// How fast the density decreases above `base`, per meter. 0 keeps the same density at
+    /// all heights. Default 0.1.
+    pub falloff: f32,
+    /// The direction of the scattering, `-1..1` (Henyey-Greenstein). Values above 0 make the
+    /// air brightest in the direction of a light. Default 0.6.
+    pub anisotropy: f32,
+    /// The light that the air gets from all directions, for example from the sky. It makes
+    /// no shafts. Default black.
+    pub ambient: Rgb,
+    /// How much noise changes the density, `0..1`. Default 0.
+    pub noise: f32,
+    /// The size of the noise in meters. Default 4.
+    pub noise_size: f32,
+    /// Moves the noise, in meters. Change it over time for wind. Default zero.
+    pub offset: Vec3,
+    /// The distance in meters at which the haze stops to increase. Default 100.
+    pub distance: f32,
+    /// The samples along each view ray. More steps make sharper shafts and take more time.
+    /// Default 32.
+    pub steps: u32,
+}
+
+impl Default for Atmosphere {
+    fn default() -> Self {
+        Self {
+            density: 0.03,
+            color: Rgb::WHITE,
+            base: 0.0,
+            falloff: 0.1,
+            anisotropy: 0.6,
+            ambient: Rgb::BLACK,
+            noise: 0.0,
+            noise_size: 4.0,
+            offset: Vec3::ZERO,
+            distance: 100.0,
+            steps: 32,
+        }
+    }
+}
+
 /// A scene graph, three.js `Scene`.
 ///
 /// Build a template scene once and keep the [`NodeId`]s of the parts that you animate. For
@@ -369,6 +505,8 @@ pub struct Scene {
     pub environment: Environment,
     /// Default `None`.
     pub fog: Option<Fog>,
+    /// Default `None`.
+    pub atmosphere: Option<Atmosphere>,
     /// The plane that materials with [`Material::reflection`] mirror. Default `None`.
     pub reflector: Option<Reflector>,
 }
@@ -463,6 +601,12 @@ impl Scene {
     /// Sets the fog.
     pub fn fog(mut self, fog: Fog) -> Self {
         self.fog = Some(fog);
+        self
+    }
+
+    /// Sets the light scattering in the air.
+    pub fn atmosphere(mut self, atmosphere: Atmosphere) -> Self {
+        self.atmosphere = Some(atmosphere);
         self
     }
 
@@ -618,7 +762,7 @@ impl Scene {
             if visible[n.index()]
                 && let Some(mesh) = self[n].as_mesh()
             {
-                aabb = aabb.union(mesh.geometry.bounds().transformed(&worlds[n.index()]));
+                aabb = aabb.union(mesh.bounds(&worlds[n.index()]));
             }
         }
         aabb

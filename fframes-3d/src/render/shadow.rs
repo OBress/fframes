@@ -176,14 +176,9 @@ impl ShadowMap {
     /// light grazes the surface (a small `n_dot_l`).
     pub(crate) fn visibility(&self, position: Vec3, normal: Vec3, n_dot_l: f32) -> f32 {
         let offset = normal * self.fit.texel_world * (1.0 + 2.0 * (1.0 - n_dot_l.clamp(0.0, 1.0)));
-        let p = self.fit.view_proj.project_point3(position + offset);
-        let s = self.size as f32;
-        let u = (p.x * 0.5 + 0.5) * s - 0.5;
-        let v = (0.5 - p.y * 0.5) * s - 0.5;
-        if !(0.0..s).contains(&u) || !(0.0..s).contains(&v) || p.z > 1.0 {
+        let Some((u, v, z)) = self.project(position + offset) else {
             return 1.0;
-        }
-        let z = p.z - self.bias * self.fit.depth_per_texel;
+        };
         let r = self.softness;
         if r <= 0.0 {
             return 1.0 - self.strength * (1.0 - self.tap(u, v, z));
@@ -207,6 +202,28 @@ impl ShadowMap {
             sum / 16.0
         };
         1.0 - self.strength * (1.0 - lit)
+    }
+
+    /// How much light reaches `position` in the air. One tap is sufficient, because the
+    /// haze adds the values of many points.
+    pub(crate) fn lit(&self, position: Vec3) -> f32 {
+        self.project(position).map_or(1.0, |(u, v, z)| {
+            1.0 - self.strength * (1.0 - self.tap(u, v, z))
+        })
+    }
+
+    /// The texel position and the biased depth of `position` in the map. `None` outside
+    /// the map.
+    fn project(&self, position: Vec3) -> Option<(f32, f32, f32)> {
+        let p = self.fit.view_proj.project_point3(position);
+        let s = self.size as f32;
+        let u = (p.x * 0.5 + 0.5) * s - 0.5;
+        let v = (0.5 - p.y * 0.5) * s - 0.5;
+        ((0.0..s).contains(&u) && (0.0..s).contains(&v) && p.z <= 1.0).then_some((
+            u,
+            v,
+            p.z - self.bias * self.fit.depth_per_texel,
+        ))
     }
 
     /// The bilinear depth comparison at the texel position `u`, `v`: 1 when `z` is lit.

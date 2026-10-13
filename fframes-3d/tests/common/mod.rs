@@ -120,3 +120,99 @@ pub fn showcase() -> (Scene, Camera) {
         .look_at(vec3(0.3, 0.6, 0.0));
     (scene, camera)
 }
+
+/// A grid of cubes as one instanced mesh, or as separate meshes with the same transforms
+/// and colors, lit by the sun, on a floor.
+pub fn cubes(instanced: bool) -> (Scene, Camera) {
+    let mut scene = Scene::new()
+        .environment(Environment::studio())
+        .background(Background::Color(Rgb::hex(0x101216)));
+    scene.add(Node::mesh(
+        Geometry::floor(20.0, 20.0),
+        Material::standard(0x707478),
+    ));
+    scene.add(Node::light(Light::sun(
+        Rgb::WHITE,
+        2.5,
+        vec3(3.0, 6.0, 4.0),
+    )));
+    let cube = std::sync::Arc::new(Geometry::rounded_box(0.5, 0.5, 0.5, 0.06, 3));
+    let material = Material::standard(0xffffff).roughness(0.35);
+    let copies: Vec<(Mat4, Rgb)> = (0..49)
+        .map(|i| {
+            let (x, z) = ((i % 7) as f32 - 3.0, (i / 7) as f32 - 3.0);
+            let turn = Quat::from_rotation_y(i as f32 * 0.37);
+            let place = Mat4::from_rotation_translation(turn, vec3(x * 0.8, 0.3, z * 0.8));
+            let color = Rgb::linear(0.2 + 0.1 * (i % 5) as f32, 0.4, 0.9 - 0.1 * (i % 7) as f32);
+            (place, color)
+        })
+        .collect();
+    if instanced {
+        let instances =
+            Instances::new(copies.iter().map(|(m, _)| *m)).colors(copies.iter().map(|(_, c)| *c));
+        scene.add(Node::instanced(cube, material, instances));
+    } else {
+        for (m, color) in copies {
+            let (scale, rotation, position) = m.to_scale_rotation_translation();
+            let mut node = Node::mesh(cube.clone(), material.clone().color(color));
+            node.position = position;
+            node.rotation = rotation;
+            node.scale = scale;
+            scene.add(node);
+        }
+    }
+    let camera = Camera::perspective(40.0)
+        .at(4.5, 4.0, 6.0)
+        .look_at(vec3(0.0, 0.2, 0.0));
+    (scene, camera)
+}
+
+/// A dark hall in haze: the sun falls through slots in the roof, a spot light and a lamp
+/// glow in the air.
+pub fn hall() -> (Scene, Camera) {
+    let mut scene = Scene::new()
+        .background(Background::Color(Rgb::hex(0x0a0c10)))
+        .atmosphere(Atmosphere {
+            density: 0.06,
+            falloff: 0.05,
+            ambient: Rgb::hex(0x0d1118),
+            noise: 0.7,
+            noise_size: 3.0,
+            ..Default::default()
+        });
+    let concrete = Material::standard(0x5a5c60).roughness(0.8);
+    scene.add(Node::mesh(Geometry::floor(30.0, 30.0), concrete.clone()));
+    // the roof: beams with slots between them, and the walls
+    for i in 0..9 {
+        let z = i as f32 * 2.0 - 8.0;
+        scene.add(Node::mesh(Geometry::cuboid(16.0, 0.4, 1.3), concrete.clone()).at(0.0, 7.0, z));
+    }
+    for x in [-8.0, 8.0] {
+        scene.add(Node::mesh(Geometry::cuboid(0.4, 7.0, 18.0), concrete.clone()).at(x, 3.5, 0.0));
+    }
+    scene.add(Node::mesh(Geometry::cuboid(16.0, 7.0, 0.4), concrete.clone()).at(0.0, 3.5, -9.0));
+    scene.add(
+        Node::mesh(
+            Geometry::rounded_box(1.2, 2.4, 1.2, 0.1, 3),
+            Material::metal(0xb8bcc4, 0.3),
+        )
+        .at(1.5, 1.2, -2.0),
+    );
+    scene.add(Node::light(Light::sun(
+        Rgb::hex(0xfff0dd),
+        6.0,
+        vec3(-2.0, 6.0, 1.5),
+    )));
+    scene.add(
+        Node::light(
+            Light::spot(Rgb::hex(0x60a0ff), 120.0, 0.35, 0.4).pointing(vec3(0.3, -1.0, 0.1)),
+        )
+        .at(-4.0, 6.5, -4.0),
+    );
+    scene.add(Node::light(Light::point(Rgb::hex(0xff9040), 8.0, 0.0)).at(4.5, 2.0, 2.0));
+    // the camera looks toward the sun, where the air scatters the most light
+    let camera = Camera::perspective(50.0)
+        .at(1.0, 1.7, -7.0)
+        .look_at(vec3(-1.0, 3.5, 4.0));
+    (scene, camera)
+}

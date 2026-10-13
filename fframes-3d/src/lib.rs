@@ -70,6 +70,7 @@
 //! | `scene.environment = pmrem(RoomEnvironment)` | [`Environment::studio`] |
 //! | `RGBELoader` panorama | [`Environment::map`] with [`EnvironmentMap::decode`] |
 //! | `scene.fog = new Fog(color, near, far)` | [`Scene::fog`] with [`Fog::Linear`] |
+//! | volumetric fog and light shafts (no three.js equivalent) | [`Scene::atmosphere`] |
 //! | `Reflector` | [`Scene::reflector`] with [`Material::reflection`] |
 //! | `camera.position.set(..); camera.lookAt(..)` | `Camera::perspective(fov).at(..).look_at(..)` |
 //! | `vector.project(camera)` | [`Camera::project`] |
@@ -77,6 +78,7 @@
 //! | `STLLoader`, `toCreasedNormals` | [`Geometry::from_stl`], [`Geometry::smooth`] |
 //! | `UnrealBloomPass`, `ACESFilmicToneMapping` | [`Bloom`], [`ToneMapping`] |
 //! | `Points` | [`Node::particles`] |
+//! | `InstancedMesh`, `instanceColor` | [`Node::instanced`] with [`Instances`] |
 
 // Colors are hex numbers as in three.js: `0xff8800`.
 #![allow(clippy::unreadable_literal)]
@@ -111,6 +113,7 @@ pub use material::{Blending, Material, Pattern, Shading, Side};
 pub use math::{Aabb, Mat3, Mat4, Quat, Vec2, Vec3, Vec4, deg, euler, euler_deg, vec2, vec3, vec4};
 pub use render::{Bloom, Pixels, Renderer, ToneMapping};
 pub use scene::{
-    Background, Fog, Mesh, Node, NodeId, Object, Particle, Particles, Reflector, Scene, Skin,
+    Atmosphere, Background, Fog, Instances, Mesh, Node, NodeId, Object, Particle, Particles,
+    Reflector, Scene, Skin,
 };
 pub use texture::Texture;

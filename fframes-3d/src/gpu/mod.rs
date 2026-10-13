@@ -29,6 +29,7 @@ use glam::{Mat3, Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::material::{Pattern, Shading};
+use crate::render::atmosphere::{NOISE, NOISE_CELLS};
 use crate::render::prepare::{self, LightInfo, LightKind, Lights};
 use crate::render::shadow::fit;
 use crate::render::{Pixels, Renderer, ToneMapping};
@@ -136,6 +137,10 @@ struct FrameUniform {
     bg_bottom: [f32; 4],
     counts: [f32; 4],
     clip_plane: [f32; 4],
+    haze: [f32; 4],
+    haze_ambient: [f32; 4],
+    haze_shape: [f32; 4],
+    haze_noise: [f32; 4],
     lights: [GpuLight; MAX_LIGHTS],
     softboxes: [GpuSoftBox; MAX_SOFTBOXES],
     shadows: [GpuShadow; MAX_SHADOWS],
@@ -177,6 +182,51 @@ struct Vertex {
     normal: [f32; 3],
     uv: [f32; 2],
     color: [f32; 4],
+}
+
+/// One copy of a mesh, `InstanceIn` in `scene.wgsl`. Entry 0 of the instance buffer is the
+/// identity, which every mesh without copies uses.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct InstanceData {
+    model: [f32; 16],
+    /// The normal matrix, as three columns padded to four floats.
+    normal: [f32; 12],
+    color: [f32; 4],
+}
+
+impl InstanceData {
+    fn new(model: Mat4, color: Vec4) -> Self {
+        let n = Mat3::from_mat4(model).inverse().transpose();
+        Self {
+            model: model.to_cols_array(),
+            normal: [n.x_axis, n.y_axis, n.z_axis]
+                .map(|c| c.extend(0.0).to_array())
+                .concat()
+                .try_into()
+                .unwrap_or([0.0; 12]),
+            color: color.to_array(),
+        }
+    }
+}
+
+/// The per copy attributes of the geometry pipelines, at locations 4 to 11.
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
+    4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4,
+    8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4,
+];
+
+/// The model matrix of a copy, for the shadow pipeline, at locations 1 to 4.
+const SHADOW_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+    1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4,
+];
+
+fn instance_layout(attributes: &[wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'_> {
+    wgpu::VertexBufferLayout {
+        array_stride: size_of::<InstanceData>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes,
+    }
 }
 
 /// `ParticleIn` in `scene.wgsl`.
@@ -310,12 +360,17 @@ pub(crate) struct Gpu {
     particle_additive: wgpu::RenderPipeline,
     particle_normal: wgpu::RenderPipeline,
     post: PostPipelines,
+    haze_layout: wgpu::BindGroupLayout,
+    haze_march: wgpu::RenderPipeline,
+    haze_apply: wgpu::RenderPipeline,
     linear_repeat: wgpu::Sampler,
     linear_clamp: wgpu::Sampler,
     env_sampler: wgpu::Sampler,
     shadow_sampler: wgpu::Sampler,
     white: wgpu::TextureView,
     black_hdr: wgpu::TextureView,
+    /// `atmosphere::NOISE` as a 3D texture.
+    noise: wgpu::TextureView,
     // The uploaded meshes, textures and panoramas, by the address of their `Arc`. Each entry
     // holds a weak reference, so no other value gets this address while the entry exists.
     meshes: Mutex<HashMap<usize, GpuMesh>>,
@@ -377,6 +432,9 @@ struct DrawItem<'s> {
     indices: Option<wgpu::Buffer>,
     index_offset: u64,
     index_count: u32,
+    /// The copies in the instance buffer: entry 0 alone for a mesh without copies.
+    first_instance: u32,
+    instance_count: u32,
     /// Part of a batch. The batch draws it.
     batched: bool,
     cast_shadow: bool,
@@ -406,11 +464,13 @@ impl DrawItem<'_> {
         let vertices = self.vertices.as_ref().unwrap_or(&cx.stream_buffer);
         let indices = self.indices.as_ref().unwrap_or(&cx.stream_index_buffer);
         pass.set_vertex_buffer(0, vertices.slice(self.vertex_offset..));
+        pass.set_vertex_buffer(1, cx.instance_buffer.slice(..));
         pass.set_index_buffer(
             indices.slice(self.index_offset..),
             wgpu::IndexFormat::Uint32,
         );
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+        let instances = self.first_instance..self.first_instance + self.instance_count;
+        pass.draw_indexed(0..self.index_count, 0, instances);
     }
 }
 
@@ -450,6 +510,8 @@ struct FrameContext {
     draw_buffer: wgpu::Buffer,
     /// The vertices of the deformed meshes and of the batches.
     stream_buffer: wgpu::Buffer,
+    /// The copies of the meshes, see [`InstanceData`].
+    instance_buffer: wgpu::Buffer,
     /// The indices of the batches.
     stream_index_buffer: wgpu::Buffer,
     particle_buffer: wgpu::Buffer,
@@ -560,7 +622,12 @@ impl Gpu {
         queue: wgpu::Queue,
         queue_lock: Option<Arc<Mutex<()>>>,
     ) -> Gpu {
-        let scene_module = device.create_shader_module(wgpu::include_wgsl!("scene.wgsl"));
+        let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scene"),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("scene.wgsl"), include_str!("atmosphere.wgsl")).into(),
+            ),
+        });
         let shadow_module = device.create_shader_module(wgpu::include_wgsl!("shadow.wgsl"));
         let post_module = device.create_shader_module(wgpu::include_wgsl!("post.wgsl"));
 
@@ -657,6 +724,21 @@ impl Gpu {
             ],
         );
 
+        let haze_layout = bind_group_layout(
+            "haze",
+            &[
+                float_2d(0),
+                float_2d(1),
+                float_2d(2),
+                texture(
+                    3,
+                    wgpu::TextureSampleType::Float { filterable: true },
+                    wgpu::TextureViewDimension::D3,
+                ),
+                sampler(4, filtering),
+            ],
+        );
+
         let pipeline_layout = |label: &str, groups: &[Option<&wgpu::BindGroupLayout>]| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
@@ -670,6 +752,8 @@ impl Gpu {
             pipeline_layout("shadow", &[Some(&shadow_layout), Some(&shadow_draw_layout)]);
         let frame_only_layout = pipeline_layout("frame only", &[Some(&frame_layout)]);
         let post_pipeline_layout = pipeline_layout("post", &[Some(&post_layout)]);
+        let haze_pipeline_layout =
+            pipeline_layout("haze", &[Some(&frame_layout), Some(&haze_layout)]);
 
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("shadow"),
@@ -678,11 +762,14 @@ impl Gpu {
                 module: &shadow_module,
                 entry_point: Some("vs_shadow"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
-                })],
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+                    }),
+                    Some(instance_layout(&SHADOW_INSTANCE_ATTRIBUTES)),
+                ],
             },
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: Some(depth_test(true, wgpu::CompareFunction::Less)),
@@ -769,6 +856,51 @@ impl Gpu {
                 cache: None,
             })
         };
+        let haze = |entry: &str, targets: &[Option<wgpu::ColorTargetState>]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&haze_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &scene_module,
+                    entry_point: Some("vs_fullscreen"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &scene_module,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        // The frame times the light that gets through, plus the light of the air.
+        let through = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::SrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let haze_march = haze("fs_haze", &[Some(HDR.into()), Some(KEY.into())]);
+        let haze_apply = haze(
+            "fs_haze_apply",
+            &[Some(wgpu::ColorTargetState {
+                blend: Some(through),
+                ..HDR.into()
+            })],
+        );
+
         let added_hdr = [Some(wgpu::ColorTargetState {
             blend: Some(wgpu::BlendState::ADDITIVE),
             ..HDR.into()
@@ -790,6 +922,7 @@ impl Gpu {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u,
                 address_mode_v,
+                address_mode_w: address_mode_u,
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::MipmapFilterMode::Linear,
@@ -822,8 +955,33 @@ impl Gpu {
                 .create_view(&wgpu::TextureViewDescriptor::default())
         };
 
+        let cells = NOISE_CELLS as u32;
+        let noise = device
+            .create_texture_with_data(
+                &queue,
+                &wgpu::TextureDescriptor {
+                    dimension: wgpu::TextureDimension::D3,
+                    size: wgpu::Extent3d {
+                        width: cells,
+                        height: cells,
+                        depth_or_array_layers: cells,
+                    },
+                    ..texture_desc(
+                        "noise",
+                        cells,
+                        cells,
+                        wgpu::TextureFormat::R8Unorm,
+                        wgpu::TextureUsages::TEXTURE_BINDING,
+                    )
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &NOISE,
+            )
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
         Gpu {
             white: texel(wgpu::TextureFormat::Rgba8Unorm, &[255; 4]),
+            noise,
             black_hdr: texel(HDR, &[0; 8]),
             linear_repeat: linear(repeat, repeat, 8),
             linear_clamp: linear(clamp, clamp, 1),
@@ -838,6 +996,9 @@ impl Gpu {
                 wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
             ),
             post,
+            haze_layout,
+            haze_march,
+            haze_apply,
             device,
             queue,
             queue_lock,
@@ -888,11 +1049,14 @@ impl Gpu {
                     module: &self.scene_module,
                     entry_point: Some("vs_main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: size_of::<Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4],
-                    })],
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: size_of::<Vertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4],
+                        }),
+                        Some(instance_layout(&INSTANCE_ATTRIBUTES)),
+                    ],
                 },
                 primitive: wgpu::PrimitiveState {
                     cull_mode: key.cull,
@@ -1316,6 +1480,7 @@ impl Gpu {
         };
         let mut items: Vec<DrawItem> = Vec::new();
         let mut streamed: Vec<Vertex> = Vec::new();
+        let mut instances = vec![InstanceData::new(Mat4::IDENTITY, Vec4::ONE)];
         let mut additive: Vec<ParticleInstance> = Vec::new();
         let mut normal: Vec<ParticleInstance> = Vec::new();
         for (id, node) in scene.nodes() {
@@ -1373,6 +1538,18 @@ impl Gpu {
                                 g.bounds().transformed(&world),
                             ),
                         };
+                    // The copies of a rigid mesh go into the instance buffer.
+                    let (first_instance, instance_count, bounds) = match &mesh.instances {
+                        Some(copies) if vertices.is_some() => {
+                            let first = instances.len() as u32;
+                            instances.extend(
+                                (copies.transforms.iter().enumerate())
+                                    .map(|(i, t)| InstanceData::new(*t, copies.color(i))),
+                            );
+                            (first, copies.transforms.len() as u32, mesh.bounds(&world))
+                        }
+                        _ => (0, 1, bounds),
+                    };
                     let material = &mesh.material;
                     items.push(DrawItem {
                         material,
@@ -1383,6 +1560,8 @@ impl Gpu {
                         indices: Some(indices),
                         index_offset: 0,
                         index_count,
+                        first_instance,
+                        instance_count,
                         batched: false,
                         cast_shadow: mesh.cast_shadow
                             && !material.is_blended()
@@ -1413,6 +1592,11 @@ impl Gpu {
             &mut cx.stream_index_buffer,
             "streamed indices",
             bytemuck::cast_slice(&stream_indices),
+        );
+        self.write_growing(
+            &mut cx.instance_buffer,
+            "instances",
+            bytemuck::cast_slice(&instances),
         );
         let mut draws = vec![0u8; items.len().max(1) * DRAW_STRIDE as usize];
         for (chunk, item) in draws.chunks_mut(DRAW_STRIDE as usize).zip(&items) {
@@ -1472,12 +1656,20 @@ impl Gpu {
             cx.prepare_reflection(&self.device, size(width), size(height));
         }
         let reflection = reflector.and(cx.reflection.as_ref());
+        let haze = scene.atmosphere.filter(|_| camera.ortho_height.is_none());
         frame.counts = [
             light_count as f32,
             env.as_ref().map_or(0.0, |(_, levels)| *levels as f32),
             reflection.map_or(0.0, |r| r.levels as f32),
-            0.0,
+            haze.map_or(0.0, |a| a.steps.max(1) as f32),
         ];
+        if let Some(a) = haze {
+            let scale = 1.0 / a.noise_size.max(1e-3);
+            frame.haze = a.color.0.extend(a.density).to_array();
+            frame.haze_ambient = a.ambient.0.extend(a.anisotropy).to_array();
+            frame.haze_shape = [a.base, a.falloff, a.noise, a.distance];
+            frame.haze_noise = (a.offset * scale).extend(scale).to_array();
+        }
         if let (Some(reflector), Some(targets)) = (reflector, reflection) {
             let (rw, rh) = (targets.width as f32, targets.height as f32);
             let mirror = reflector.matrix();
@@ -1582,11 +1774,11 @@ impl Gpu {
         }
 
         // The geometry pass.
+        let group = frame_group(
+            &cx.frame_buffer,
+            reflection.map_or(&self.black_hdr, |r| &r.view),
+        );
         {
-            let group = frame_group(
-                &cx.frame_buffer,
-                reflection.map_or(&self.black_hdr, |r| &r.view),
-            );
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("geometry"),
                 color_attachments: &[
@@ -1629,6 +1821,10 @@ impl Gpu {
             }
         }
 
+        if haze.is_some() {
+            self.atmosphere(&mut encoder, cx, &group);
+        }
+
         // The depth of field, then the share of the moment in the average.
         let focus = camera
             .focus
@@ -1659,7 +1855,7 @@ impl Gpu {
             fullscreen(
                 &mut encoder,
                 &self.post.accumulate,
-                &group,
+                &[&group],
                 &[&cx.accum],
                 clear,
             );
@@ -1821,7 +2017,7 @@ impl Gpu {
             fullscreen(
                 encoder,
                 &self.post.down_rgba,
-                &group,
+                &[&group],
                 &[&targets.level_views[level]],
                 Some(wgpu::Color::TRANSPARENT),
             );
@@ -1829,27 +2025,65 @@ impl Gpu {
     }
 
     /// The depth of field of the HDR frame into `cx.dof`.
+    /// Adds the light that scatters in the air to the frame, see `atmosphere.wgsl`. The
+    /// haze uses the half resolution targets of the depth of field, which runs later.
+    fn atmosphere(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        cx: &FrameContext,
+        frame: &wgpu::BindGroup,
+    ) {
+        let group = |half_key, haze| {
+            self.bind_group(
+                "haze",
+                &self.haze_layout,
+                &[
+                    wgpu::BindingResource::TextureView(&cx.key),
+                    wgpu::BindingResource::TextureView(half_key),
+                    wgpu::BindingResource::TextureView(haze),
+                    wgpu::BindingResource::TextureView(&self.noise),
+                    wgpu::BindingResource::Sampler(&self.linear_repeat),
+                ],
+            )
+        };
+        let black = &self.black_hdr;
+        fullscreen(
+            encoder,
+            &self.haze_march,
+            &[frame, &group(black, black)],
+            &[&cx.half_hdr, &cx.half_key],
+            None,
+        );
+        fullscreen(
+            encoder,
+            &self.haze_apply,
+            &[frame, &group(&cx.half_key, &cx.half_hdr)],
+            &[&cx.hdr],
+            None,
+        );
+    }
+
     fn depth_of_field(&self, encoder: &mut wgpu::CommandEncoder, cx: &FrameContext) {
         let black = &self.black_hdr;
         // The tile and half passes write the textures that the later passes read. So they
         // bind placeholders for them.
         let group = self.post_group(cx, 0, [&cx.hdr, &cx.key, black, black, black]);
-        fullscreen(encoder, &self.post.tile, &group, &[&cx.tiles], None);
+        fullscreen(encoder, &self.post.tile, &[&group], &[&cx.tiles], None);
         fullscreen(
             encoder,
             &self.post.half,
-            &group,
+            &[&group],
             &[&cx.half_hdr, &cx.half_key],
             None,
         );
         let group = self.post_group(cx, 0, [&cx.hdr, &cx.key, &cx.tiles, black, black]);
-        fullscreen(encoder, &self.post.near, &group, &[&cx.near], None);
+        fullscreen(encoder, &self.post.near, &[&group], &[&cx.near], None);
         let group = self.post_group(
             cx,
             0,
             [&cx.hdr, &cx.key, &cx.near, &cx.half_hdr, &cx.half_key],
         );
-        fullscreen(encoder, &self.post.dof, &group, &[&cx.dof], None);
+        fullscreen(encoder, &self.post.dof, &[&group], &[&cx.dof], None);
     }
 
     /// Draws the meshes in `order`. The reflection pass skips the reflectors and culls the
@@ -1913,7 +2147,7 @@ impl Gpu {
                 slots.len() as u64,
                 [source, &cx.key, &cx.tiles, aux, black],
             );
-            fullscreen(encoder, pipeline, &group, &[output], None);
+            fullscreen(encoder, pipeline, &[&group], &[output], None);
         };
         if let Some(b) = bloom {
             let threshold = b.threshold.max(0.0);
@@ -2137,7 +2371,7 @@ fn depth_attachment(
 fn fullscreen(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
-    group: &wgpu::BindGroup,
+    groups: &[&wgpu::BindGroup],
     targets: &[&wgpu::TextureView],
     clear: Option<wgpu::Color>,
 ) {
@@ -2152,7 +2386,9 @@ fn fullscreen(
         ..Default::default()
     });
     pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, group, &[]);
+    for (index, group) in groups.iter().enumerate() {
+        pass.set_bind_group(index as u32, *group, &[]);
+    }
     pass.draw(0..3, 0..1);
 }
 
@@ -2231,7 +2467,13 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
         ],
         attrs: [
             f32::from(!mesh.geometry.uvs.is_empty()),
-            f32::from(!mesh.geometry.colors.is_empty()),
+            f32::from(
+                !mesh.geometry.colors.is_empty()
+                    || mesh
+                        .instances
+                        .as_ref()
+                        .is_some_and(|i| !i.colors.is_empty()),
+            ),
             m.reflection,
             0.0,
         ],
@@ -2318,6 +2560,7 @@ fn batch(items: &mut Vec<DrawItem>, streamed: &mut Vec<Vertex>) -> Vec<u32> {
     let mut groups: HashMap<BatchKey, Vec<usize>> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
         if item.vertices.is_none()
+            || item.first_instance != 0
             || item.material.is_blended()
             || item.index_count > BATCH_MAX_INDICES
         {
@@ -2394,6 +2637,8 @@ fn batch(items: &mut Vec<DrawItem>, streamed: &mut Vec<Vertex>) -> Vec<u32> {
             indices: None,
             index_offset: (index_start * size_of::<u32>()) as u64,
             index_count: (indices.len() - index_start) as u32,
+            first_instance: 0,
+            instance_count: 1,
             batched: false,
             cast_shadow: first.cast_shadow,
             mirrored: first.mirrored,
@@ -2521,6 +2766,7 @@ impl FrameContext {
             post_buffer: buffer("post", UNIFORM_ALIGNMENT * POST_SLOTS, uniform),
             draw_buffer: buffer("draws", DRAW_STRIDE * 256, uniform),
             stream_buffer: buffer("streamed vertices", 1 << 20, wgpu::BufferUsages::VERTEX),
+            instance_buffer: buffer("instances", 1 << 16, wgpu::BufferUsages::VERTEX),
             stream_index_buffer: buffer("streamed indices", 1 << 18, wgpu::BufferUsages::INDEX),
             particle_buffer: buffer("particles", 1 << 16, wgpu::BufferUsages::VERTEX),
         }
