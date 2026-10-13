@@ -8,6 +8,7 @@ pub mod assets;
 pub mod factory;
 pub mod figure;
 pub mod look;
+pub mod montage;
 pub mod shots;
 pub mod stars;
 
@@ -23,6 +24,7 @@ use fframes::{
 use assets::Assets;
 use factory::FactorySet;
 use look::Overlay;
+use montage::MontageSet;
 use shots::Shot;
 
 include_media_dir!(pub struct TheWhyMedia, "examples/the-why/media");
@@ -63,6 +65,15 @@ impl TheWhy {
         let wave = Shot::new("Wave", 8.5, renderer(), move |r, t| {
             look::picture(r, set.shutter_wave(t), t, |t| set.moment_wave(t))
         });
+        let montage = Arc::new(MontageSet::new(&assets));
+        let (set, white) = (montage.clone(), montage.clone());
+        let why = Shot::new(
+            "Why",
+            15.0,
+            MontageSet::renderer(width, height),
+            move |r, t| look::picture(r, set.shutter(t), t, |t| set.moment(t)),
+        )
+        .overlay(move |t| white.overlay(t));
         Self {
             shots: vec![
                 Shot::svg("Cursor", 7.0, shots::cursor::cursor),
@@ -72,7 +83,7 @@ impl TheWhy {
                 Shot::placeholder("Walk", 10.0),
                 Shot::placeholder("Line", 6.5),
                 wave,
-                Shot::placeholder("Why", 15.0),
+                why,
                 Shot::placeholder("Sunrise", 10.0).overlay(shots::title::quote),
                 Shot::svg("Title", 6.0, shots::title::title),
             ],
