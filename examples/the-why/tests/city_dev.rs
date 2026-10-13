@@ -43,8 +43,19 @@ fn review() {
     let assets = assets::Assets::load(&dir).unwrap();
     let started = Instant::now();
     let set = city::CitySet::new(&assets);
-    println!("new: {:.2} s", started.elapsed().as_secs_f32());
+    println!(
+        "new: {:.2} s, {} screens",
+        started.elapsed().as_secs_f32(),
+        set.screens().len()
+    );
     let renderer = city::CitySet::renderer(1920, 804);
+    let (scene, _) = set.moment(8.0);
+    for &id in set.screens() {
+        if let Some(mesh) = scene[id].as_mesh() {
+            let b = mesh.geometry.bounds();
+            println!("screen {:?} {:?} seen", b.center(), b.size());
+        }
+    }
     let mut tiles = Vec::new();
     for t in times() {
         let started = Instant::now();
@@ -95,12 +106,19 @@ fn timing() {
     let variants: [Variant; 5] = [
         ("all", |_| {}),
         ("no haze", |s| s.atmosphere = None),
-        ("no reflector", |s| s.reflector = None),
-        ("no shadow", |s| {
+        ("no particles", |s| {
             let ids: Vec<_> = s.nodes().map(|(id, _)| id).collect();
             for id in ids {
-                if let Object::Light(Light::Directional(d)) = &mut s[id].object {
-                    d.shadow = None;
+                if let Object::Particles(p) = &mut s[id].object {
+                    p.items.clear();
+                }
+            }
+        }),
+        ("no blended", |s| {
+            let ids: Vec<_> = s.nodes().map(|(id, _)| id).collect();
+            for id in ids {
+                if s[id].material_mut().is_some_and(|m| m.transparent) {
+                    s[id].visible = false;
                 }
             }
         }),
@@ -146,10 +164,45 @@ fn clear() {
         .unwrap_or(8.0);
     let (mut scene, mut camera) = set.moment(t);
     scene.atmosphere = None;
+    // `CITY_HIDE=3,5` hides the root nodes 3 and 5.
+    if let Ok(list) = std::env::var("CITY_HIDE") {
+        let roots: Vec<_> = scene
+            .nodes()
+            .filter(|(_, n)| n.parent().is_none())
+            .map(|(id, _)| id)
+            .collect();
+        for item in list.split(',') {
+            let (a, b) = item.split_once('-').unwrap_or((item, item));
+            let (a, b) = (
+                a.parse::<usize>().unwrap_or(0),
+                b.parse::<usize>().unwrap_or(0),
+            );
+            for &id in roots.iter().take(b + 1).skip(a) {
+                scene[id].visible = false;
+            }
+        }
+        println!("roots {}", roots.len());
+    }
+    if std::env::var("CITY_SINGLE").is_ok() {
+        let ids: Vec<_> = scene.nodes().map(|(id, _)| id).collect();
+        for id in ids {
+            if let Some(m) = scene[id].material_mut() {
+                m.side = fframes_3d::Side::Front;
+            }
+        }
+    }
     for (id, node) in scene.nodes() {
         if node.name.as_deref() == Some("crane") {
             println!("crane at {:?}", scene.world_position(id));
         }
+    }
+    // `CITY_LOOK=x,y,z,tx,ty,tz` looks from a point at a target.
+    if let Ok(look) = std::env::var("CITY_LOOK") {
+        let v: Vec<f32> = look.split(',').filter_map(|v| v.parse().ok()).collect();
+        camera = look::lens(28.0)
+            .position(fframes_3d::vec3(v[0], v[1], v[2]))
+            .look_at(fframes_3d::vec3(v[3], v[4], v[5]))
+            .clip(1.0, 9000.0);
     }
     // `CITY_CRANE=n` looks at crane n from 120 m.
     if let Some(n) = std::env::var("CITY_CRANE")
@@ -233,5 +286,94 @@ fn end_direction() {
             c.forward(),
             c.fov
         );
+    }
+}
+
+/// An overview of the Manhattan data, to check its frame and its triangles.
+#[test]
+#[ignore = "renders the raw data"]
+fn nyc_overview() {
+    use fframes_3d::*;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("dynamic_media/nyc/manhattan.bin");
+    let started = Instant::now();
+    let bytes = std::fs::read(&path).unwrap();
+    let data = city::data::Manhattan::load(&bytes).unwrap();
+    println!("load {:.2} s", started.elapsed().as_secs_f32());
+    let (mut up, mut down) = (0, 0);
+    let mut positions = Vec::new();
+    for b in &data.buildings {
+        for t in b.roofs.iter().chain(&b.walls) {
+            positions.extend_from_slice(t);
+        }
+        for t in &b.roofs {
+            if (t[1] - t[0]).cross(t[2] - t[0]).y > 0.0 {
+                up += 1;
+            } else {
+                down += 1;
+            }
+        }
+    }
+    println!(
+        "roofs up {up} down {down}, buildings {}",
+        data.buildings.len()
+    );
+    let mut scene = Scene::new()
+        .environment(Environment::studio())
+        .background(Background::Color(Rgb::hex(0x101820)));
+    scene.add(Node::mesh(
+        Geometry::from_triangles(&positions),
+        Material::normals().double_sided(),
+    ));
+    let flat = |tris: &[[Vec2; 3]], y: f32| {
+        let p: Vec<Vec3> = tris
+            .iter()
+            .flat_map(|t| t.map(|p| vec3(p.x, y, p.y)))
+            .collect();
+        Geometry::from_triangles(&p)
+    };
+    scene.add(Node::mesh(
+        flat(&data.land, 0.0),
+        Material::unlit(0x303438).double_sided(),
+    ));
+    scene.add(Node::mesh(
+        flat(&data.parks, 0.1),
+        Material::unlit(0x1d4a2a).double_sided(),
+    ));
+    let mut streets = Vec::new();
+    for s in &data.streets {
+        for w in s.points.windows(2) {
+            let d = (w[1] - w[0]).normalize_or_zero();
+            let side = vec2(-d.y, d.x) * s.width * 0.5;
+            let c =
+                [w[0] + side, w[1] + side, w[1] - side, w[0] - side].map(|p| vec3(p.x, 0.3, p.y));
+            streets.extend_from_slice(&[c[0], c[1], c[2], c[0], c[2], c[3]]);
+        }
+    }
+    scene.add(Node::mesh(
+        Geometry::from_triangles(&streets),
+        Material::unlit(0xc0a060).double_sided(),
+    ));
+    let renderer = city::CitySet::renderer(1920, 804).cpu().gpu();
+    for (name, pos, target) in [
+        ("nyc_top", vec3(0.0, 9000.0, 300.0), vec3(0.0, 0.0, 301.0)),
+        ("nyc_esb", vec3(400.0, 350.0, -900.0), vec3(0.0, 200.0, 0.0)),
+        (
+            "nyc_north",
+            vec3(117.0, 300.0, -240.0),
+            vec3(300.0, 100.0, 800.0),
+        ),
+    ] {
+        let mut camera = look::lens(28.0)
+            .position(pos)
+            .look_at(target)
+            .clip(1.0, 20000.0);
+        if name == "nyc_top" {
+            camera.up = Vec3::Z;
+            camera = camera.fov(60.0);
+        }
+        let pixels = renderer.render_pixels(&scene, &camera);
+        let image =
+            RgbaImage::from_raw(pixels.width, pixels.height, pixels.to_straight_rgba()).unwrap();
+        image.save(out_dir().join(format!("{name}.png"))).unwrap();
     }
 }

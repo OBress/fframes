@@ -1,12 +1,26 @@
-//! Procedural textures of the city: the facades with their lit windows, the roofs, and the
-//! pools of light that the street lamps make on the asphalt.
+//! Procedural textures of the city: the facades with their lit windows, the roofs, the
+//! pools of light that the street lamps make on the asphalt, and the placeholder of the
+//! video screens.
 
 use std::sync::Arc;
 
 use fframes_3d::math::hash;
 use fframes_3d::{Rgb, Texture, Vec3};
 
-use super::layout::Style;
+/// The facade of a building.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// A glass curtain wall, for the towers after 1960.
+    Glass,
+    /// Dark glass between light vertical fins, for the towers after 1960.
+    Fins,
+    /// Concrete with punched windows, for the middle heights.
+    Office,
+    /// Stone and brick with punched windows, for the buildings before 1945.
+    Prewar,
+    /// Dark low buildings with few lit windows.
+    Low,
+}
 
 /// The window bays across one facade texture.
 pub const BAYS: f32 = 32.0;
@@ -71,6 +85,14 @@ fn cell(style: Style) -> Cell {
             glass_finish: [0.05, 0.0],
             wall_finish: [0.85, 0.0],
             floors: [0.3, 0.4],
+        },
+        Style::Prewar => Cell {
+            glass: [0.26, 0.74, 0.18, 0.7],
+            wall: 0x6e665e,
+            glass_color: 0x10151c,
+            glass_finish: [0.05, 0.0],
+            wall_finish: [0.9, 0.0],
+            floors: [0.35, 0.4],
         },
         Style::Low => Cell {
             glass: [0.24, 0.76, 0.2, 0.68],
