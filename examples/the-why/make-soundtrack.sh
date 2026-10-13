@@ -43,7 +43,7 @@ post() {
 
 # ---- The narration: a calm, warm voice, close to the microphone, unhurried.
 say() {
-    post "text-to-speech/$voice?output_format=mp3_44100_192" "$out/$1.mp3" "{
+    post "text-to-speech/$voice?output_format=mp3_44100_128" "$out/$1.mp3" "{
         \"text\": \"$2\",
         \"model_id\": \"eleven_v3\",
         \"voice_settings\": {\"stability\": 0.5, \"similarity_boost\": 0.8, \"style\": 0.15, \"speed\": 0.92}
@@ -54,10 +54,12 @@ say voice_better "Now they do it better than we ever did."
 say voice_anything "They can build anything."
 say voice_worth "They just don't know what is worth building."
 say voice_theirs "That part was never theirs to take."
-say voice_quote "If you have your why... you can bear almost any how."
+# the quote comes in two lines, in time with the two lines on the picture
+say voice_quote_a "If you have your why,"
+say voice_quote_b "you can bear almost any how."
 
 # ---- The score: one piece, composed to the cut (the durations are the shots of SCRIPT.md).
-post "music?output_format=mp3_48000_192" "$out/score.mp3" '{
+post "music?output_format=mp3_44100_128" "$out/score.mp3" '{
     "model_id": "music_v2_5",
     "composition_plan": {"chunks": [
         {"text": "[Cursor] {low drone} {a ticking clock}", "duration_ms": 7000,
@@ -92,7 +94,7 @@ post "music?output_format=mp3_48000_192" "$out/score.mp3" '{
 
 # ---- The sound effects.
 sound() {
-    post "sound-generation?output_format=mp3_44100_192" "$out/$1.mp3" "{
+    post "sound-generation?output_format=mp3_44100_128" "$out/$1.mp3" "{
         \"text\": \"$2\", \"duration_seconds\": $3, \"prompt_influence\": 0.6
     }"
 }
@@ -111,5 +113,14 @@ sound sfx_cables "Steel bridge cables tighten and creak over a canyon" 4
 sound sfx_glass "Glass panels click into place one after another, airy chimes" 4
 sound sfx_rocket "A rocket ignites on the pad and lifts off: deep rumble rising to a roar" 6
 sound sfx_birds "Sparse morning birds in a quiet desert at sunrise" 9
+sound sfx_keys "A person types slowly on a quiet mechanical keyboard: a few soft keystrokes in a silent room" 2.5
+sound sfx_flood "A digital stream of thousands of keystrokes that speeds up and rises into a whoosh" 3
+sound sfx_flash "A deep cinematic whoosh rises into a bright flash" 1.5
+sound sfx_hud_type "Quiet electronic blips of letters typed on a robot display" 1.2
+sound sfx_crane "A tower crane motor whines and its steel cable creaks far away at night" 5
+sound sfx_village "A small village at dusk far away: one dog barks, a door closes, soft wind" 5
+sound sfx_ignite "A glowing line ignites with a soft warm whoom" 2
+sound sfx_sun "A bright airy whoosh of light swells and fades into silence" 2.5
+sound sfx_boom "A low cinematic boom with a long soft tail" 5
 
 echo "done: $out"

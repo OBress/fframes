@@ -14,7 +14,9 @@ pub mod stars;
 use std::sync::Arc;
 
 use fframes::{
-    AudioMap, Color, Duration, FFramesContext, Frame, Scene, Scenes, Svgr, Video,
+    AudioMap,
+    AudioTimestamp::{Eof, Second},
+    AudioTrack, Color, Ducking, Duration, FFramesContext, Frame, Scene, Scenes, Svgr, Video,
     include_media_dir, svgr,
 };
 
@@ -89,8 +91,64 @@ impl Video for TheWhy {
         Duration::Auto
     }
 
+    /// The sound of the film, made by `make-soundtrack.sh`: one score composed to the cut,
+    /// the narration and the sound effects, at the times of SCRIPT.md.
     fn audio(&self) -> AudioMap<'_> {
-        AudioMap::none()
+        let score = Ducking {
+            depth_db: -7.0,
+            attack: 0.4,
+            hold: 0.4,
+            release: 1.2,
+            ..Default::default()
+        };
+        let say = |file, at: f32| AudioTrack::new(file, Second(at)..Eof).voice().gain_db(1.0);
+        let sound = |file, at: f32, gain: f32| AudioTrack::new(file, Second(at)..Eof).gain_db(gain);
+        AudioMap::from(vec![
+            AudioTrack::new("score.mp3", Second(0.0)..Eof)
+                .gain_db(-4.0)
+                .duck(score),
+            say("voice_how.mp3", 10.0),
+            say("voice_better.mp3", 21.5),
+            say("voice_anything.mp3", 32.0),
+            say("voice_worth.mp3", 37.0),
+            say("voice_theirs.mp3", 61.0),
+            say("voice_quote_a.mp3", 84.0),
+            say("voice_quote_b.mp3", 86.4),
+            // the cursor: the typed question, the flood of answers, the flash into the arc
+            sound("sfx_keys.mp3", 1.4, -12.0),
+            sound("sfx_flood.mp3", 3.6, -13.0).fade_in(0.8),
+            sound("sfx_flash.mp3", 5.6, -9.0),
+            // the factory: the arc on the cut, the hall, the watcher turns, the eye, the dive
+            sound("sfx_arc.mp3", 7.0, -6.0),
+            sound("sfx_factory.mp3", 7.0, -15.0)
+                .fade_in(0.4)
+                .fade_out(2.0),
+            sound("sfx_servo.mp3", 16.9, -9.0),
+            sound("sfx_hud.mp3", 19.0, -12.0),
+            sound("sfx_hud_type.mp3", 21.4, -14.0),
+            sound("sfx_dive.mp3", 26.2, -8.0),
+            // the city, the desert, the line
+            sound("sfx_city.mp3", 29.0, -17.0)
+                .fade_in(1.0)
+                .fade_out(1.5),
+            sound("sfx_crane.mp3", 34.0, -18.0).fade_out(1.0),
+            sound("sfx_wind.mp3", 42.0, -8.0).fade_in(1.5).fade_out(1.0),
+            sound("sfx_steps.mp3", 45.0, -9.0).fade_out(1.0),
+            sound("sfx_ignite.mp3", 54.3, -10.0),
+            sound("sfx_hum.mp3", 54.8, -9.0).fade_in(0.8),
+            sound("sfx_streak.mp3", 56.6, -7.0),
+            // the wave, the builds, the sunrise
+            sound("sfx_wave.mp3", 59.6, -9.0),
+            sound("sfx_cables.mp3", 67.5, -11.0),
+            sound("sfx_village.mp3", 70.0, -16.0).fade_out(1.0),
+            sound("sfx_glass.mp3", 73.5, -11.0),
+            sound("sfx_rocket.mp3", 77.6, -7.0).fade_out(1.0),
+            sound("sfx_sun.mp3", 81.3, -9.0),
+            sound("sfx_birds.mp3", 84.5, -17.0)
+                .fade_in(2.0)
+                .fade_out(2.0),
+            sound("sfx_boom.mp3", 92.4, -12.0),
+        ])
     }
 
     fn define_scenes(&self) -> Scenes<'_> {

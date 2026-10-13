@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use fframes::cli::{self, clap};
 use fframes::{
-    CombinedMediaProvider, EncoderOptions, MediaDirectory, MediaProvider, RenderOptions,
+    AudioMixOptions, CombinedMediaProvider, EncoderOptions, LimiterOptions, MediaDirectory,
+    MediaProvider, RenderOptions,
 };
 use fframes_skia_renderer::{
     SkiaFFramesRenderer, SkiaPipelineConcurrencyPolicy, SkiaPipelineConfig,
@@ -36,6 +37,15 @@ fn main() -> ExitCode {
         video_encoder_options: EncoderOptions {
             preferred_encoder: Some("libx264"),
             codec_params: Some(&[("crf", "16"), ("preset", "slow"), ("tune", "film")]),
+            ..Default::default()
+        },
+        // The mix measures about -15.5 LUFS. This gain brings it near -14 LUFS for the web.
+        audio_mix: AudioMixOptions {
+            master_gain_db: 1.5,
+            limiter: Some(LimiterOptions {
+                ceiling_db: -1.2,
+                ..Default::default()
+            }),
             ..Default::default()
         },
         ..Default::default()
