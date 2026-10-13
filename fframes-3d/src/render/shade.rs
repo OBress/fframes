@@ -63,6 +63,9 @@ pub(crate) struct Surface {
     pub color: Vec4,
     /// The UV units that one meter of the triangle spans.
     pub uv_per_meter: f32,
+    /// The directions of +U and +V on the triangle, for the normal map. Zero without one.
+    pub dpdu: Vec3,
+    pub dpdv: Vec3,
     /// How much the smooth normal turns to the next pixel right and down: the sum of the
     /// squared differences. The specular antialiasing uses it.
     pub normal_variation: f32,
@@ -85,15 +88,22 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
         s.face_normal
     };
     let mut n = if m.flat_shading { face } else { s.normal };
-    // a smooth normal can point away from the camera near a silhouette
+    // A back face, or a smooth normal that points away from the camera near a silhouette,
+    // turns around. A normal map bends the normal before, as for the front face.
+    let side = if n.dot(face) < 0.0 { -1.0 } else { 1.0 };
+    // The footprint of the pixel in UV units. Surfaces seen at a low angle get blurrier.
+    let footprint =
+        distance * ctx.pixel_angle / (side * n.dot(v)).max(0.03).sqrt() * s.uv_per_meter;
+    let sample = |map: &crate::Texture| map.sample_lod(s.uv, map.lod(footprint));
+    if draw.has_uv
+        && let Some(map) = &m.normal_map
+    {
+        n = bend(n, s.dpdu, s.dpdv, sample(map), m.normal_scale);
+    }
     if n.dot(face) < 0.0 {
         n = -n;
     }
-
-    // The footprint of the pixel in UV units. Surfaces seen at a low angle get blurrier.
     let n_dot_v = n.dot(v).max(1e-4);
-    let footprint = distance * ctx.pixel_angle / n_dot_v.max(0.03).sqrt() * s.uv_per_meter;
-    let sample = |map: &crate::Texture| map.sample_lod(s.uv, map.lod(footprint));
 
     let mut base = m.color.0;
     let mut alpha = m.opacity;
@@ -173,6 +183,26 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
         Blending::Additive => (rgb * alpha).extend(0.0),
         Blending::Normal => (rgb * alpha).extend(alpha),
     }
+}
+
+/// The normal `n` bent by the normal map `texel`. `dpdu` and `dpdv` are the directions of
+/// +U and +V. Green points up in the image, that is to -V.
+fn bend(n: Vec3, dpdu: Vec3, dpdv: Vec3, texel: Vec4, scale: f32) -> Vec3 {
+    let m = texel.truncate() * 2.0 - 1.0;
+    let t = (dpdu - n * n.dot(dpdu)).normalize_or_zero();
+    let b = (dpdv - n * n.dot(dpdv)).normalize_or_zero();
+    (t * (m.x * scale) - b * (m.y * scale) + n * m.z).normalize_or(n)
+}
+
+/// The directions of +U and +V on a triangle with the edges `e1` and `e2` and the UV edges
+/// `d1` and `d2`. Their lengths are not normalized. Mirrored UVs give mirrored directions.
+pub(crate) fn uv_directions(e1: Vec3, e2: Vec3, d1: Vec2, d2: Vec2) -> (Vec3, Vec3) {
+    let det = d1.perp_dot(d2);
+    let sign = if det == 0.0 { 0.0 } else { det.signum() };
+    (
+        (e1 * d2.y - e2 * d1.y) * sign,
+        (e2 * d1.x - e1 * d2.x) * sign,
+    )
 }
 
 /// The metal and roughness PBR color of a surface: the direct light, then the ambient
@@ -289,6 +319,10 @@ fn standard(
         irradiance += env.irradiance(n) * m.env_intensity;
     }
     let mut indirect = diffuse * irradiance;
+    let occlusion = match &m.ao_map {
+        Some(map) if draw.has_uv => map.sample_lod(s.uv, map.lod(footprint)).x,
+        _ => 1.0,
+    };
 
     if has_env {
         let mirror = (-v).reflect(n);
@@ -323,7 +357,7 @@ fn standard(
         indirect += irradiance * (f0 * scale + Vec3::splat(bias)) * 0.5;
     }
 
-    direct + indirect
+    direct + indirect * occlusion
 }
 
 /// three.js `getDistanceAttenuation`.

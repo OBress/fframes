@@ -216,3 +216,54 @@ pub fn hall() -> (Scene, Camera) {
         .look_at(vec3(-1.0, 3.5, 4.0));
     (scene, camera)
 }
+
+/// A floor and a sphere with a normal map of round studs and an ambient occlusion map, lit
+/// at a low angle so that the studs cast highlights.
+pub fn studs() -> (Scene, Camera) {
+    // a dome on each of 8 x 8 cells: the normal points away from the cell center
+    let dome = |u: f32, v: f32| {
+        let (x, y) = ((u * 8.0).fract() - 0.5, (v * 8.0).fract() - 0.5);
+        let r2 = (x * x + y * y) / 0.16;
+        if r2 >= 1.0 {
+            return (Vec3::Z, 1.0);
+        }
+        // up in the image is -v, so the green channel takes -y
+        let n = vec3(x, -y, 0.0) * 2.5 + Vec3::Z * (1.0 - r2).sqrt();
+        (n.normalize(), 1.0)
+    };
+    let normal = Texture::from_fn_data(256, 256, false, |u, v| {
+        let n = dome(u, v).0 * 0.5 + 0.5;
+        [
+            (n.x * 255.0) as u8,
+            (n.y * 255.0) as u8,
+            (n.z * 255.0) as u8,
+            255,
+        ]
+    });
+    let ao = Texture::from_fn_data(256, 256, false, |u, v| {
+        let (x, y) = ((u * 8.0).fract() - 0.5, (v * 8.0).fract() - 0.5);
+        let ring = ((x * x + y * y).sqrt() - 0.42).abs();
+        let a = (180.0 + ring.min(0.06) / 0.06 * 75.0) as u8;
+        [a, a, a, 255]
+    });
+    let (normal, ao) = (std::sync::Arc::new(normal), std::sync::Arc::new(ao));
+    let material = Material::standard(0x8a6e52)
+        .roughness(0.35)
+        .normal_map(normal.clone())
+        .ao_map(ao.clone());
+    let mut scene = Scene::new()
+        .environment(Environment::studio())
+        .background(Background::Color(Rgb::hex(0x101216)));
+    scene.add(Node::mesh(Geometry::floor(8.0, 8.0), material.clone()));
+    scene
+        .add(Node::mesh(Geometry::sphere(0.8, 64, 32), material.color(0x4a6a8a)).at(0.0, 0.8, 0.0));
+    scene.add(Node::light(Light::sun(
+        Rgb::WHITE,
+        3.0,
+        vec3(-4.0, 1.5, -1.0),
+    )));
+    let camera = Camera::perspective(40.0)
+        .at(0.0, 2.2, 4.0)
+        .look_at(vec3(0.0, 0.5, 0.0));
+    (scene, camera)
+}

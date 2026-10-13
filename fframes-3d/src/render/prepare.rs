@@ -375,7 +375,6 @@ pub(crate) struct ScreenTri {
     pub inv_w: Vec3,
     pub v: [u32; 3],
     pub draw: u32,
-    pub back_facing: bool,
     /// The clip plane distance of each vertex times its `1 / w`. At a pixel, the sum
     /// weighted by the barycentrics has the sign of the distance.
     pub clip: Option<Vec3>,
@@ -585,7 +584,6 @@ fn screen_tri(
         inv_w,
         v,
         draw,
-        back_facing,
         clip: clip_plane,
         bounds,
         depth: (clip[0].w + clip[1].w + clip[2].w) / 3.0,

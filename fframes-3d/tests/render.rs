@@ -3,7 +3,7 @@
 use fframes_3d::*;
 
 mod common;
-use common::{cubes, hall, save, showcase};
+use common::{cubes, hall, save, showcase, studs};
 
 #[test]
 fn renders_showcase() {
@@ -139,4 +139,28 @@ fn renders_atmosphere() {
     eprintln!("mean brightness: {hazy:.1} with haze, {clear:.1} without");
     // the air scatters the light of the sun and the lamps into the dark hall
     assert!(hazy > clear + 5.0);
+}
+
+#[test]
+fn renders_normal_maps() {
+    let renderer = Renderer::new(960, 540).cpu();
+    let (scene, camera) = studs();
+    let bumpy = renderer.render_pixels(&scene, &camera);
+    save("normal_map", &bumpy);
+    let mut flat = scene.clone();
+    for (id, _) in scene.nodes() {
+        if let Object::Mesh(mesh) = &mut flat[id].object {
+            mesh.material.normal_map = None;
+        }
+    }
+    let flat = renderer.render_pixels(&flat, &camera);
+    let diff = bumpy
+        .rgba
+        .iter()
+        .zip(&flat.rgba)
+        .map(|(a, b)| f64::from(a.abs_diff(*b)))
+        .sum::<f64>()
+        / bumpy.rgba.len() as f64;
+    eprintln!("normal map changes the frame by {diff:.2} / 255 on average");
+    assert!(diff > 2.0);
 }

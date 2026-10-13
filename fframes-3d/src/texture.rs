@@ -68,6 +68,18 @@ impl Texture {
         ))
     }
 
+    /// Decodes a PNG, JPEG or WebP image of linear data: a normal, roughness, metalness or
+    /// ambient occlusion map.
+    pub fn decode_linear(bytes: &[u8]) -> Result<Self, image::ImageError> {
+        let image = image::load_from_memory(bytes)?.to_rgba8();
+        Ok(Self::from_rgba8(
+            image.width(),
+            image.height(),
+            image.as_raw(),
+            false,
+        ))
+    }
+
     /// Makes a color texture from `f(u, v)`, which returns an sRGB color for `u` and `v` in
     /// `0..1`.
     pub fn from_fn(width: u32, height: u32, f: impl Fn(f32, f32) -> fframes::Color) -> Self {

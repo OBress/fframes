@@ -80,3 +80,16 @@ fn gpu_atmosphere_matches_cpu() {
     eprintln!("gpu frame {:?}", start.elapsed() / 10);
     assert!(compare("atmosphere", &cpu, &gpu) < 4.0);
 }
+
+#[test]
+fn gpu_normal_maps_match_cpu() {
+    let gpu_renderer = Renderer::new(960, 540);
+    if !gpu_renderer.uses_gpu() {
+        eprintln!("no GPU, skipped");
+        return;
+    }
+    let (scene, camera) = common::studs();
+    let cpu = gpu_renderer.clone().cpu().render_pixels(&scene, &camera);
+    let gpu = gpu_renderer.render_pixels(&scene, &camera);
+    assert!(compare("normal_map", &cpu, &gpu) < 4.0);
+}
