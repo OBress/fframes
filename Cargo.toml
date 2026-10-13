@@ -52,6 +52,7 @@ members = [
     "examples/overdrive",
     "examples/assembly",
     "examples/arm",
+    "examples/the-why",
     "examples/made-of-motion",
     "examples/shader-mode",
 ]
