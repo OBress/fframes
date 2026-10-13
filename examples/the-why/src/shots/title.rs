@@ -4,7 +4,7 @@ use fframes::{Svgr, svgr};
 use fframes_3d::math::smoothstep;
 
 use crate::WIDTH;
-use crate::look::{BAR, PICTURE_HEIGHT, SANS, SERIF};
+use crate::look::{BAR, PICTURE_HEIGHT, SERIF};
 
 /// The one warm color of the film: human intent.
 const WARM: &str = "#ffb35c";
@@ -43,7 +43,7 @@ pub fn quote(t: f32) -> Svgr<'static> {
                 opacity={second}>
                 "you can bear almost any how."
             </text>
-            <text x={x + 4.0} y={y + 210.0} font-family={SANS} font-size="34" letter-spacing="8" fill={WHITE}
+            <text x={x + 4.0} y={y + 210.0} font-family={SERIF} font-size="38" letter-spacing="8" fill={WHITE}
                 opacity={name * 0.75}>
                 "FRIEDRICH NIETZSCHE"
             </text>
@@ -64,9 +64,11 @@ fn text_width(font: &[u8], text: &str, size: f32) -> f32 {
     f32::from(advance) * size / f32::from(face.units_per_em())
 }
 
-const SANS_FONT: &[u8] = include_bytes!("../../media/Inter_24pt-Regular.ttf");
-const SERIF_FONT: &[u8] = include_bytes!("../../media/InstrumentSerif-Italic.ttf");
-const TITLE_SIZE: f32 = 128.0;
+const ROMAN_FONT: &[u8] = include_bytes!("../../media/InstrumentSerif-Regular.ttf");
+const ITALIC_FONT: &[u8] = include_bytes!("../../media/InstrumentSerif-Italic.ttf");
+const TITLE_SIZE: f32 = 152.0;
+/// The italic word is a little larger, so its x-height matches the roman words.
+const ITALIC: f32 = 1.06;
 
 /// One line of the title: `before`, the word `word` in the italic serif, and `after`,
 /// centered on the frame. Returns the line and the left and right ends of the word.
@@ -79,18 +81,18 @@ fn title_line(
     opacity: f32,
 ) -> (Svgr<'static>, f32, f32) {
     let widths = [
-        text_width(SANS_FONT, before, TITLE_SIZE),
-        text_width(SERIF_FONT, word, TITLE_SIZE * 1.12),
-        text_width(SANS_FONT, after, TITLE_SIZE),
+        text_width(ROMAN_FONT, before, TITLE_SIZE),
+        text_width(ITALIC_FONT, word, TITLE_SIZE * ITALIC),
+        text_width(ROMAN_FONT, after, TITLE_SIZE),
     ];
     let left = (WIDTH as f32 - widths.iter().sum::<f32>()) * 0.5;
     let (word_left, word_right) = (left + widths[0], left + widths[0] + widths[1]);
     let line = svgr!(
         <g opacity={opacity}>
-            <text x={left} y={y} font-family={SANS} font-size={TITLE_SIZE} fill={WHITE}>{before}</text>
-            <text x={word_left} y={y} font-family={SERIF} font-style="italic" font-size={TITLE_SIZE * 1.12}
+            <text x={left} y={y} font-family={SERIF} font-size={TITLE_SIZE} fill={WHITE}>{before}</text>
+            <text x={word_left} y={y} font-family={SERIF} font-style="italic" font-size={TITLE_SIZE * ITALIC}
                 fill={word_fill}>{word}</text>
-            <text x={word_right} y={y} font-family={SANS} font-size={TITLE_SIZE} fill={WHITE}>{after}</text>
+            <text x={word_right} y={y} font-family={SERIF} font-size={TITLE_SIZE} fill={WHITE}>{after}</text>
         </g>
     );
     (line, word_left, word_right)
@@ -117,7 +119,7 @@ pub fn title(t: f32) -> Svgr<'static> {
 
     // the warm line, drawn from left to right under the word
     let drawn = fade_in(t, 3.1, 0.9);
-    let line_y = y + 64.0;
+    let line_y = y + 52.0;
     let length = ((word_right - word_left + 40.0) * drawn).max(0.01);
     let start = word_left - 20.0;
     let end = start + length;
@@ -152,7 +154,7 @@ pub fn title(t: f32) -> Svgr<'static> {
                     font-style="italic" font-size="64" fill={WHITE} text-anchor="middle" opacity={credit * 0.85}>
                     "The Why"
                 </text>
-                <text x={WIDTH as f32 * 0.5} y={(BAR + PICTURE_HEIGHT) as f32 - 90.0} font-family={SANS} font-size="26"
+                <text x={WIDTH as f32 * 0.5} y={(BAR + PICTURE_HEIGHT) as f32 - 90.0} font-family={SERIF} font-size="30"
                     letter-spacing="7" fill="#8a8f98" text-anchor="middle" opacity={credit}>
                     "MADE WITH FFRAMES"
                 </text>
