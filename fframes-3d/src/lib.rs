@@ -112,7 +112,7 @@ pub use gltf::{Model, ModelError, ModelInstance};
 pub use light::{DirectionalLight, Light, PointLight, Shadow, SpotLight};
 pub use material::{Blending, Material, Pattern, Shading, Side};
 pub use math::{Aabb, Mat3, Mat4, Quat, Vec2, Vec3, Vec4, deg, euler, euler_deg, vec2, vec3, vec4};
-pub use render::{Bloom, Pixels, Renderer, ToneMapping, cpu_frames};
+pub use render::{Bloom, Hybrid, Pixels, Renderer, ToneMapping};
 pub use scene::{
     Atmosphere, Background, Fog, Instances, Mesh, Node, NodeId, Object, Particle, Particles,
     Reflector, Scene, Skin,

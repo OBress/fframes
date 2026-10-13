@@ -206,6 +206,27 @@ impl Texture {
         a.lerp(self.bilinear(&self.levels[l0 + 1], uv), f)
     }
 
+    /// Anisotropic sample like the GPU sampler (`anisotropy_clamp` 8). `dx` and `dy` are the
+    /// UV changes to the next pixel right and down, measured before `repeat`. Up to 8
+    /// trilinear samples along the long axis of the pixel footprint, at the mipmap level of
+    /// its short axis, so that a surface seen at a low angle stays as sharp as on the GPU.
+    pub fn sample_grad(&self, uv: Vec2, dx: Vec2, dy: Vec2) -> Vec4 {
+        const MAX_ANISOTROPY: f32 = 8.0;
+        let texels = Vec2::new(self.width as f32, self.height as f32) * self.repeat;
+        let (x, y) = ((dx * texels).length(), (dy * texels).length());
+        let (major, minor, axis) = if x >= y { (x, y, dx) } else { (y, x, dy) };
+        let count = (major / minor.max(1e-6)).ceil().clamp(1.0, MAX_ANISOTROPY);
+        let lod = (major / count).max(1e-6).log2();
+        if count <= 1.0 || !count.is_finite() {
+            return self.sample_lod(uv, lod);
+        }
+        let sum = (0..count as usize).fold(Vec4::ZERO, |sum, i| {
+            let t = (i as f32 + 0.5) / count - 0.5;
+            sum + self.sample_lod(uv + axis * t, lod)
+        });
+        sum / count
+    }
+
     /// The mipmap level for a pixel that covers `footprint` UV units, measured before
     /// `repeat`.
     pub fn lod(&self, footprint: f32) -> f32 {
