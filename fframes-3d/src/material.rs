@@ -116,6 +116,14 @@ pub struct Material {
     pub emissive_map: Option<Arc<Texture>>,
     /// The glTF metallic-roughness texture: roughness in green, metalness in blue.
     pub metal_rough_map: Option<Arc<Texture>>,
+    /// The tangent space normal map, three.js `normalMap`. Green points up in the image (the
+    /// OpenGL convention of three.js and glTF). Load it with [`Texture::decode_linear`].
+    pub normal_map: Option<Arc<Texture>>,
+    /// How much the normal map bends the normals, three.js `normalScale`. Default 1.
+    pub normal_scale: f32,
+    /// The ambient occlusion map, three.js `aoMap`. Its red channel darkens the light from
+    /// the environment and the ambient lights. Load it with [`Texture::decode_linear`].
+    pub ao_map: Option<Arc<Texture>>,
     /// Default `None`.
     pub pattern: Option<Pattern>,
     /// Whether the scene fog applies. Default `true`.
@@ -146,6 +154,9 @@ impl Default for Material {
             map: None,
             emissive_map: None,
             metal_rough_map: None,
+            normal_map: None,
+            normal_scale: 1.0,
+            ao_map: None,
             pattern: None,
             fog: true,
         }
@@ -303,6 +314,24 @@ impl Material {
     /// Sets the emissive texture.
     pub fn emissive_map(mut self, texture: impl Into<Arc<Texture>>) -> Self {
         self.emissive_map = Some(texture.into());
+        self
+    }
+
+    /// Sets the normal map.
+    pub fn normal_map(mut self, texture: impl Into<Arc<Texture>>) -> Self {
+        self.normal_map = Some(texture.into());
+        self
+    }
+
+    /// Sets how much the normal map bends the normals.
+    pub fn normal_scale(mut self, scale: f32) -> Self {
+        self.normal_scale = scale;
+        self
+    }
+
+    /// Sets the ambient occlusion map.
+    pub fn ao_map(mut self, texture: impl Into<Arc<Texture>>) -> Self {
+        self.ao_map = Some(texture.into());
         self
     }
 

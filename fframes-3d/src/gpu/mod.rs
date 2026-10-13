@@ -162,6 +162,7 @@ struct DrawUniform {
     maps: [f32; 4],
     attrs: [f32; 4],
     uv_transform: [f32; 4],
+    detail: [f32; 4],
 }
 
 /// `Post` in `post.wgsl`.
@@ -270,6 +271,7 @@ struct Variant {
     rim: bool,
     lights: u8,
     reflection: bool,
+    normal_map: bool,
 }
 
 impl Variant {
@@ -292,15 +294,19 @@ impl Variant {
             },
             clearcoat: m.clearcoat > 0.0,
             textured: has_uv
-                && (m.map.is_some() || m.emissive_map.is_some() || m.metal_rough_map.is_some()),
+                && (m.map.is_some()
+                    || m.emissive_map.is_some()
+                    || m.metal_rough_map.is_some()
+                    || m.ao_map.is_some()),
             grid: m.pattern.is_some(),
             fog: m.fog && scene.fog.is_some(),
             rim: m.rim.0 != Vec3::ZERO,
             reflection: m.reflection > 0.0 && scene.reflector.is_some(),
+            normal_map: has_uv && m.normal_map.is_some(),
         }
     }
 
-    fn constants(self, reflection_pass: bool) -> [(&'static str, f64); 10] {
+    fn constants(self, reflection_pass: bool) -> [(&'static str, f64); 11] {
         [
             ("LIGHTS", f64::from(self.lights)),
             ("REFLECTION", f64::from(self.reflection && !reflection_pass)),
@@ -312,6 +318,7 @@ impl Variant {
             ("GRID", f64::from(self.grid)),
             ("FOG", f64::from(self.fog)),
             ("RIM", f64::from(self.rim)),
+            ("NORMAL_MAP", f64::from(self.normal_map)),
         ]
     }
 }
@@ -701,6 +708,8 @@ impl Gpu {
                 float_2d(2),
                 float_2d(3),
                 sampler(4, filtering),
+                float_2d(5),
+                float_2d(6),
             ],
         );
         let shadow_layout = bind_group_layout(
@@ -1281,6 +1290,8 @@ impl Gpu {
         let map = view(&material.map);
         let emissive = view(&material.emissive_map);
         let metal_rough = view(&material.metal_rough_map);
+        let normal = view(&material.normal_map);
+        let occlusion = view(&material.ao_map);
         self.bind_group(
             "draw",
             &self.draw_layout,
@@ -1290,6 +1301,8 @@ impl Gpu {
                 wgpu::BindingResource::TextureView(&emissive),
                 wgpu::BindingResource::TextureView(&metal_rough),
                 wgpu::BindingResource::Sampler(&self.linear_repeat),
+                wgpu::BindingResource::TextureView(&normal),
+                wgpu::BindingResource::TextureView(&occlusion),
             ],
         )
     }
@@ -2439,6 +2452,8 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
         .as_ref()
         .or(m.emissive_map.as_ref())
         .or(m.metal_rough_map.as_ref())
+        .or(m.normal_map.as_ref())
+        .or(m.ao_map.as_ref())
         .map_or([1.0, 1.0, 0.0, 0.0], |t| {
             [t.repeat.x, t.repeat.y, t.offset.x, t.offset.y]
         });
@@ -2478,6 +2493,12 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
             0.0,
         ],
         uv_transform,
+        detail: [
+            f32::from(m.normal_map.is_some()),
+            m.normal_scale,
+            f32::from(m.ao_map.is_some()),
+            0.0,
+        ],
     }
 }
 
@@ -2573,6 +2594,8 @@ fn batch(items: &mut Vec<DrawItem>, streamed: &mut Vec<Vertex>) -> Vec<u32> {
             &item.material.map,
             &item.material.emissive_map,
             &item.material.metal_rough_map,
+            &item.material.normal_map,
+            &item.material.ao_map,
         ] {
             look.extend_from_slice(&texture_id(texture).to_ne_bytes());
         }

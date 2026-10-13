@@ -63,7 +63,7 @@
 //! | `new Mesh(new BoxGeometry(1, 2, 3), new MeshStandardMaterial({ color: 0xff0000 }))` | `Node::mesh(Geometry::cuboid(1.0, 2.0, 3.0), Material::standard(0xff0000))` |
 //! | `mesh.position.set(x, y, z)`, `mesh.rotation.set(x, y, z)` | `.at(x, y, z)`, `.euler(x, y, z)` or `scene[id].position = ...` |
 //! | `new Group()`, `group.add(mesh)` | [`Node::group`], `scene.add_to(group, node)` |
-//! | `metalness`, `roughness`, `emissive`, `emissiveIntensity`, `clearcoat`, `map` | the same names on [`Material`] |
+//! | `metalness`, `roughness`, `emissive`, `emissiveIntensity`, `clearcoat`, `map`, `normalMap`, `normalScale`, `aoMap` | the same names on [`Material`] |
 //! | `MeshBasicMaterial`, `ShadowMaterial` | [`Material::unlit`], [`Material::shadow_catcher`] |
 //! | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight` | [`Light`] |
 //! | `light.castShadow = true` | [`Light::sun`] or [`Light::with_shadow`] |

@@ -10,7 +10,7 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use super::par::{self, SharedMut};
 use super::prepare::{Draw, Rect, ScreenSprite, ScreenTri, Streams};
-use super::shade::{ShadeContext, Surface, shade};
+use super::shade::{ShadeContext, Surface, shade, uv_directions};
 use crate::Blending;
 use crate::scene::Background;
 
@@ -322,9 +322,19 @@ fn shade_tri(frame: &Frame, t: &ScreenTri, at: Vec2) -> Vec4 {
     } else {
         0.0
     };
+    let (dpdu, dpdv) = if draw.has_uv && draw.material.normal_map.is_some() {
+        uv_directions(
+            s.pos[i1] - s.pos[i0],
+            s.pos[i2] - s.pos[i0],
+            s.uv[i1] - s.uv[i0],
+            s.uv[i2] - s.uv[i0],
+        )
+    } else {
+        (Vec3::ZERO, Vec3::ZERO)
+    };
     let surface = Surface {
         position,
-        normal: if t.back_facing { -normal } else { normal },
+        normal,
         face_normal: cross.normalize_or(normal),
         uv: if draw.has_uv {
             s.uv[i0] * b.x + s.uv[i1] * b.y + s.uv[i2] * b.z
@@ -337,6 +347,8 @@ fn shade_tri(frame: &Frame, t: &ScreenTri, at: Vec2) -> Vec4 {
             Vec4::ONE
         },
         uv_per_meter,
+        dpdu,
+        dpdv,
         normal_variation: right.length_squared() + down.length_squared(),
         screen: Vec2::new(at.x.floor() + 0.5, at.y.floor() + 0.5),
     };

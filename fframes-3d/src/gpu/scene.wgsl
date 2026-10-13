@@ -96,6 +96,8 @@ struct Draw {
     attrs: vec4f,
     // uv repeat, uv offset
     uv_transform: vec4f,
+    // has normal map, normal scale, has ao map, 0
+    detail: vec4f,
 }
 
 // The pipeline constants of a material (`Variant` in `mod.rs`). A material compiles only the
@@ -111,6 +113,7 @@ override RIM: bool = true;
 override LIGHTS: u32 = 255u; // the light count, 255 from the frame
 override REFLECTION: bool = false; // the material shows the reflection of the scene
 override REFLECTION_PASS: bool = false; // draws the reflection: nothing behind the reflector
+override NORMAL_MAP: bool = false;
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var shadow_maps: texture_depth_2d_array;
@@ -126,6 +129,8 @@ override REFLECTION_PASS: bool = false; // draws the reflection: nothing behind 
 @group(1) @binding(2) var emissive_tex: texture_2d<f32>;
 @group(1) @binding(3) var mr_tex: texture_2d<f32>;
 @group(1) @binding(4) var tex_sampler: sampler;
+@group(1) @binding(5) var normal_tex: texture_2d<f32>;
+@group(1) @binding(6) var ao_tex: texture_2d<f32>;
 
 // The smoothstep of `render/shade.rs`. The formula is explicit, so that both renderers
 // compute the same value.
@@ -385,10 +390,25 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     var texel = vec4f(1.0);
     var emissive_texel = vec4f(1.0);
     var mr_texel = vec4f(1.0);
+    var ao_texel = vec4f(1.0);
     if (TEXTURED) {
         texel = textureSample(map_tex, tex_sampler, uv);
         emissive_texel = textureSample(emissive_tex, tex_sampler, uv);
         mr_texel = textureSample(mr_tex, tex_sampler, uv);
+        ao_texel = textureSample(ao_tex, tex_sampler, uv);
+    }
+    // The normal map, and the directions of +U and +V on the triangle (`uv_directions` in
+    // `shade.rs`).
+    var normal_texel = vec4f(0.5, 0.5, 1.0, 1.0);
+    var dpdu = vec3f(0.0);
+    var dpdv = vec3f(0.0);
+    if (NORMAL_MAP) {
+        normal_texel = textureSample(normal_tex, tex_sampler, uv);
+        let duvx = dpdx(uv);
+        let duvy = dpdy(uv);
+        let side = sign(duvx.x * duvy.y - duvy.x * duvx.y);
+        dpdu = (dx * duvy.y - dy * duvx.y) * side;
+        dpdv = (dy * duvx.x - dx * duvy.x) * side;
     }
 
     // The material comes next, so that the texels are not live during the lighting.
@@ -409,6 +429,10 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     var metal_rough = vec2f(1.0);
     if (draw.attrs.x > 0.5 && draw.maps.z > 0.5) {
         metal_rough = mr_texel.bg;
+    }
+    var occlusion = 1.0;
+    if (draw.attrs.x > 0.5 && draw.detail.z > 0.5) {
+        occlusion = ao_texel.r;
     }
 
     var v: vec3f;
@@ -433,6 +457,11 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     if (draw.flags.x > 0.5) {
         n = face;
     }
+    if (NORMAL_MAP && draw.attrs.x > 0.5) {
+        n = bend(n, dpdu, dpdv, normal_texel, draw.detail.y);
+    }
+    // A back face, or a smooth normal that points away from the camera near a silhouette,
+    // turns around.
     if (dot(n, face) < 0.0) {
         n = -n;
     }
@@ -464,7 +493,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         out.color = vec4f(0.0, 0.0, 0.0, (1.0 - shadow) * draw.color.a);
         return out;
     } else {
-        rgb = standard(in.world, in.clip.xy, base, n, face, v, n_dot_v, metal_rough, shadows, normal_variation) + emissive;
+        rgb = standard(in.world, in.clip.xy, base, n, face, v, n_dot_v, metal_rough, occlusion, shadows, normal_variation) + emissive;
     }
 
     if (FOG && draw.flags.z > 0.5 && frame.fog.w > 0.5) {
@@ -490,6 +519,14 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     return out;
 }
 
+// The normal `n` bent by the normal map `texel` (`bend` in `shade.rs`).
+fn bend(n: vec3f, dpdu: vec3f, dpdv: vec3f, texel: vec4f, scale: f32) -> vec3f {
+    let m = texel.rgb * 2.0 - 1.0;
+    let t = normalize_or(dpdu - n * dot(n, dpdu), vec3f(0.0));
+    let b = normalize_or(dpdv - n * dot(n, dpdv), vec3f(0.0));
+    return normalize_or(t * (m.x * scale) - b * (m.y * scale) + n * m.z, n);
+}
+
 // The visibility of a point in each of the two shadow maps, see `shadow_visibility`.
 fn shadow_factors(position: vec3f, face: vec3f) -> vec2f {
     var shadows = vec2f(1.0);
@@ -510,7 +547,7 @@ fn shadow_factors(position: vec3f, face: vec3f) -> vec2f {
 // The light of a standard (PBR) surface. `metal_rough` scales the metalness and the
 // roughness. `shadows` comes from `shadow_factors`. `normal_variation` tells how much the
 // normal turns across the pixel.
-fn standard(position: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: vec3f, n_dot_v: f32, metal_rough: vec2f, shadows: vec2f, normal_variation: f32) -> vec3f {
+fn standard(position: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: vec3f, n_dot_v: f32, metal_rough: vec2f, occlusion: f32, shadows: vec2f, normal_variation: f32) -> vec3f {
     var metalness = draw.pbr.x * metal_rough.x;
     var roughness = draw.pbr.y * metal_rough.y;
     roughness = clamp(roughness, 0.045, 1.0);
@@ -570,6 +607,7 @@ fn standard(position: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, 
     } else {
         indirect += irradiance * (f0 * brdf.x + vec3f(brdf.y)) * 0.5;
     }
+    indirect *= occlusion;
 
     var direct = vec3f(0.0);
     for (var i = 0; i < light_count(); i++) {
