@@ -30,6 +30,9 @@ const WARM: u32 = 0xffb35c;
 /// welds in the close-up that opens shot 2. The watcher places chips on a circuit board under
 /// the catwalk and sees the engineer.
 const WELDER_Z: f32 = -21.5;
+/// The distance that the camera of shot 2 flies down the line, in meters: 6.1 times the
+/// 6.1 s of glide between the two `glide` calls of `factory_camera`.
+const FLIGHT: f32 = 6.1 * 6.1;
 const WATCHER_Z: f32 = -71.0;
 /// The work phase of the welder: its arc lights at the first frame of shot 2.
 const WELDER_PHASE: f32 = 1.1;
@@ -475,16 +478,17 @@ impl FactorySet {
             let tip =
                 crowd::frames(arm.base, &arm.joints)[6].transform_point3(vec3(0.0, 0.0, arm::GRIP));
             let welding = |b: f32| crowd::work(b + station.phase).welding;
-            if welding(t) {
-                arcs.push((distance, index as u32, tip));
+            let glow = arc_glow(index as u32, t, welding);
+            if glow > 0.0 {
+                arcs.push((distance, glow, tip));
             }
             sparks.extend(weld_sparks(index as u32, tip, t, welding));
         }
         scene.add(Node::particles(sparks, Blending::Additive));
         // the nearest arcs light their surroundings
         arcs.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for (_, seed, tip) in arcs.into_iter().take(4) {
-            scene.add(arc_light(seed, tip, t));
+        for (_, glow, tip) in arcs.into_iter().take(4) {
+            scene.add(arc_light(tip, glow));
         }
     }
 
@@ -502,9 +506,12 @@ impl FactorySet {
         let welder = self.welder_joints(t);
         let arc = self.tip(&self.welder, welder);
         let camera = self.factory_camera(t, arc);
+        // The shadow box stays in place over the whole flight. A box that moves with the
+        // camera moves the texels of the shadow map by a fraction of a texel in each frame,
+        // and the light shafts and the shadow edges flicker.
         let bounds = Aabb {
-            min: vec3(-hall::HALF_WIDTH, 0.0, camera.position.z - 130.0),
-            max: vec3(hall::HALF_WIDTH, hall::WALL + 4.0, camera.position.z + 25.0),
+            min: vec3(-hall::HALF_WIDTH, 0.0, WELDER_Z + 1.25 - FLIGHT - 130.0),
+            max: vec3(hall::HALF_WIDTH, hall::WALL + 4.0, WELDER_Z + 1.25 + 25.0),
         };
         let mut scene = self.day(t, bounds, 1.0);
         let view = View::new(&camera);
@@ -708,8 +715,9 @@ impl FactorySet {
         let tip = self.tip(hero, q);
         let welding = |b: f32| crowd::work(b + phase).welding;
         let seed = hero.phase.to_bits();
-        if welding(work_time) {
-            scene.add(arc_light(seed, tip, work_time));
+        let glow = arc_glow(seed, work_time, welding);
+        if glow > 0.0 {
+            scene.add(arc_light(tip, glow));
         }
         scene.add(Node::particles(
             weld_sparks(seed, tip, work_time, welding),
@@ -765,25 +773,32 @@ fn weld_sparks(seed: u32, tip: Vec3, t: f32, welding: impl Fn(f32) -> bool) -> V
             opacity: 1.0,
         });
     }
-    if welding(t) {
+    let glow = arc_glow(seed, t, welding);
+    if glow > 0.0 {
         // the arc: a flickering white core in a blue halo
-        let flicker = 0.75 + 0.25 * noise1(seed, t * 45.0);
         out.push(Particle::new(
             tip,
             0.008,
-            Rgb::hex(0xffffff) * (900.0 * flicker),
+            Rgb::hex(0xffffff) * (900.0 * glow),
         ));
-        out.push(Particle::new(
-            tip,
-            0.05,
-            Rgb::hex(0x9fc8ff) * (6.0 * flicker),
-        ));
+        out.push(Particle::new(tip, 0.05, Rgb::hex(0x9fc8ff) * (6.0 * glow)));
     }
     out
 }
 
-/// The flickering light of a welding arc at `tip`.
-fn arc_light(seed: u32, tip: Vec3, t: f32) -> Node {
-    let flicker = 0.7 + 0.3 * noise1(seed, t * 45.0);
-    Node::light(Light::point(0xbfdcff, 6.0 * flicker, 9.0)).at(tip.x, tip.y + 0.05, tip.z)
+/// The brightness of a welding arc at `t`, `0..1`. `welding(b)` tells whether the torch
+/// burns at time `b`. The arc comes on and goes out over 0.04 s, and it flickers below
+/// 15 Hz. A faster flicker or a hard switch changes the light of the whole frame from one
+/// frame to the next, and the picture strobes.
+fn arc_glow(seed: u32, t: f32, welding: impl Fn(f32) -> bool) -> f32 {
+    let on = (0..4).filter(|&k| welding(t - k as f32 * 0.01)).count() as f32 / 4.0;
+    if on == 0.0 {
+        return 0.0;
+    }
+    on * (0.85 + 0.09 * noise1(seed, t * 13.0) + 0.06 * noise1(seed + 7, t * 7.0))
+}
+
+/// The light of a welding arc at `tip` with the brightness `glow`.
+fn arc_light(tip: Vec3, glow: f32) -> Node {
+    Node::light(Light::point(0xbfdcff, 6.0 * glow, 9.0)).at(tip.x, tip.y + 0.05, tip.z)
 }

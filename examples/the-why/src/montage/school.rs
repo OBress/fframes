@@ -5,8 +5,8 @@
 //! - 0.0 to 0.12: the camera trucks right past a tree of the school yard, which leaves the
 //!   picture to the left: the end of the wipe from the wind farm. The warm line of the
 //!   footprint glows on the ground under the gantry.
-//! - 0.06 to 0.62: the nozzle runs along the line, layer after layer, and the walls rise.
-//!   The fresh layers glow warm and cool to grey concrete.
+//! - 0.06 to 0.62: the nozzle runs twice along the line, seven layers at a time in a ramp,
+//!   and the walls rise. The fresh layers glow warm and cool to grey concrete.
 //! - 0.6 to 0.76: the roof slabs come down on the walls, and the windows go in.
 //! - 0.72: the light towers go out. 0.74 to 0.92: the windows light up warm, from the door
 //!   outward.
@@ -168,22 +168,45 @@ fn beads() -> Vec<Bead> {
     out
 }
 
-/// The time at which the nozzle starts layer `k`, and the time for one layer.
-fn layer_time(k: usize) -> (f32, f32) {
-    let each = (PRINT.1 - PRINT.0) / LAYERS as f32;
-    (PRINT.0 + k as f32 * each, each)
+/// The passes of the nozzle around the perimeter. Each pass prints `LAYERS / PASSES`
+/// layers at once, as a ramp: each layer starts `LAG` meters behind the one below it. One
+/// layer per pass would move the nozzle half way around the school in one frame, and it
+/// would jump from place to place from frame to frame.
+const PASSES: usize = 2;
+const PASS_LAYERS: usize = LAYERS / PASSES;
+const LAG: f32 = 1.2;
+/// The distance that the lowest layer of a pass runs ahead: the whole perimeter, and the
+/// ramp behind it.
+const RUN: f32 = PERIMETER + (PASS_LAYERS - 1) as f32 * LAG;
+
+/// The time at which the nozzle starts pass `p`, and the time for one pass.
+fn pass_time(p: usize) -> (f32, f32) {
+    let each = (PRINT.1 - PRINT.0) / PASSES as f32;
+    (PRINT.0 + p as f32 * each, each)
 }
 
-/// The nozzle at `t`: its layer and its place along the perimeter, or `None` before and
-/// after the print.
+/// The nozzle at `t`: its pass and how far the lowest layer of the pass has run along the
+/// perimeter, `0..RUN`, or `None` before and after the print.
 fn nozzle(t: f32) -> Option<(usize, f32)> {
     if !(PRINT.0..PRINT.1).contains(&t) {
         return None;
     }
-    let (_, each) = layer_time(0);
-    let k = (((t - PRINT.0) / each) as usize).min(LAYERS - 1);
-    let (start, _) = layer_time(k);
-    Some((k, (t - start) / each * PERIMETER))
+    let (_, each) = pass_time(0);
+    let p = (((t - PRINT.0) / each) as usize).min(PASSES - 1);
+    let (start, _) = pass_time(p);
+    Some((p, (t - start) / each * RUN))
+}
+
+/// The end of the printed part of `layer` when the lowest layer of the nozzle's pass has run
+/// `front` meters. `None` when the layer belongs to a later pass.
+fn printed_to(layer: usize, pass: usize, front: f32) -> Option<f32> {
+    match (layer / PASS_LAYERS).cmp(&pass) {
+        std::cmp::Ordering::Less => Some(PERIMETER),
+        std::cmp::Ordering::Equal => {
+            Some((front - (layer % PASS_LAYERS) as f32 * LAG).clamp(0.0, PERIMETER))
+        }
+        std::cmp::Ordering::Greater => None,
+    }
 }
 
 /// The node ids that the frames animate.
@@ -265,18 +288,21 @@ impl School {
         let at = nozzle(t);
         let (mut beads, mut hot, mut heat) = (Vec::new(), Vec::new(), Vec::new());
         for bead in &self.beads {
-            let (start, each) = layer_time(bead.layer);
             let end = match at {
-                Some((k, s)) if k == bead.layer => s,
-                Some((k, _)) if k < bead.layer => continue,
+                Some((p, front)) => match printed_to(bead.layer, p, front) {
+                    Some(end) => end,
+                    None => continue,
+                },
                 None if t < PRINT.0 => continue,
-                _ => PERIMETER,
+                None => PERIMETER,
             };
             if end <= bead.from {
                 continue;
             }
             beads.push(bead.place(end, WALL));
-            let printed = start + each * (bead.to.min(end) / PERIMETER);
+            let (start, each) = pass_time(bead.layer / PASS_LAYERS);
+            let lag = (bead.layer % PASS_LAYERS) as f32 * LAG;
+            let printed = start + each * ((bead.to.min(end) + lag) / RUN);
             let warm = (-(t - printed).max(0.0) / 0.07).exp();
             if warm > 0.02 {
                 hot.push(bead.place(end, WALL * 1.04));
@@ -291,19 +317,29 @@ impl School {
             m.color = Rgb::hex(AMBER_EDGE) * mix(9.0, 2.0, smoothstep(0.05, 0.4, t));
         }
 
-        // the gantry follows the nozzle; it waits over the door before and after the print
+        // the gantry follows the nozzle at the top of the ramp; it waits at the front left
+        // corner, where each pass starts and ends, and moves back after the print
         let (head, layer) = match at {
-            Some((k, s)) => (along(s), k),
-            None if t < PRINT.0 => (along(16.0), 0),
+            Some((p, front)) => {
+                // the head rises to the top of the new pass while it waits at the corner
+                let ramp = (PASS_LAYERS - 1) as f32 * LAG;
+                let top = ((p + 1) * PASS_LAYERS - 1) as f32;
+                let rise = if p == 0 { 0.0 } else { PASS_LAYERS as f32 };
+                (
+                    along((front - ramp).max(0.0)),
+                    top - rise * (1.0 - smoothstep(0.0, ramp, front)),
+                )
+            }
+            None if t < PRINT.0 => (along(0.0), (PASS_LAYERS - 1) as f32),
             None => (
-                along(16.0).lerp(
+                along(0.0).lerp(
                     vec3(0.0, 0.0, -GANTRY_Z + 1.0),
                     ease(progress(t, PRINT.1, PRINT.1 + 0.08)),
                 ),
-                LAYERS,
+                LAYERS as f32,
             ),
         };
-        let tip = head + Vec3::Y * (LAYER * layer as f32 + 0.25);
+        let tip = head + Vec3::Y * (LAYER * layer + 0.25);
         scene[ids.bridge].position = vec3(head.x, GANTRY, 0.0);
         scene[ids.carriage].position = vec3(head.x, GANTRY - 0.2, head.z);
         set(

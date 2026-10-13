@@ -2078,8 +2078,30 @@ pub(super) fn camera_at(t: f32) -> Camera {
     // the hand of the operator, and the rumble of the launch when its sound arrives
     let rumble =
         smoothstep(IGNITION + 0.5, IGNITION + 0.75, t) * (1.0 - 0.5 * smoothstep(3.2, 4.6, t));
-    camera(mm, position, target)
+    let camera = camera(mm, position, target)
         .focus_on(focus, 2.0)
-        .shake(t, 0.0005 + 0.004 * rumble, 23)
-        .shake(t * 2.6, 0.0018 * rumble, 29)
+        .shake(t, 0.0005, 23);
+    rumble_shake(camera, t, 0.0045 * rumble)
+}
+
+/// The rumble of the launch: the view shakes by `amount` times the distance to the target.
+/// It is a sum of sines below 11 Hz, so it moves in every frame and each frame shows a
+/// small step of it. `Camera::shake` is value noise: it stops at each of its keys, and at a
+/// high rate the stops and the jumps between them read as stutter.
+fn rumble_shake(mut camera: Camera, t: f32, amount: f32) -> Camera {
+    if amount == 0.0 {
+        return camera;
+    }
+    let wave = |rates: [f32; 3], phase: f32| {
+        (rates[0] * t + phase).sin() * 0.5
+            + (rates[1] * t + phase * 1.7).sin() * 0.3
+            + (rates[2] * t + phase * 2.3).sin() * 0.2
+    };
+    let distance = camera.position.distance(camera.target);
+    let (right, up) = (camera.right(), camera.up_vector());
+    let dx = wave([23.0, 47.0, 67.0], 0.4);
+    let dy = wave([29.0, 53.0, 61.0], 1.9);
+    camera.target += (right * dx + up * dy) * (amount * distance);
+    camera.roll += wave([19.0, 37.0, 59.0], 3.1) * amount * 0.5;
+    camera
 }
