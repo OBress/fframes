@@ -123,4 +123,23 @@ sound sfx_ignite "A glowing line ignites with a soft warm whoom" 2
 sound sfx_sun "A bright airy whoosh of light swells and fades into silence" 2.5
 sound sfx_boom "A low cinematic boom with a long soft tail" 5
 
+# ---- The second layer of the sound design: single steps placed on the footfalls of the
+# walk, the details of the builds, and the low hits under the cuts.
+for i in 1 2 3 4; do
+    sound "sfx_step_$i" "One single slow footstep of a man on dry desert sand and fine gravel, close, dry, variation $i" 0.8
+done
+sound sfx_scrape "A fingertip drags slowly through dry dust on hard cracked ground, a soft gritty scrape, very close" 2.5
+sound sfx_embers "Glowing embers crackle and sizzle softly in the dust, small warm sparks, close and intimate" 4
+sound sfx_screens "Thousands of computer screens hum in a huge dark room: electrical buzz and a faint high whine" 3
+sound sfx_chip "A robot gripper places a tiny chip on a circuit board: a precise click and a short servo whir" 1.5
+sound sfx_swell "A deep warm swell of light: a resonant hum rises and a large glass wall vibrates softly" 3
+sound sfx_foghorn "A distant foghorn on the San Francisco bay at dusk: one long low tone far away with echo" 5
+sound sfx_spin "Steel cable spinning wheels run along a suspension bridge: an airy mechanical whir far away" 3
+sound sfx_deck "Huge steel bridge deck sections lock into place one after another far away: deep metallic clanks with echo" 3
+sound sfx_drones "A swarm of small drones hovers and flies past: soft electric buzzing that moves" 4
+sound sfx_bloom "Water mist sprinklers hiss softly and plants unfold in a greenhouse: gentle organic rustle" 3
+sound sfx_deluge "A massive water deluge roars at a rocket launch pad and steam billows out: a huge hiss" 4
+sound sfx_sub "A deep cinematic sub bass hit, soft and huge, short tail" 2.5
+sound sfx_breeze "A soft desert morning breeze, very gentle and calm, faint sand drifting" 9
+
 echo "done: $out"

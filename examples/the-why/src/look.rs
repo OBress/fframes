@@ -97,7 +97,7 @@ pub fn iris(t: f32, length: f32) -> Svgr<'static> {
     svgr!(<path d={d} fill="#000" fill-rule="evenodd" />)
 }
 
-/// Film grain and the vignette, drawn over the picture of every shot.
+/// Film grain, drawn over every frame.
 pub struct Overlay {
     grain: Vec<fframes::media::ImageData<'static>>,
 }
@@ -138,24 +138,33 @@ impl Overlay {
         Self { grain }
     }
 
-    /// The grain and the vignette for `frame`. `grain` is the strength, about 0.1.
+    /// The grain for `frame`. `grain` is the strength, about 0.1.
     pub fn render(&self, frame: &Frame, grain: f32) -> Svgr<'_> {
         let tile = &self.grain
             [(hash(frame.index as u32 * 7 + 3) * GRAIN_TILES as f32) as usize % self.grain.len()];
         svgr!(
-            <g>
-                <defs>
-                    <radialGradient id="vignette" cx="50%" cy="50%" r="75%">
-                        <stop offset="0.55" stop-color="#000" stop-opacity="0" />
-                        <stop offset="1" stop-color="#000" stop-opacity="0.55" />
-                    </radialGradient>
-                </defs>
-                <rect x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} fill="url(#vignette)" />
-                <image href={tile.href()} x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT}
-                    opacity={grain} style="mix-blend-mode:overlay" preserveAspectRatio="none" />
-            </g>
+            <image href={tile.href()} x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT}
+                opacity={grain} style="mix-blend-mode:overlay" preserveAspectRatio="none" />
         )
     }
+}
+
+/// The vignette of the lens over the picture. `strength` goes from 0 (none) to 1.
+pub fn vignette(strength: f32) -> Svgr<'static> {
+    if strength <= 0.0 {
+        return Svgr::empty();
+    }
+    svgr!(
+        <g opacity={strength.min(1.0)}>
+            <defs>
+                <radialGradient id="vignette" cx="50%" cy="50%" r="75%">
+                    <stop offset="0.55" stop-color="#000" stop-opacity="0" />
+                    <stop offset="1" stop-color="#000" stop-opacity="0.55" />
+                </radialGradient>
+            </defs>
+            <rect x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} fill="url(#vignette)" />
+        </g>
+    )
 }
 
 impl Default for Overlay {

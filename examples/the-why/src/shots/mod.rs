@@ -13,7 +13,7 @@ use fframes::{
 use fframes_3d::{Renderer, Texture};
 
 use crate::WIDTH;
-use crate::look::{BAR, PICTURE_HEIGHT, SANS};
+use crate::look::{self, BAR, PICTURE_HEIGHT, SANS};
 
 type Picture = Box<
     dyn for<'a, 'b> Fn(&Renderer, &Frame, &FFramesContext<'a, 'b>) -> ImageData<'static>
@@ -21,6 +21,7 @@ type Picture = Box<
         + Sync,
 >;
 type Overlay = Box<dyn Fn(f32) -> Svgr<'static> + Send + Sync>;
+type Strength = Box<dyn Fn(f32) -> f32 + Send + Sync>;
 
 /// One shot of the film.
 pub struct Shot {
@@ -30,6 +31,8 @@ pub struct Shot {
     picture: Option<(Renderer, Picture)>,
     /// The SVG over the picture at `t` seconds.
     overlay: Overlay,
+    /// The strength of the vignette at `t` seconds, from 0 to 1.
+    vignette: Strength,
 }
 
 impl std::fmt::Debug for Shot {
@@ -69,6 +72,7 @@ impl Shot {
             seconds,
             picture: Some((renderer, Box::new(picture))),
             overlay: Box::new(|_| Svgr::empty()),
+            vignette: Box::new(|_| 1.0),
         }
     }
 
@@ -83,6 +87,7 @@ impl Shot {
             seconds,
             picture: None,
             overlay: Box::new(overlay),
+            vignette: Box::new(|_| 0.0),
         }
     }
 
@@ -92,6 +97,13 @@ impl Shot {
         overlay: impl Fn(f32) -> Svgr<'static> + Send + Sync + 'static,
     ) -> Self {
         self.overlay = Box::new(overlay);
+        self
+    }
+
+    /// Sets the strength of the vignette over the picture. A frame that is almost white
+    /// needs less, because the dark corners make an ellipse of it.
+    pub fn vignette(mut self, strength: impl Fn(f32) -> f32 + Send + Sync + 'static) -> Self {
+        self.vignette = Box::new(strength);
         self
     }
 
@@ -139,9 +151,13 @@ impl Scene for Shot {
             .picture
             .as_ref()
             .map(|(renderer, picture)| picture(renderer, &frame, ctx));
+        // the vignette darkens the picture only: the flashes and the titles go over it
         let image = match &picture {
             Some(image) => svgr!(
-                <image href={image.href()} x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} preserveAspectRatio="none" />
+                <g>
+                    <image href={image.href()} x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} preserveAspectRatio="none" />
+                    {look::vignette((self.vignette)(t))}
+                </g>
             ),
             None => Svgr::empty(),
         };

@@ -114,7 +114,9 @@ impl TheWhy {
             DesertSet::renderer_sunrise(width, height),
             move |r, t| look::picture(r, set.shutter_sunrise(t), t, |t| set.moment_sunrise(t)),
         )
-        .overlay(shots::title::quote);
+        .overlay(shots::title::quote)
+        // the shot opens on the white flare of the rocket
+        .vignette(|t| fframes_3d::math::smoothstep(0.3, 1.5, t));
         let montage = Arc::new(MontageSet::new(&assets));
         let (set, white) = (montage.clone(), montage.clone());
         let why = Shot::new(
@@ -123,7 +125,8 @@ impl TheWhy {
             MontageSet::renderer(width, height),
             move |r, t| look::picture(r, set.shutter(t), t, |t| set.moment(t)),
         )
-        .overlay(move |t| white.overlay(t));
+        .overlay(move |t| white.overlay(t))
+        .vignette(|t| 1.0 - montage::final_white(t));
         Self {
             shots: vec![
                 Shot::svg("Cursor", 7.0, shots::cursor::cursor),
@@ -175,10 +178,20 @@ impl Video for TheWhy {
             say("voice_theirs.mp3", 61.0),
             say("voice_quote_a.mp3", 84.0),
             say("voice_quote_b.mp3", 86.4),
-            // the cursor: the typed question, the flood of answers, the flash into the arc
+            // the cursor: the hum of the screen in a quiet room, the typed question, the flood
+            // of answers, the flash into the arc
+            sound("sfx_screens.mp3", 0.0, -30.0)
+                .fade_in(1.0)
+                .fade_out(1.2),
             sound("sfx_keys.mp3", 1.4, -12.0),
             sound("sfx_flood.mp3", 3.6, -13.0).fade_in(0.8),
+            sound("sfx_screens.mp3", 4.2, -20.0)
+                .fade_in(0.8)
+                .fade_out(0.6),
             sound("sfx_flash.mp3", 5.6, -9.0),
+            // a low hit under the cuts into a new world
+            sound("sfx_sub.mp3", 7.0, -9.0),
+            sound("sfx_sub.mp3", 29.0, -12.0),
             // the factory: the arc on the cut, the hall, the watcher turns, the eye, the dive
             sound("sfx_arc.mp3", 7.0, -6.0),
             sound("sfx_factory.mp3", 7.0, -15.0)
@@ -193,19 +206,26 @@ impl Video for TheWhy {
                 .fade_in(1.0)
                 .fade_out(1.5),
             sound("sfx_crane.mp3", 34.0, -18.0).fade_out(1.0),
-            sound("sfx_wind.mp3", 42.0, -8.0).fade_in(1.5).fade_out(1.0),
+            sound("sfx_wind.mp3", 42.0, -3.0).fade_in(1.5).fade_out(1.0),
             sound("sfx_steps.mp3", 45.0, -9.0).fade_out(1.0),
             sound("sfx_ignite.mp3", 54.3, -10.0),
             sound("sfx_hum.mp3", 54.8, -9.0).fade_in(0.8),
             sound("sfx_streak.mp3", 56.6, -7.0),
             // the wave, the builds, the sunrise
             sound("sfx_wave.mp3", 59.6, -9.0),
-            sound("sfx_cables.mp3", 68.9, -11.0),
+            // the Golden Gate: the bay at dusk, the spinning wheels, the cables, the deck
+            sound("sfx_foghorn.mp3", 67.5, -19.0).fade_out(1.5),
+            sound("sfx_spin.mp3", 68.85, -16.0).fade_out(0.5),
+            sound("sfx_cables.mp3", 69.6, -11.0),
+            sound("sfx_deck.mp3", 70.0, -5.0),
             sound("sfx_village.mp3", 71.0, -16.0).fade_out(1.0),
             sound("sfx_glass.mp3", 73.5, -11.0),
             sound("sfx_streak.mp3", 76.8, -10.0),
             sound("sfx_rocket.mp3", 78.9, -7.0).fade_out(1.0),
             sound("sfx_sun.mp3", 81.3, -9.0),
+            sound("sfx_breeze.mp3", 82.6, 10.0)
+                .fade_in(2.0)
+                .fade_out(2.0),
             sound("sfx_birds.mp3", 84.5, -17.0)
                 .fade_in(2.0)
                 .fade_out(2.0),
