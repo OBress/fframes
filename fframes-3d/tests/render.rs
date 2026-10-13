@@ -164,3 +164,26 @@ fn renders_normal_maps() {
     eprintln!("normal map changes the frame by {diff:.2} / 255 on average");
     assert!(diff > 2.0);
 }
+
+#[test]
+fn textures_from_fframes_images() {
+    use fframes::media::{ImageData, ImageMetadata};
+    use fframes::usvgr::PreloadedImageData;
+
+    // a red texel at half coverage next to an opaque blue one
+    let data = PreloadedImageData::new("pair".into(), 2, 1, &[255, 0, 0, 128, 0, 0, 255, 255]);
+    let image = ImageData::new_from_raw_data(
+        std::sync::Arc::new(data),
+        "pair".into(),
+        ImageMetadata {
+            width: 2,
+            height: 1,
+        },
+    );
+    let texture = Texture::from_image(&image);
+    let red = texture.sample(vec2(0.25, 0.5));
+    let blue = texture.sample(vec2(0.75, 0.5));
+    assert!(red.x > 0.95 && red.y < 0.05, "{red}");
+    assert!((red.w - 0.5).abs() < 0.01, "{red}");
+    assert!(blue.z > 0.95 && blue.x < 0.05, "{blue}");
+}
