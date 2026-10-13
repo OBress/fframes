@@ -220,6 +220,8 @@ impl Video for TheWhy {
             sound("sfx_city.mp3", 29.0, -17.0)
                 .fade_in(1.0)
                 .fade_out(1.5),
+            // the rush past the Empire State Building
+            sound("sfx_streak.mp3", 30.6, -15.0),
             sound("sfx_crane.mp3", 34.0, -18.0).fade_out(1.0),
             sound("sfx_wind.mp3", 42.0, 3.0).fade_in(1.5).fade_out(1.0),
             // the knee on the ground, the finger in the dust, the embers of the line

@@ -28,6 +28,28 @@ pub const BAYS: f32 = 32.0;
 pub const FLOORS: f32 = 48.0;
 /// Texels across one window bay and down one floor.
 const CELL: u32 = 32;
+
+/// The size of a facade texture in window bays and floors, and its texels per bay.
+#[derive(Debug, Clone, Copy)]
+pub struct Layout {
+    pub bays: f32,
+    pub floors: f32,
+    pub cell: u32,
+}
+
+/// The facades of most of the city.
+pub const FAR: Layout = Layout {
+    bays: BAYS,
+    floors: FLOORS,
+    cell: CELL,
+};
+/// The facades along the flight through Times Square, which the camera passes at 20 m:
+/// two times the texels in each direction, on a texture of the same size.
+pub const NEAR: Layout = Layout {
+    bays: 16.0,
+    floors: 24.0,
+    cell: 64,
+};
 /// The emitted light of the brightest texel of a window. The texels keep half of the
 /// light, so the ceiling lights can be two times brighter than a lit room.
 pub const WINDOW_LIGHT: f32 = 2.0;
@@ -113,13 +135,16 @@ fn srgb(c: u32) -> [u8; 4] {
 }
 
 impl Facade {
-    pub fn new(style: Style, seed: u32) -> Self {
-        let (w, h) = (BAYS as u32 * CELL, FLOORS as u32 * CELL);
+    pub fn new(style: Style, seed: u32, layout: Layout) -> Self {
+        let (w, h) = (
+            layout.bays as u32 * layout.cell,
+            layout.floors as u32 * layout.cell,
+        );
         let c = cell(style);
         let [x0, x1, y0, y1] = c.glass;
         // The cell, the position in the cell, and whether it is glass.
         let at = |u: f32, v: f32| {
-            let (x, y) = (u * BAYS, v * FLOORS);
+            let (x, y) = (u * layout.bays, v * layout.floors);
             let (fx, fy) = (x.fract(), y.fract());
             let glass = fx > x0 && fx < x1 && fy > y0 && fy < y1;
             (x as u32, y as u32, fx, fy, glass)
@@ -221,8 +246,13 @@ fn room_light(seed: u32, c: &Cell, cx: u32, cy: u32, px: f32, py: f32) -> Vec3 {
 /// darker behind the desks and the partitions at the bottom.
 fn ceiling(window: u32, px: f32, py: f32) -> f32 {
     let mut l = 1.0 - 0.45 * py;
-    if py < 0.08 {
-        l *= 2.0;
+    // Two rows of light fixtures under the ceiling in each bay.
+    if py < 0.09 {
+        l *= if ((px * 2.0).fract() - 0.5).abs() < 0.24 {
+            2.6
+        } else {
+            1.2
+        };
     }
     if py > 0.66 {
         let block = hash(window + 11 + (px * 3.0) as u32);

@@ -213,9 +213,12 @@ pub fn camera(t: f32) -> Camera {
     let mut focus = ground;
     focus += (position.distance(EMPIRE_STATE) - focus) * smoothstep(1.6, 2.6, t);
     focus += (400.0 - focus) * smoothstep(3.6, 4.6, t);
-    focus += (110.0 - focus) * smoothstep(6.4, 7.6, t);
+    focus += (80.0 - focus) * smoothstep(6.4, 7.6, t);
     focus += (400.0 - focus) * smoothstep(10.5, 12.5, t);
-    let blur = 2.0 + 1.5 * smoothstep(2.0, 3.0, t) - 2.5 * smoothstep(10.5, 12.5, t);
+    // Less blur in the canyon, where the facades are near.
+    let blur = 2.0 + 1.5 * smoothstep(2.0, 3.0, t) - 1.9 * smoothstep(7.0, 8.0, t)
+        + 1.9 * smoothstep(10.5, 11.5, t)
+        - 2.5 * smoothstep(10.5, 12.5, t);
     let shake = 0.0012 * smoothstep(3.0, 4.5, t) * (1.0 - smoothstep(11.0, 12.4, t));
     camera.focus(focus, blur).shake(t, shake, 41)
 }

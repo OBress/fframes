@@ -6,19 +6,12 @@ use fframes_3d::math::hash;
 use fframes_3d::{Geometry, Mat4, Quat, Rgb, Vec2, Vec3, Vec4, vec2, vec3};
 
 use super::data::{Building, Class, Manhattan, Street};
-use super::textures::{BAYS, FLOORS, LAMP_SPACING, Style};
+use super::textures::{BAYS, FLOORS, LAMP_SPACING, Layout, NEAR, Style};
 
 /// The height of one floor in meters.
 pub const FLOOR: f32 = 3.6;
 /// The width of one window bay in meters.
 pub const BAY: f32 = 1.8;
-/// The sizes of the video screens in meters, 4:3 like the film that they play.
-pub const SCREENS: [Vec2; 4] = [
-    Vec2::new(40.0, 30.0),
-    Vec2::new(32.0, 24.0),
-    Vec2::new(24.0, 18.0),
-    Vec2::new(16.0, 12.0),
-];
 /// The Building Identification Numbers of the two crowns that the city lights.
 pub const EMPIRE_STATE: u32 = 1015862;
 pub const CHRYSLER: u32 = 1036156;
@@ -216,6 +209,11 @@ const UNIT_UV: [Vec2; 4] = [
 pub struct RiseGroup {
     /// The facade meshes, in the order of [`STYLES`].
     pub walls: [MeshBuf; 5],
+    /// The facade meshes of the buildings along the flight through Times Square, with the
+    /// sharper textures of [`NEAR`].
+    pub near_walls: [MeshBuf; 5],
+    /// The mullions and transoms in front of the near facades.
+    pub mullions: MeshBuf,
     /// The roofs inside the chip square, then outside it.
     pub roofs: [MeshBuf; 2],
     pub details: MeshBuf,
@@ -233,8 +231,10 @@ pub struct RiseGroup {
     /// The small lights on the roofs, at full height: red aviation lights and the lights
     /// around the helipads.
     pub lights: Vec<RoofLight>,
-    /// The quads of the video screens.
+    /// The meshes of the video screens.
     pub screens: Vec<MeshBuf>,
+    /// The LED edges of some screens. The vertex colors hold their colors.
+    pub screen_edges: MeshBuf,
     /// The second at which the buildings start to rise.
     pub start: f32,
 }
@@ -343,22 +343,108 @@ fn top(b: &Building) -> Option<Top> {
 /// The walls of a building with UVs in window bays and floors: U runs along the wall, V up.
 /// Each building starts at a random place in the texture.
 fn walls(buf: &mut MeshBuf, tris: &[[Vec3; 3]], seed: u32, tint: Rgb) {
+    walls_in(buf, tris, seed, tint, (BAYS, FLOORS));
+}
+
+/// [`walls`] for a texture of `bays` x `floors` cells.
+fn walls_in(
+    buf: &mut MeshBuf,
+    tris: &[[Vec3; 3]],
+    seed: u32,
+    tint: Rgb,
+    (bays, floors): (f32, f32),
+) {
     let first = buf.len();
-    let u0 = (hash(seed) * BAYS).floor() / BAYS;
-    let v0 = (hash(seed + 1) * FLOORS).floor() / FLOORS;
+    let u0 = (hash(seed) * bays).floor() / bays;
+    let v0 = (hash(seed + 1) * floors).floor() / floors;
     for t in tris {
         let n = (t[1] - t[0]).cross(t[2] - t[0]);
         // The direction to the right of a viewer in front of the wall.
         let along = vec2(n.z, -n.x).normalize_or(Vec2::X);
         let uv = t.map(|p| {
             vec2(
-                u0 + (p.x * along.x + p.z * along.y) / (BAY * BAYS),
-                v0 - p.y / (FLOOR * FLOORS),
+                u0 + (p.x * along.x + p.z * along.y) / (BAY * bays),
+                v0 - p.y / (FLOOR * floors),
             )
         });
         buf.triangle(*t, uv);
     }
     buf.paint(first, tint);
+}
+
+/// The steel of a curtain wall in front of the walls `tris` that pass `detail` (their
+/// center and their normal): a mullion at the edge of each window bay and a transom at each
+/// floor, on the lines of the facade texture.
+fn mullions(buf: &mut MeshBuf, tris: &[[Vec3; 3]], detail: &impl Fn(Vec3, Vec3) -> bool) {
+    for t in tris {
+        let n = (t[1] - t[0]).cross(t[2] - t[0]);
+        let out = vec3(n.x, 0.0, n.z).normalize_or_zero();
+        if n.y.abs() > 0.1 * n.length()
+            || out == Vec3::ZERO
+            || !detail((t[0] + t[1] + t[2]) / 3.0, out)
+        {
+            continue;
+        }
+        let along = vec3(n.z, 0.0, -n.x).normalize();
+        // The corners on the wall: along it and up.
+        let flat = t.map(|p| vec2(p.dot(along), p.y));
+        let (min, max) = flat.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), &q| {
+            (lo.min(q), hi.max(q))
+        });
+        // The part of the line from `a` in direction `d` inside the triangle.
+        let span = |a: Vec2, d: Vec2| -> Option<(f32, f32)> {
+            let mut range = (f32::MIN, f32::MAX);
+            for i in 0..3 {
+                let (p, q) = (flat[i], flat[(i + 1) % 3]);
+                let e = q - p;
+                // Inside is on the side of the third corner.
+                let side = e.perp_dot(flat[(i + 2) % 3] - p).signum();
+                let (num, den) = (e.perp_dot(a - p) * side, -e.perp_dot(d) * side);
+                if den.abs() < 1e-6 {
+                    if num < 0.0 {
+                        return None;
+                    }
+                } else if den > 0.0 {
+                    range.1 = range.1.min(num / den);
+                } else {
+                    range.0 = range.0.max(num / den);
+                }
+            }
+            (range.1 - range.0 > 0.3).then_some(range)
+        };
+        let offset = vec3(t[0].x, 0.0, t[0].z).dot(out);
+        let at = |q: Vec2| along * q.x + Vec3::Y * q.y + out * (offset + 0.08);
+        let mut a = (min.x / BAY).ceil() * BAY;
+        while a <= max.x {
+            if let Some((y0, y1)) = span(vec2(a, 0.0), Vec2::Y) {
+                fin(
+                    buf,
+                    at(vec2(a, y0.max(min.y))),
+                    at(vec2(a, y1.min(max.y))),
+                    along,
+                    out,
+                    0.13,
+                );
+            }
+            a += BAY;
+        }
+        let mut y = (min.y / FLOOR).ceil() * FLOOR;
+        while y <= max.y {
+            if y > 4.0
+                && let Some((a0, a1)) = span(vec2(0.0, y), Vec2::X)
+            {
+                fin(
+                    buf,
+                    at(vec2(a0.max(min.x), y)),
+                    at(vec2(a1.min(max.x), y)),
+                    Vec3::Y,
+                    out,
+                    0.2,
+                );
+            }
+            y += FLOOR;
+        }
+    }
 }
 
 /// Roof triangles with UVs from 0 to 1 over the box of the building, so the roof picture
@@ -486,6 +572,8 @@ pub fn rise_groups(
     chip_half: f32,
     skip: &HashSet<usize>,
     screens: &[Screen],
+    near: impl Fn(&Building) -> bool,
+    detail: impl Fn(Vec3, Vec3) -> bool,
 ) -> Vec<RiseGroup> {
     let mut groups: Vec<RiseGroup> = (0..GROUPS)
         .map(|g| RiseGroup {
@@ -498,18 +586,32 @@ pub fn rise_groups(
             continue;
         }
         let g = &mut groups[group_of(rise_start(b.center - dive, b.bin))];
-        building(g, b, (b.center - dive).abs().max_element() < chip_half);
+        let inside = (b.center - dive).abs().max_element() < chip_half;
+        building(g, b, inside, near(b), &detail);
     }
-    for screen in screens {
+    for (k, screen) in screens.iter().enumerate() {
         let b = &city.buildings[screen.building];
         let g = &mut groups[group_of(rise_start(b.center - dive, b.bin))];
-        screen_quad(g, screen);
+        // LED edges on the bent and the corner screens, the bands and some others.
+        let edge = match screen.kind {
+            ScreenKind::Curved | ScreenKind::Corner => Some(0xe8f0ff),
+            ScreenKind::Band => Some(0x5fe6ff),
+            _ if hash(k as u32 * 13 + 5) < 0.4 => Some([0xe8f0ff, 0x5fe6ff, 0xff6ad5][k % 3]),
+            _ => None,
+        };
+        screen_mesh(g, screen, edge.map(Rgb::hex));
     }
     groups
 }
 
 /// Adds the walls, the roofs and the roof details of one building.
-fn building(group: &mut RiseGroup, b: &Building, inside: bool) {
+fn building(
+    group: &mut RiseGroup,
+    b: &Building,
+    inside: bool,
+    near: bool,
+    detail: &impl Fn(Vec3, Vec3) -> bool,
+) {
     let style = style(b);
     let tint = Rgb::hex(TINTS[(hash(b.bin + 50) * TINTS.len() as f32) as usize % TINTS.len()]);
     let k = STYLES.iter().position(|s| *s == style).unwrap_or(0);
@@ -523,7 +625,19 @@ fn building(group: &mut RiseGroup, b: &Building, inside: bool) {
             .iter()
             .chain(b.roofs.iter().filter(|t| t.iter().all(|p| p.y > crown)))
             .partition(|t| t.iter().all(|p| p.y > crown - 0.1));
-        walls(&mut group.walls[k], &low, b.bin, tint);
+        if near {
+            let layout: Layout = NEAR;
+            walls_in(
+                &mut group.near_walls[k],
+                &low,
+                b.bin,
+                tint,
+                (layout.bays, layout.floors),
+            );
+            mullions(&mut group.mullions, &low, detail);
+        } else {
+            walls(&mut group.walls[k], &low, b.bin, tint);
+        }
         let roof_tris: Vec<[Vec3; 3]> = b
             .roofs
             .iter()
@@ -668,30 +782,207 @@ pub fn water_tower() -> Geometry {
     geometry
 }
 
-/// A video screen on the face of a building.
-#[derive(Debug, Clone, Copy)]
+/// The kinds of video screens in Times Square.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenKind {
+    /// A flat panel in the shape of the film, 4:3.
+    Standard,
+    /// A tall narrow panel.
+    Tall,
+    /// A wide low band.
+    Band,
+    /// A small panel.
+    Small,
+    /// A panel bent out from the wall.
+    Curved,
+    /// A panel around the corner of a building, with a round corner.
+    Corner,
+}
+
+/// The flat and curved screens: the kind and the width and the height in meters.
+const PANELS: [(ScreenKind, f32, f32); 10] = [
+    (ScreenKind::Standard, 32.0, 24.0),
+    (ScreenKind::Standard, 24.0, 18.0),
+    (ScreenKind::Standard, 16.0, 12.0),
+    (ScreenKind::Tall, 12.0, 32.0),
+    (ScreenKind::Tall, 9.0, 24.0),
+    (ScreenKind::Band, 46.0, 8.0),
+    (ScreenKind::Band, 30.0, 5.5),
+    (ScreenKind::Small, 8.0, 6.0),
+    (ScreenKind::Small, 6.0, 4.5),
+    (ScreenKind::Curved, 28.0, 21.0),
+];
+
+/// How far a curved screen bends out of the wall at its middle, in meters.
+const BULGE: f32 = 3.5;
+/// The distance of a corner screen from the walls, which is also the radius of its round
+/// corner, in meters.
+const CORNER_OFFSET: f32 = 1.6;
+
+/// A video screen on the walls of a building.
+#[derive(Debug, Clone)]
 pub struct Screen {
     /// The building that carries it.
     pub building: usize,
-    /// The center of the screen in front of the wall.
-    pub center: Vec3,
-    /// The direction that the screen faces, on the ground plane.
-    pub facing: Vec2,
-    /// The width and the height.
-    pub size: Vec2,
+    pub kind: ScreenKind,
+    /// The line of the screen on the ground plane, from its left edge to its right edge
+    /// seen from the front, with the direction that it faces at each point.
+    pub path: Vec<(Vec2, Vec2)>,
+    /// The heights of its lower and its upper edge.
+    pub bottom: f32,
+    pub top: f32,
 }
 
-/// The places for a video screen on the walls of the buildings in `area`: on each wall in
-/// one plane, for each size, a grid of places 6 m apart that lie on the wall.
+impl Screen {
+    /// A flat or a curved panel of `width` x `height` with its center at `center`.
+    fn panel(
+        building: usize,
+        kind: ScreenKind,
+        center: Vec3,
+        facing: Vec2,
+        width: f32,
+        height: f32,
+    ) -> Self {
+        let right = vec2(facing.y, -facing.x);
+        let c = vec2(center.x, center.z);
+        let path = if kind == ScreenKind::Curved {
+            // A circular arc through both edges that stands `BULGE` out at its middle.
+            let radius = (width * width * 0.25 + BULGE * BULGE) / (2.0 * BULGE);
+            let middle = c + facing * (BULGE - radius);
+            let half = (width * 0.5 / radius).asin();
+            (0..=8)
+                .map(|k| {
+                    let a = -half + 2.0 * half * k as f32 / 8.0;
+                    let d = facing * a.cos() + right * a.sin();
+                    (middle + d * radius, d)
+                })
+                .collect()
+        } else {
+            vec![
+                (c - right * width * 0.5, facing),
+                (c + right * width * 0.5, facing),
+            ]
+        };
+        Self {
+            building,
+            kind,
+            path,
+            bottom: center.y - height * 0.5,
+            top: center.y + height * 0.5,
+        }
+    }
+
+    /// The length of the screen along its line.
+    pub fn length(&self) -> f32 {
+        self.path.windows(2).map(|w| w[0].0.distance(w[1].0)).sum()
+    }
+
+    /// The point and the facing at the part `k` (`0..1`) of the length, at the height `y`.
+    pub fn at(&self, k: f32, y: f32) -> (Vec3, Vec3) {
+        let mut rest = k * self.length();
+        let last = self.path.len() - 2;
+        for (i, w) in self.path.windows(2).enumerate() {
+            let d = w[0].0.distance(w[1].0);
+            if rest <= d || i == last {
+                let f = (rest / d.max(1e-6)).clamp(0.0, 1.0);
+                let p = w[0].0.lerp(w[1].0, f);
+                let n = w[0].1.lerp(w[1].1, f).normalize_or(w[0].1);
+                return (vec3(p.x, y, p.y), vec3(n.x, 0.0, n.y));
+            }
+            rest -= d;
+        }
+        let (p, n) = self.path[0];
+        (vec3(p.x, y, p.y), vec3(n.x, 0.0, n.y))
+    }
+
+    /// The box around the screen.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        self.path
+            .iter()
+            .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), &(p, _)| {
+                (
+                    lo.min(vec3(p.x, self.bottom, p.y)),
+                    hi.max(vec3(p.x, self.top, p.y)),
+                )
+            })
+    }
+
+    /// The part of the film that the screen shows: the film keeps its shape and the screen
+    /// shows the middle of it. U from left to right, V from the top.
+    fn crop(&self) -> (Vec2, Vec2) {
+        let aspect = self.length() / (self.top - self.bottom);
+        let film = 4.0 / 3.0;
+        if aspect > film {
+            let h = film / aspect * 0.5;
+            (vec2(0.0, 0.5 - h), vec2(1.0, 0.5 + h))
+        } else {
+            let w = aspect / film * 0.5;
+            (vec2(0.5 - w, 0.0), vec2(0.5 + w, 1.0))
+        }
+    }
+}
+
+/// The walls of a building in one plane: the normal, the offset of the plane along the
+/// normal, and the triangles in the plane, along the wall (x) and up (y).
+struct Plane {
+    normal: Vec2,
+    offset: f32,
+    tris: Vec<[Vec2; 3]>,
+}
+
+impl Plane {
+    /// The direction along the wall, to the right of a viewer in front of it.
+    fn along(&self) -> Vec2 {
+        vec2(self.normal.y, -self.normal.x)
+    }
+
+    /// Whether the point `q` (along the wall, up) lies on the wall.
+    fn covers(&self, q: Vec2) -> bool {
+        self.tris.iter().any(|t| {
+            let s = [0, 1, 2].map(|k| (t[(k + 1) % 3] - t[k]).perp_dot(q - t[k]));
+            s.iter().all(|&v| v >= -1e-3) || s.iter().all(|&v| v <= 1e-3)
+        })
+    }
+
+    fn extent(&self) -> (Vec2, Vec2) {
+        self.tris
+            .iter()
+            .flatten()
+            .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), &q| {
+                (lo.min(q), hi.max(q))
+            })
+    }
+}
+
+/// A bar of steel from `a` to `b` in front of a wall that faces `out`: its front, `width`
+/// wide across `side`, and its two sides, 0.16 m deep. The back against the wall and the
+/// ends are not drawn.
+fn fin(buf: &mut MeshBuf, a: Vec3, b: Vec3, side: Vec3, out: Vec3, width: f32) {
+    let (h, d) = (side * (width * 0.5), out * 0.08);
+    // The corners go counterclockwise seen from outside.
+    let face = |buf: &mut MeshBuf, p: Vec3, q: Vec3, r: Vec3, s: Vec3, toward: Vec3| {
+        let n = (q - p).cross(r - p);
+        if n.dot(toward) >= 0.0 {
+            buf.quad([p, q, r, s], UNIT_UV);
+        } else {
+            buf.quad([s, r, q, p], UNIT_UV);
+        }
+    };
+    face(buf, a - h + d, b - h + d, b + h + d, a + h + d, out);
+    face(buf, a + h + d, b + h + d, b + h - d, a + h - d, side);
+    face(buf, a - h - d, b - h - d, b - h + d, a - h + d, -side);
+}
+
+/// The places for a video screen on the walls of the buildings in `area`: panels of each
+/// kind and size on a grid 6 m apart on each wall, and screens around the corners where two
+/// walls meet. Only places that lie on the walls.
 pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2)) -> Vec<Screen> {
     let mut out = Vec::new();
     for (i, b) in city.buildings.iter().enumerate() {
         if b.far || !(b.center.cmpge(area.0).all() && b.center.cmple(area.1).all()) {
             continue;
         }
-        // The walls of the building in one plane: the normal, and the triangles in the
-        // plane, along the wall (x) and up (y).
-        let mut planes: HashMap<[i32; 3], (Vec2, Vec<[Vec2; 3]>)> = HashMap::new();
+        let mut planes: HashMap<[i32; 3], Plane> = HashMap::new();
         for t in &b.walls {
             let n = (t[1] - t[0]).cross(t[2] - t[0]);
             let nh = vec2(n.x, n.z);
@@ -707,24 +998,22 @@ pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2)) -> Vec<Screen> {
                 offset.round() as i32,
             ];
             let flat = t.map(|p| vec2(vec2(p.x, p.z).dot(along), p.y));
-            planes.entry(key).or_insert((nh, Vec::new())).1.push(flat);
-        }
-        for ([_, _, offset], (nh, tris)) in planes {
-            let on_wall = |q: Vec2| {
-                tris.iter().any(|t| {
-                    let s = [0, 1, 2].map(|k| (t[(k + 1) % 3] - t[k]).perp_dot(q - t[k]));
-                    s.iter().all(|&v| v >= -1e-3) || s.iter().all(|&v| v <= 1e-3)
+            planes
+                .entry(key)
+                .or_insert(Plane {
+                    normal: nh,
+                    offset: offset.round(),
+                    tris: Vec::new(),
                 })
-            };
-            let (min, max) = tris
-                .iter()
-                .flatten()
-                .fold((Vec2::MAX, Vec2::MIN), |(lo, hi), &q| {
-                    (lo.min(q), hi.max(q))
-                });
-            let along = vec2(nh.y, -nh.x);
-            for size in SCREENS {
-                let half = size * 0.5;
+                .tris
+                .push(flat);
+        }
+        let planes: Vec<Plane> = planes.into_values().collect();
+        for plane in &planes {
+            let (min, max) = plane.extent();
+            let along = plane.along();
+            for (kind, width, height) in PANELS {
+                let half = vec2(width, height) * 0.5;
                 // Times Square has screens from the third floor up to 120 m.
                 let mut y = min.y.max(0.0) + half.y + 9.0;
                 while y <= (max.y - half.y - 3.0).min(120.0) {
@@ -739,15 +1028,17 @@ pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2)) -> Vec<Screen> {
                         ];
                         if corners
                             .iter()
-                            .all(|&(a, c)| on_wall(vec2(u + half.x * a, y + half.y * c)))
+                            .all(|&(a, c)| plane.covers(vec2(u + half.x * a, y + half.y * c)))
                         {
-                            let mid = along * u + nh * (offset as f32 + 0.8);
-                            out.push(Screen {
-                                building: i,
-                                center: vec3(mid.x, y, mid.y),
-                                facing: nh,
-                                size,
-                            });
+                            let mid = along * u + plane.normal * (plane.offset + 0.8);
+                            out.push(Screen::panel(
+                                i,
+                                kind,
+                                vec3(mid.x, y, mid.y),
+                                plane.normal,
+                                width,
+                                height,
+                            ));
                         }
                         u += 6.0;
                     }
@@ -755,35 +1046,172 @@ pub fn screen_walls(city: &Manhattan, area: (Vec2, Vec2)) -> Vec<Screen> {
                 }
             }
         }
+        out.extend(corner_screens(i, &planes));
     }
     out
 }
 
-/// Adds the quad of a screen and its dark frame.
-fn screen_quad(g: &mut RiseGroup, screen: &Screen) {
-    let right = vec2(screen.facing.y, -screen.facing.x);
-    let half = screen.size * 0.5;
-    let c = screen.center;
-    let p = |side: f32, up: f32, depth: f32| {
-        let q = vec2(c.x, c.z) + right * side - screen.facing * depth;
-        vec3(q.x, c.y + up, q.y)
-    };
-    let mut quad = MeshBuf::default();
-    quad.quad(
-        [
-            p(-half.x, -half.y, 0.0),
-            p(half.x, -half.y, 0.0),
-            p(half.x, half.y, 0.0),
-            p(-half.x, half.y, 0.0),
-        ],
-        UNIT_UV,
-    );
-    g.screens.push(quad);
-    let (a, b) = (
-        p(-half.x - 0.8, -half.y - 0.8, 0.8),
-        p(half.x + 0.8, half.y + 0.8, 0.1),
-    );
-    g.details.block(a.min(b), a.max(b));
+/// The screens around the convex corners where two walls of a building meet.
+fn corner_screens(building: usize, planes: &[Plane]) -> Vec<Screen> {
+    let mut out = Vec::new();
+    let o = CORNER_OFFSET;
+    for (k, a) in planes.iter().enumerate() {
+        for b in &planes[k + 1..] {
+            if a.normal.dot(b.normal).abs() > 0.35 {
+                continue;
+            }
+            // The corner: on both planes.
+            let det = a.normal.perp_dot(b.normal);
+            let c = (vec2(b.normal.y, -b.normal.x) * a.offset
+                - vec2(a.normal.y, -a.normal.x) * b.offset)
+                / det;
+            // The direction along each wall away from the corner, when the corner is at an
+            // end of the wall.
+            let away = |p: &Plane| {
+                let (min, max) = p.extent();
+                let u = c.dot(p.along());
+                if (u - min.x).abs() < 1.5 {
+                    Some((p.along(), max.x - u))
+                } else if (u - max.x).abs() < 1.5 {
+                    Some((-p.along(), u - min.x))
+                } else {
+                    None
+                }
+            };
+            let (Some((da, la)), Some((db, lb))) = (away(a), away(b)) else {
+                continue;
+            };
+            // Convex: each wall runs behind the other.
+            if db.dot(a.normal) > -0.5 || da.dot(b.normal) > -0.5 {
+                continue;
+            }
+            for height in [14.0, 20.0] {
+                let side = ((4.0 / 3.0 * height - std::f32::consts::FRAC_PI_2 * o) * 0.5).max(4.0);
+                if la < side + 1.0 || lb < side + 1.0 {
+                    continue;
+                }
+                let mut y = height * 0.5 + 10.0;
+                while y <= 100.0 {
+                    let on = |p: &Plane, d: Vec2| {
+                        [0.3, side].iter().all(|&s| {
+                            let u = (c + d * s).dot(p.along());
+                            p.covers(vec2(u, y - height * 0.5))
+                                && p.covers(vec2(u, y + height * 0.5))
+                        })
+                    };
+                    if on(a, da) && on(b, db) {
+                        let mut path = vec![(c + da * side + a.normal * o, a.normal)];
+                        for s in 0..=6 {
+                            let n = a.normal.lerp(b.normal, s as f32 / 6.0).normalize();
+                            path.push((c + n * o, n));
+                        }
+                        path.push((c + db * side + b.normal * o, b.normal));
+                        // Left to right seen from the front.
+                        let d = path[1].0 - path[0].0;
+                        if vec3(d.x, 0.0, d.y).cross(Vec3::Y).dot(vec3(
+                            path[0].1.x,
+                            0.0,
+                            path[0].1.y,
+                        )) < 0.0
+                        {
+                            path.reverse();
+                        }
+                        out.push(Screen {
+                            building,
+                            kind: ScreenKind::Corner,
+                            path,
+                            bottom: y - height * 0.5,
+                            top: y + height * 0.5,
+                        });
+                    }
+                    y += 8.0;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Adds the mesh of a screen, its dark back and, when `edge` has a color, a frame of LED
+/// light around it.
+fn screen_mesh(g: &mut RiseGroup, screen: &Screen, edge: Option<Rgb>) {
+    let (min, max) = screen.crop();
+    let total = screen.length();
+    let mut mesh = MeshBuf::default();
+    let mut along = 0.0;
+    let up = |p: Vec2, y: f32| vec3(p.x, y, p.y);
+    for w in screen.path.windows(2) {
+        let (p, q) = (w[0].0, w[1].0);
+        let next = along + p.distance(q);
+        let (u0, u1) = (
+            min.x + (max.x - min.x) * along / total,
+            min.x + (max.x - min.x) * next / total,
+        );
+        mesh.quad(
+            [
+                up(p, screen.bottom),
+                up(q, screen.bottom),
+                up(q, screen.top),
+                up(p, screen.top),
+            ],
+            [
+                vec2(u0, max.y),
+                vec2(u1, max.y),
+                vec2(u1, min.y),
+                vec2(u0, min.y),
+            ],
+        );
+        // The dark back of the screen against the wall.
+        let back = |r: Vec2, n: Vec2| r - n * 0.4;
+        let (bp, bq) = (back(p, w[0].1), back(q, w[1].1));
+        g.details.quad(
+            [
+                up(bp, screen.bottom - 0.6),
+                up(bq, screen.bottom - 0.6),
+                up(bq, screen.top + 0.6),
+                up(bp, screen.top + 0.6),
+            ],
+            UNIT_UV,
+        );
+        if let Some(color) = edge {
+            let first = g.screen_edges.len();
+            let out = |r: Vec2, n: Vec2| r + n * 0.05;
+            let (ep, eq) = (out(p, w[0].1), out(q, w[1].1));
+            for (y0, y1) in [
+                (screen.bottom - 0.45, screen.bottom - 0.1),
+                (screen.top + 0.1, screen.top + 0.45),
+            ] {
+                g.screen_edges
+                    .quad([up(ep, y0), up(eq, y0), up(eq, y1), up(ep, y1)], UNIT_UV);
+            }
+            g.screen_edges.paint(first, color);
+        }
+        along = next;
+    }
+    if let Some(color) = edge {
+        // The sides of the frame.
+        let first = g.screen_edges.len();
+        for (end, sign) in [
+            (screen.path[0], -1.0),
+            (screen.path[screen.path.len() - 1], 1.0),
+        ] {
+            let (p, n) = end;
+            let right = vec2(n.y, -n.x) * sign;
+            let (a, b) = (p + n * 0.05 + right * 0.1, p + n * 0.05 + right * 0.45);
+            let (a, b) = if sign > 0.0 { (a, b) } else { (b, a) };
+            g.screen_edges.quad(
+                [
+                    up(a, screen.bottom - 0.45),
+                    up(b, screen.bottom - 0.45),
+                    up(b, screen.top + 0.45),
+                    up(a, screen.top + 0.45),
+                ],
+                UNIT_UV,
+            );
+        }
+        g.screen_edges.paint(first, color);
+    }
+    g.screens.push(mesh);
 }
 
 /// The nodes of the street net: the points where three or more segments end.

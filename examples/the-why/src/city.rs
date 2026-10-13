@@ -89,7 +89,7 @@ const VENTS: [Vec2; 3] = [
 /// The puffs of steam over one vent.
 const PUFFS: u32 = 60;
 /// The most video screens in Times Square.
-const SCREEN_COUNT: usize = 18;
+const SCREEN_COUNT: usize = 20;
 
 /// The colors of the chip. Shot 3 shows the same materials on [`chip`].
 const DIE: u32 = 0x0b0c0e;
@@ -109,7 +109,9 @@ const AVENUE_LIGHTS: usize = 2;
 /// The nodes of the buildings that rise together.
 struct RiseNodes {
     root: NodeId,
-    walls: [NodeId; 5],
+    /// The facades with the brightness of their windows: the five styles, then the five
+    /// sharper styles of the buildings along the flight through Times Square.
+    walls: Vec<(NodeId, f32)>,
     /// The roofs inside the chip square, then outside it.
     roofs: [NodeId; 2],
     crowns: NodeId,
@@ -178,6 +180,8 @@ pub struct CitySet {
     /// The video screens, with the start time of the rise of their tower.
     screens: Vec<(NodeId, f32)>,
     screen_ids: Vec<NodeId>,
+    /// The LED edges of the screens, with the start time of the rise of their tower.
+    screen_edges: Vec<(NodeId, f32)>,
     sites: Vec<SiteNodes>,
     stars: NodeId,
     /// The steam of the street vents.
@@ -444,16 +448,23 @@ impl CitySet {
         let sites_at = construction_lots(&city);
         let skip: HashSet<usize> = sites_at.iter().map(|s| s.0).collect();
         let screen_list = place_screens(&city);
+        // The facades of the five styles, far and near.
         let facades: Vec<textures::Facade> = std::thread::scope(|s| {
-            let handles: Vec<_> = STYLES
-                .iter()
-                .enumerate()
-                .map(|(i, &style)| {
-                    s.spawn(move || textures::Facade::new(style, 31 + i as u32 * 97))
+            let handles: Vec<_> = [textures::FAR, textures::NEAR]
+                .into_iter()
+                .flat_map(|layout| {
+                    STYLES
+                        .iter()
+                        .enumerate()
+                        .map(move |(i, &style)| (i, style, layout))
+                })
+                .map(|(i, style, layout)| {
+                    s.spawn(move || textures::Facade::new(style, 31 + i as u32 * 97, layout))
                 })
                 .collect();
             handles.into_iter().filter_map(|h| h.join().ok()).collect()
         });
+        let mullion_steel = Material::metal(0x8c949e, 0.32).env_intensity(1.1);
         let facade_material = |f: &textures::Facade| {
             let mut m = Material::standard(Rgb::WHITE)
                 .map(f.color.clone())
@@ -477,11 +488,47 @@ impl CitySet {
         let mut groups = Vec::new();
         let mut roof_light_list = Vec::new();
         let mut screens = Vec::new();
-        for g in build::rise_groups(&city, DIVE, CHIP_HALF, &skip, &screen_list) {
+        let mut screen_edges = Vec::new();
+        let near_square = |b: &data::Building| {
+            (450.0..1300.0).contains(&b.center.y) && flight::track().project(b.center).0 < 110.0
+        };
+        // The walls that face the flight from near get steel mullions.
+        let facing_flight = |center: Vec3, normal: Vec3| {
+            let ground = vec2(center.x, center.z);
+            let (off, along) = flight::track().project(ground);
+            let toward = flight::track().at(along).0 - ground;
+            off < 70.0 && center.y < 170.0 && vec2(normal.x, normal.z).dot(toward) > 0.0
+        };
+        for g in build::rise_groups(
+            &city,
+            DIVE,
+            CHIP_HALF,
+            &skip,
+            &screen_list,
+            near_square,
+            facing_flight,
+        ) {
             let root = scene.add(Node::group().scaled3(1.0, 0.002, 1.0));
-            let mut walls = [root; 5];
-            for ((id, mesh), facade) in walls.iter_mut().zip(g.walls).zip(&facades) {
-                *id = scene.add_to(root, Node::mesh(mesh.geometry(), facade_material(facade)));
+            let lights = [1.5, 1.4, 1.3, 1.3, 1.1];
+            let mut walls = Vec::new();
+            for ((mesh, facade), light) in g
+                .walls
+                .into_iter()
+                .chain(g.near_walls)
+                .zip(&facades)
+                .zip(lights.iter().chain(&lights))
+            {
+                if mesh.len() > 0 {
+                    let id =
+                        scene.add_to(root, Node::mesh(mesh.geometry(), facade_material(facade)));
+                    walls.push((id, *light));
+                }
+            }
+            if g.mullions.len() > 0 {
+                scene.add_to(
+                    root,
+                    Node::mesh(g.mullions.geometry(), mullion_steel.clone()),
+                );
             }
             let mut roofs = [root; 2];
             for ((id, mesh), material) in roofs.iter_mut().zip(g.roofs).zip(&materials.chip_roofs) {
@@ -514,6 +561,17 @@ impl CitySet {
                         Instances::new(g.water_towers),
                     ),
                 );
+            }
+            if g.screen_edges.len() > 0 {
+                let id = scene.add_to(
+                    root,
+                    Node::mesh(
+                        g.screen_edges.geometry(),
+                        Material::unlit(Rgb::BLACK).additive(),
+                    )
+                    .shadows(false, false),
+                );
+                screen_edges.push((id, g.start));
             }
             for quad in g.screens {
                 let id = scene.add_to(
@@ -760,6 +818,7 @@ impl CitySet {
             avenue_lights,
             screens,
             screen_ids,
+            screen_edges,
             sites,
             stars,
             steam,
@@ -788,10 +847,12 @@ impl CitySet {
         Svgr::empty()
     }
 
-    /// The five video screens on the walls of Times Square. Each is an unlit 4:3 quad, 24
-    /// to 40 m wide, with UVs from 0 to 1 (V = 0 at the top), named "screen". To show a
-    /// video, set the `map` of its material in the scene from [`CitySet::moment`]. The
-    /// color of the material is the brightness: it comes on with the windows of the tower.
+    /// The video screens on the walls of Times Square, up to 20: flat panels in the shape of
+    /// the film, tall ones, wide bands, small ones, bent ones and ones around a corner. Each
+    /// is an unlit mesh named "screen". Its UVs show the middle of a 4:3 film in the shape
+    /// of the screen (V = 0 at the top). To show a video, set the `map` of its material in
+    /// the scene from [`CitySet::moment`]. The color of the material is the brightness: it
+    /// comes on with the windows of the tower.
     pub fn screens(&self) -> &[NodeId] {
         &self.screen_ids
     }
@@ -841,7 +902,7 @@ impl CitySet {
             let rise = ease(g.start, g.start + RISE_TIME, t);
             scene[g.root].scale.y = rise.max(0.002);
             let windows = smoothstep(g.start + 0.3, g.start + RISE_TIME + 0.4, t);
-            for (&w, light) in g.walls.iter().zip([1.5, 1.4, 1.3, 1.3, 1.1]) {
+            for &(w, light) in &g.walls {
                 if let Some(mat) = scene[w].material_mut() {
                     mat.emissive_intensity = windows * light * textures::WINDOW_LIGHT;
                 }
@@ -862,6 +923,11 @@ impl CitySet {
         for &(id, start) in &self.screens {
             if let Some(mat) = scene[id].material_mut() {
                 mat.color = Rgb::WHITE * (1.8 * smoothstep(start + 1.0, start + 2.2, t));
+            }
+        }
+        for &(id, start) in &self.screen_edges {
+            if let Some(mat) = scene[id].material_mut() {
+                mat.color = Rgb::WHITE * (2.4 * smoothstep(start + 1.0, start + 2.2, t));
             }
         }
         scene[self.park_root].scale.y = ease(1.4, 1.4 + RISE_TIME, t).max(0.002);
@@ -1138,39 +1204,44 @@ fn place_screens(city: &Manhattan) -> Vec<build::Screen> {
         .map(|&t| (camera(t), 0.35 + 0.65 * film_light(t)))
         .collect();
     let score = |screen: &build::Screen| {
-        let right = vec2(screen.facing.y, -screen.facing.x);
-        let half = screen.size * 0.5;
-        let facing = vec3(screen.facing.x, 0.0, screen.facing.y);
-        let front = screen.center + facing * 1.0;
-        let point =
-            |a: f32, b: f32| front + vec3(right.x * half.x * a, half.y * b, right.y * half.x * a);
+        let height_of = screen.top - screen.bottom;
         let mut sum = 0.0;
         for (view, light) in &views {
-            if (view.position - screen.center).dot(facing) < 2.0 {
+            let (front, facing) = screen.at(0.5, screen.bottom + height_of * 0.5);
+            if (view.position - front).dot(facing) < 2.0 {
                 continue;
             }
-            let Some(center) = view.project(front, width, height) else {
+            let Some(center) = view.project(front + facing, width, height) else {
                 continue;
             };
             if !(0.0..width).contains(&center.x) || !(0.0..height).contains(&center.y) {
                 continue;
             }
             let mut seen = 0;
-            for a in [-0.9, 0.0, 0.9] {
-                for b in [-0.9, 0.0, 0.9] {
-                    let p = point(a, b);
+            for a in [0.05, 0.5, 0.95] {
+                for b in [0.05, 0.5, 0.95] {
+                    let (p, n) = screen.at(a, screen.bottom + height_of * b);
+                    let p = p + n;
                     let inside = view.project(p, width, height).is_some_and(|q| {
                         (20.0..width - 20.0).contains(&q.x) && (20.0..height - 20.0).contains(&q.y)
                     });
-                    seen += usize::from(inside && clear(view.position, p));
+                    let facing_view = (view.position - p).dot(n) > 0.0;
+                    seen += usize::from(inside && facing_view && clear(view.position, p));
                 }
             }
             if seen >= 5 {
-                let edges =
-                    [point(-1.0, 0.0), point(1.0, 0.0)].map(|p| view.project(p, width, height));
-                if let [Some(a), Some(b)] = edges {
-                    // A fifth of the picture is enough.
-                    let size = (b.x - a.x).abs().min(width * 0.22);
+                // The size in the picture: the larger of the width and the height. A fifth
+                // of the picture is enough.
+                let mid = screen.bottom + height_of * 0.5;
+                let ends = [
+                    screen.at(0.0, mid).0,
+                    screen.at(1.0, mid).0,
+                    screen.at(0.5, screen.bottom).0,
+                    screen.at(0.5, screen.top).0,
+                ]
+                .map(|p| view.project(p, width, height));
+                if let [Some(l), Some(r), Some(lo), Some(hi)] = ends {
+                    let size = (r.x - l.x).abs().max((hi.y - lo.y).abs()).min(width * 0.22);
                     sum += size * seen as f32 / 9.0 * light;
                 }
             }
@@ -1183,7 +1254,13 @@ fn place_screens(city: &Manhattan) -> Vec<build::Screen> {
     let mut places: Vec<(f32, build::Screen)> = std::thread::scope(|s| {
         let handles: Vec<_> = candidates
             .chunks(chunk)
-            .map(|part| s.spawn(|| part.iter().map(|c| (score(c), *c)).collect::<Vec<_>>()))
+            .map(|part| {
+                s.spawn(|| {
+                    part.iter()
+                        .map(|c| (score(c), c.clone()))
+                        .collect::<Vec<_>>()
+                })
+            })
             .collect();
         handles
             .into_iter()
@@ -1194,19 +1271,30 @@ fn place_screens(city: &Manhattan) -> Vec<build::Screen> {
     });
     places.sort_by(|a, b| b.0.total_cmp(&a.0));
     let overlap = |a: &build::Screen, b: &build::Screen| {
-        let gap = (a.size + b.size) * 0.5 + 2.0;
-        let d = a.center - b.center;
-        vec2(d.x, d.z).length() < gap.x && d.y.abs() < gap.y
+        let (a0, a1) = a.bounds();
+        let (b0, b1) = b.bounds();
+        let gap = Vec3::splat(1.5);
+        (a0 - gap).cmple(b1).all() && (b0 - gap).cmple(a1).all()
     };
+    // The best places, with a mix of kinds like in the real square.
+    let quota = |kind: build::ScreenKind| match kind {
+        build::ScreenKind::Standard => 6,
+        build::ScreenKind::Small => 4,
+        build::ScreenKind::Tall | build::ScreenKind::Band => 3,
+        build::ScreenKind::Curved | build::ScreenKind::Corner => 2,
+    };
+    let best = places.first().map_or(0.0, |p| p.0);
     let mut out: Vec<build::Screen> = Vec::new();
     for (score, place) in &places {
         let same = out.iter().filter(|o| o.building == place.building).count();
+        let kind = out.iter().filter(|o| o.kind == place.kind).count();
         if out.len() < SCREEN_COUNT
             && same < 4
-            && *score > places[0].0 * 0.08
+            && kind < quota(place.kind)
+            && *score > best * 0.05
             && !out.iter().any(|o| overlap(o, place))
         {
-            out.push(*place);
+            out.push(place.clone());
         }
     }
     out
