@@ -1,14 +1,20 @@
-//! Part 2, 5 to 10 s of the shot: the greenhouse. Early morning in the desert.
+//! Part 2, 5 to 10 s of the shot: the greenhouse at first light. The sun is still below the
+//! horizon. The blue sky, the warm glow of the dawn and the lights of the build light the
+//! desert.
 //!
 //! The dome stands at the origin: a geodesic hemisphere of [`RADIUS`] m on the sand. The
 //! times below are seconds into the part.
 //!
 //! - 0.0 to 1.3: a warm point of light (the headlights of the bridge, matched on the cut)
-//!   draws the base ring on the sand. The sun comes up.
-//! - 0.9 to 2.6: the frame of struts grows from the ring to the top.
-//! - 1.7 to 3.7: drones fly the triangular glass panels into the frame.
-//! - 2.3 to 4.4: inside, the crops, the stalks and the trees grow, and a warm light comes on.
-//! - 4.35 to 5.0: the camera whips to the left into the dawn of the rocket part.
+//!   draws the base ring on the sand.
+//! - 0.7 to 1.4: the foundation rises out of the sand.
+//! - 0.9 to 2.4: the frame of struts grows from the ring to the top.
+//! - 1.5 to 4.3: drones carry the triangular glass panels down from above the frame, set
+//!   them from the ground up (2.1 to 3.6), and fly away.
+//! - 2.4 to 4.0: inside, the crops, the corn and the trees grow.
+//! - 2.9 to 3.9: the grow lights come on, and the dome turns green.
+//! - 4.4: a spark leaves the ring. It flies to the left, low over the sand.
+//! - 4.75 to 5.0: the camera whips after it into the dawn of the rocket part.
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
@@ -17,7 +23,8 @@ use fframes_3d::math::{hash, progress, smoothstep};
 use fframes_3d::*;
 
 use super::{
-    AMBER, AMBER_EDGE, COLD, COLD_BLUE, camera, ease, ease_in, ease_out, fbm, mix, ridges, span,
+    AMBER, AMBER_EDGE, COLD, COLD_BLUE, WHIP_HALF, camera, ease, ease_in, ease_out, fbm,
+    haze_steps, mix, polar, ridges, sky, span, spark, whip, yaw_pitch,
 };
 use crate::assets::Assets;
 
@@ -31,17 +38,28 @@ const RING_END: f32 = 1.3;
 /// The angle of the pen on the ring at the start: in front of the dome, seen from the
 /// camera, moving to the right.
 const PEN_START: f32 = -0.35;
-const STRUTS: (f32, f32) = (0.9, 2.6);
-const PANELS: (f32, f32) = (1.7, 3.7);
-const GROWTH: (f32, f32) = (2.3, 4.4);
-/// The whip pan starts.
-const WHIP: f32 = 4.35;
+const STRUTS: (f32, f32) = (0.9, 2.4);
+const PANELS: (f32, f32) = (1.5, 3.2);
+/// The flight of a drone with its panel to the dome, and its flight away, in seconds.
+const CARRY: f32 = 0.6;
+const LEAVE: f32 = 0.5;
+const GROWTH: (f32, f32) = (2.4, 4.0);
+/// The grow lights come on and the glass glows green.
+const GREEN: (f32, f32) = (2.9, 3.9);
+/// The spark leaves the ring.
+const SPARK: f32 = 4.4;
+/// The length of the part. The cut to the rocket is at its end.
+const END: f32 = 5.0;
 /// The slope of the view at the cut to the rocket: a little above the horizon. The rocket
 /// part starts with the same slope, so the horizon stays in place over the cut.
 pub const LEVEL: f32 = 0.08;
-/// The angle of the whip pan in this part, in radians. It ends at 3.5 rad/s, the speed at
-/// which the rocket part starts.
-const WHIP_ANGLE: f32 = 0.76;
+/// The spark at the cut, seen from the camera: the pitch above the horizontal plane in
+/// radians and the distance in meters. The rocket part starts the spark at the same place
+/// in the picture.
+pub const SPARK_AT_CUT: (f32, f32) = (-0.09, 36.0);
+/// The time that the spark leads the camera in the whip pan, in seconds. It keeps the spark
+/// a little left of the center of the picture.
+pub const SPARK_LEAD: f32 = 0.006;
 
 /// The vertices, the edges and the triangles of a geodesic hemisphere of `radius`, cut at
 /// the equator. It is an icosahedron with a vertex at the top, each face divided into
@@ -179,13 +197,15 @@ struct Ids {
     stalks: NodeId,
     trunks: NodeId,
     crowns: NodeId,
-    inside: [NodeId; 2],
-    sun: NodeId,
+    inside: [NodeId; 4],
+    shell: NodeId,
+    spark: NodeId,
+    glow: NodeId,
     dawn: NodeId,
     foundation: NodeId,
 }
 
-/// The desert, the dome and its machines in the early morning.
+/// The desert, the dome and its machines at first light.
 pub struct Greenhouse {
     scene: Scene,
     ids: Ids,
@@ -216,7 +236,9 @@ fn ring_progress(t: f32) -> f32 {
 }
 
 impl Greenhouse {
-    pub fn new(assets: &Assets) -> Self {
+    /// Builds the part. `glow` is the direction of the dawn glow in the sky, as
+    /// `atan2(z, x)` in radians.
+    pub fn new(assets: &Assets, glow: f32) -> Self {
         let (points, edges, triangles) = geodesic(RADIUS, FREQUENCY);
         // the frame grows from the ground up: each part starts by the height of its lowest
         // point, with a little noise
@@ -271,7 +293,7 @@ impl Greenhouse {
             .collect();
 
         let (crops, stalks, trunks, crowns) = plants();
-        let (scene, ids) = build(assets);
+        let (scene, ids) = build(assets, glow);
         let mut greenhouse = Self {
             scene,
             ids,
@@ -314,20 +336,31 @@ impl Greenhouse {
     pub fn moment(&self, t: f32) -> (Scene, Camera) {
         let mut scene = self.scene.clone();
         self.pose(&mut scene, t);
-        // the sun comes up: the sky and the sun brighten over the first two seconds
-        let morning = ease(progress(t, 0.0, 2.2));
-        scene.environment = scene.environment.clone().intensity(mix(0.25, 0.8, morning));
-        if let Some(light) = scene[self.ids.sun].light_mut() {
-            *light.intensity_mut() = mix(0.15, 3.4, morning);
+        let ids = &self.ids;
+        // the light of the dawn grows: a time-lapse of the minutes before the sunrise
+        let dawn = ease(progress(t, 0.0, END));
+        scene.environment = scene.environment.clone().intensity(mix(1.0, 1.3, dawn));
+        if let Some(light) = scene[ids.dawn].light_mut() {
+            *light.intensity_mut() = mix(1.9, 1.7, dawn);
         }
-        if let Some(light) = scene[self.ids.dawn].light_mut() {
-            *light.intensity_mut() = mix(2.2, 0.2, morning);
+        if let Some(light) = scene[ids.glow].light_mut() {
+            *light.intensity_mut() = mix(0.15, 0.55, dawn);
         }
         if let Some(air) = &mut scene.atmosphere {
             air.offset = vec3(t * 3.0, 0.0, t * 1.2);
-            air.ambient = Rgb::hex(0x8aa6d0) * mix(0.03, 0.12, morning);
+            air.steps = haze_steps(t - END);
+            air.ambient = Rgb::hex(0x6a84c0) * mix(0.035, 0.07, dawn);
         }
-        (scene, camera_at(t))
+
+        // the spark: it lifts off the ring, then darts to the left, and the camera whips
+        // after it
+        let camera = camera_at(t);
+        if t > SPARK
+            && let Object::Particles(p) = &mut scene[ids.spark].object
+        {
+            p.items = spark(spark_at, t, smoothstep(SPARK, SPARK + 0.25, t));
+        }
+        (scene, camera)
     }
 
     /// The finished dome with its warm light for shot 9, see [`super::Landmarks`].
@@ -401,41 +434,56 @@ impl Greenhouse {
             ),
         );
 
-        // the panels fly in from outside and above, each under a drone
+        // a drone carries each panel down from above the frame in an arc and brakes, nose
+        // up, at its place; then it lifts away and leaves the frame
         let mut panels = Vec::new();
         let mut drones = Vec::new();
         for (i, p) in self.panels.iter().enumerate() {
-            let g = progress(t, p.start, p.start + 0.45);
+            let g = progress(t, p.start, p.start + CARRY);
             if g <= 0.0 {
                 continue;
             }
-            let away = (p.normal * 9.0 + vec3(0.0, 5.0, 0.0)) * (1.0 - ease_out(g));
-            let place = Mat4::from_translation(away) * p.place;
-            panels.push(place);
-            if g < 1.0 {
-                let center = place.transform_point3(vec3(1.0 / 3.0, 1.0 / 3.0, 0.0));
-                let drone = center + p.normal * 0.5 + vec3(0.0, 0.9, 0.0);
-                let heading = (i as f32 * 2.4 + t * 3.0).sin() * 0.3;
-                drones.push(Mat4::from_rotation_translation(
-                    Quat::from_rotation_y(heading),
-                    drone,
-                ));
-                let blink = if (t * 6.0 + hash(i as u32) * 2.0).fract() < 0.5 {
-                    40.0
-                } else {
-                    8.0
-                };
-                leds.push(Particle::new(
-                    drone - vec3(0.0, 0.18, 0.0),
-                    0.08,
-                    Rgb::hex(COLD_BLUE) * blink,
-                ));
-                leds.push(Particle::new(
-                    drone + vec3(0.0, 0.1, 0.0),
-                    0.05,
-                    Rgb::hex(COLD) * 20.0,
-                ));
+            let center = p.place.transform_point3(vec3(1.0 / 3.0, 1.0 / 3.0, 0.0));
+            let side =
+                p.normal.cross(Vec3::Y).normalize_or(Vec3::X) * (8.0 * (hash(i as u32) - 0.5));
+            let from = p.normal * 14.0 + Vec3::Y * (34.0 - center.y).max(14.0) + side;
+            let left = 1.0 - ease_out(g);
+            let away = from * left + side * (0.6 * (PI * left).sin());
+            panels.push(Mat4::from_translation(away) * p.place);
+            let leave = progress(t, p.start + CARRY, p.start + CARRY + LEAVE);
+            if leave >= 1.0 {
+                continue;
             }
+            let up = p.normal.with_y(0.0) * 8.0 + Vec3::Y * 30.0;
+            let drone = center + away + p.normal * 0.5 + Vec3::Y * 0.9 + up * ease_in(leave);
+            let brake = Quat::from_axis_angle(
+                Vec3::Y.cross(from.with_y(0.0)).normalize_or(Vec3::X),
+                -2.0 * left * (1.0 - left),
+            );
+            let climb = Quat::from_axis_angle(
+                Vec3::Y.cross(p.normal.with_y(0.0)).normalize_or(Vec3::X),
+                0.35 * smoothstep(0.0, 0.5, leave),
+            );
+            let heading = Quat::from_rotation_y((i as f32 * 2.4 + t * 3.0).sin() * 0.3);
+            drones.push(Mat4::from_rotation_translation(
+                climb * brake * heading,
+                drone,
+            ));
+            let blink = if (t * 6.0 + hash(i as u32) * 2.0).fract() < 0.5 {
+                40.0
+            } else {
+                8.0
+            };
+            leds.push(Particle::new(
+                drone - vec3(0.0, 0.18, 0.0),
+                0.08,
+                Rgb::hex(COLD_BLUE) * blink,
+            ));
+            leds.push(Particle::new(
+                drone + vec3(0.0, 0.1, 0.0),
+                0.05,
+                Rgb::hex(COLD) * 20.0,
+            ));
         }
         set(scene, ids.panels, Instances::new(panels));
         set(scene, ids.drones, Instances::new(drones));
@@ -461,13 +509,22 @@ impl Greenhouse {
         set(scene, ids.trunks, grow(&self.trunks, 0.8));
         set(scene, ids.crowns, grow(&self.crowns, 0.8));
 
-        // the warm light inside comes on with the plants
-        let warm = smoothstep(GROWTH.0 + 0.4, GROWTH.0 + 1.6, t);
+        // the grow lights come on: the plants show, and the glass glows green from the
+        // light and the damp air inside
+        let green = ease(progress(t, GREEN.0, GREEN.1));
         for id in ids.inside {
-            scene[id].visible = warm > 0.0;
+            scene[id].visible = green > 0.0;
             if let Some(light) = scene[id].light_mut() {
-                *light.intensity_mut() = 1400.0 * warm;
+                *light.intensity_mut() = 500.0 * green;
             }
+        }
+        scene[ids.shell].visible = green > 0.0;
+        if let Some(m) = scene[ids.shell].material_mut() {
+            m.color = Rgb::hex(0x1f8a48) * (0.03 * green);
+            m.rim = Rgb::hex(0x52ff86) * (1.0 * green);
+        }
+        if let Some(m) = scene[ids.panels].material_mut() {
+            m.emissive_intensity = 0.03 * green;
         }
     }
 }
@@ -567,9 +624,19 @@ fn plants() -> (Vec<Plant>, Vec<Plant>, Vec<Plant>, Vec<Plant>) {
 }
 
 /// The scene template: the sky, the desert, the empty frame and the machine parts.
-fn build(assets: &Assets) -> (Scene, Ids) {
+fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
+    // first light: a deep blue sky and a warm band low over the horizon where the sun
+    // comes up
     let mut scene = Scene::new()
-        .environment(Environment::map(assets.sunrise_sky.clone(), 1.0).rotated(1.68))
+        .environment(Environment::map(
+            sky(
+                Rgb::hex(0x102252),
+                Rgb::hex(0x7a7ea8) * 0.5,
+                Rgb::hex(0xff8a48) * 1.1,
+                glow,
+            ),
+            1.0,
+        ))
         .background(Background::Environment { blur: 0.0 });
 
     // the desert: flat sand around the dome and dunes beyond
@@ -716,6 +783,7 @@ fn build(assets: &Assets) -> (Scene, Ids) {
     let glass = Material::standard(0x000000)
         .roughness(0.05)
         .env_intensity(1.8)
+        .emissive(0x52ff86, 0.0)
         .additive()
         .double_sided();
     let panels = scene
@@ -794,36 +862,54 @@ fn build(assets: &Assets) -> (Scene, Ids) {
         leaf,
         Instances::default(),
     ));
-    let inside = [vec3(0.0, 9.0, 4.0), vec3(-3.0, 5.0, -6.0)].map(|p| {
+    // the grow lights, and a thin shell inside the glass that glows green at its edges:
+    // the light in the damp air under the glass
+    let inside = [
+        vec3(0.0, 4.0, 9.0),
+        vec3(-9.0, 3.5, -4.0),
+        vec3(9.0, 3.5, -3.0),
+        vec3(0.0, 6.0, -2.0),
+    ]
+    .map(|p| {
         scene.add(
-            Node::light(Light::point(0xffc27a, 0.0, 30.0))
+            Node::light(Light::point(0xfff0c8, 0.0, 30.0))
                 .with_position(p)
                 .hidden(),
         )
     });
+    let shell = scene.add(
+        Node::mesh(
+            Geometry::sphere_partial(RADIUS - 0.4, 48, 16, 0.0, PI / 2.0),
+            Material::unlit(0x000000).rim(0x000000, 2.2).additive(),
+        )
+        .shadows(false, false)
+        .hidden(),
+    );
+    let spark = scene.add(Node::particles(Vec::new(), Blending::Additive));
 
-    // the blue light of the sky before the sun comes up
-    let dawn = scene.add(Node::light(Light::hemisphere(0x5a7ab8, 0x2a2420, 0.0)));
-    // the sun of the panorama, low behind the dome on the right
-    let sun = scene.add(Node::light(
-        Light::sun(0xffdcb0, 3.0, vec3(0.5, 0.23, -0.84)).with_shadow(Shadow {
+    // the blue light of the sky, and the warm light of the glow low over the horizon. The
+    // sun is below the horizon, so the shadows are faint and long.
+    let dawn = scene.add(Node::light(Light::hemisphere(0x6a88d0, 0x2a2420, 0.0)));
+    let from = vec3(glow.cos(), 0.06, glow.sin());
+    let glow = scene.add(Node::light(Light::sun(0xff9a60, 0.0, from).with_shadow(
+        Shadow {
             map_size: 2048,
-            softness: 1.5,
-            strength: 0.95,
+            softness: 4.0,
+            strength: 0.6,
             bias: 1.5,
             bounds: Some(Aabb {
                 min: vec3(-60.0, -1.0, -60.0),
                 max: vec3(60.0, 25.0, 60.0),
             }),
-        }),
-    ));
+        },
+    )));
     scene.atmosphere = Some(Atmosphere {
-        density: 0.0045,
+        density: 0.0035,
         color: Rgb::WHITE,
         base: 0.0,
         falloff: 0.06,
         anisotropy: 0.45,
-        ambient: Rgb::hex(0x8aa6d0) * 0.1,
+        ambient: Rgb::hex(0x6a84c0) * 0.05,
         noise: 0.6,
         noise_size: 25.0,
         offset: Vec3::ZERO,
@@ -845,40 +931,64 @@ fn build(assets: &Assets) -> (Scene, Ids) {
         trunks,
         crowns,
         inside,
-        sun,
+        shell,
+        spark,
+        glow,
         dawn,
         foundation,
     };
     (scene, ids)
 }
 
-/// The camera at `t`. It starts high on the pen, where the car of the bridge was in the
-/// picture, follows the ring down to a low orbit around the dome, and at the end whips to
-/// the left.
-fn camera_at(t: f32) -> Camera {
-    // the orbit: from high to low, slowly, against the sun
+/// The place of the camera and the point that it looks at, without the whip pan. The
+/// camera starts high on the pen, where the car of the bridge was in the picture. It
+/// follows the ring down to a low orbit around the dome, and comes closer when the dome
+/// turns green.
+fn rest(t: f32) -> (Vec3, Vec3) {
     let azimuth = mix(25.0f32, -20.0, ease(progress(t, 0.0, 4.6))).to_radians();
-    let height =
-        mix(34.0, 5.0, ease(progress(t, 0.2, 2.6))) + 6.0 * ease(progress(t, WHIP - 0.3, 5.0));
-    let distance = mix(95.0, 68.0, ease(progress(t, 0.0, 4.6)));
+    let height = mix(34.0, 5.0, ease(progress(t, 0.2, 2.6)));
+    let distance =
+        mix(95.0, 70.0, ease(progress(t, 0.0, 3.0))) - 8.0 * ease(progress(t, GREEN.0, END));
     let position = vec3(distance * azimuth.sin(), height, distance * azimuth.cos());
-    let dome = vec3(0.0, mix(4.0, 11.0, ease(progress(t, 0.8, 3.0))), 0.0);
+    let dome = vec3(0.0, mix(4.0, 10.0, ease(progress(t, 0.8, 3.0))), 0.0);
     // the target starts on the pen and settles on the dome
     let settle = ease(progress(t, 0.15, 1.5));
-    let pen = ring_point(ring_progress(t));
-    let mut target = pen.lerp(dome, settle);
-    // the whip: the view turns to the right faster and faster, level with the horizon
-    let whip = ease_in(progress(t, WHIP, 5.0));
-    let forward = (target - position).normalize();
-    let level = vec3(
-        forward.x,
-        mix(forward.y, LEVEL, ease(progress(t, WHIP - 0.3, 5.0))),
-        forward.z,
+    (position, ring_point(ring_progress(t)).lerp(dome, settle))
+}
+
+/// The spark at `t`. It lifts off the ring in front of the camera, comes nearer and darts
+/// to the left, a little ahead of the camera.
+fn spark_at(t: f32) -> Vec3 {
+    let (eye, target) = rest(t);
+    let forward = target - eye;
+    let front = rest(SPARK).0.with_y(0.0).normalize() * (RADIUS + 0.45) + vec3(0.0, 0.1, 0.0);
+    let (yaw, pitch) = yaw_pitch(forward, front - eye);
+    let (cut_pitch, cut_distance) = SPARK_AT_CUT;
+    let lift = ease(progress(t, SPARK, END));
+    let dart = WHIP_HALF + whip(t - END + SPARK_LEAD);
+    polar(
+        eye,
+        forward,
+        mix(yaw, 0.0, lift) + dart,
+        mix(pitch, cut_pitch, lift),
+        mix(front.distance(eye), cut_distance, lift),
     )
-    .normalize();
-    target = position + Quat::from_rotation_y(whip * WHIP_ANGLE) * level * 60.0;
+}
+
+/// The camera at `t`: the view of [`rest`]. At the end it levels with the horizon and
+/// whips to the left after the spark.
+pub(super) fn camera_at(t: f32) -> Camera {
+    let (position, target) = rest(t);
+    let forward = (target - position).normalize();
+    let level = ease(progress(t, 4.3, END));
+    let pitch = mix(forward.y.asin(), LEVEL.atan(), level);
+    let turn = WHIP_HALF + whip(t - END);
+    let view = polar(position, forward, turn, pitch, 60.0);
+    let settle = ease(progress(t, 0.15, 1.5));
     let mm = mix(40.0, 32.0, settle);
-    camera(mm, position, target)
-        .focus_on(pen.lerp(Vec3::ZERO, settle), 4.0)
+    let focus = ring_point(ring_progress(t)).lerp(Vec3::ZERO, settle);
+    let focus = focus.lerp(spark_at(t), ease(progress(t, SPARK, SPARK + 0.4)));
+    camera(mm, position, view)
+        .focus_on(focus, 4.0)
         .shake(t, 0.0008, 11)
 }

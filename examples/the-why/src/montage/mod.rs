@@ -4,12 +4,16 @@
 //! - 0 to 5 s, [`bridge`]: the line is the pilot line of the Golden Gate Bridge at blue hour.
 //!   Machines build the bridge in the real strait, and San Francisco and Sausalito light
 //!   up.
-//! - 5 to 10 s, [`greenhouse`]: the headlights of the first car become a point of light that
-//!   draws a ring on the sand. Drones build a glass dome on it, and the dome turns green.
-//! - 10 to 15 s, [`rocket`]: a whip pan lands on a launch tower at dawn. Warm lights run up
-//!   the tower, the rocket lifts off, and its flare fills the frame for the cut to shot 9.
+//! - 5 to 10 s, [`greenhouse`]: first light. The headlights of the first car become a point
+//!   of light that draws a ring on the sand. Drones build a glass dome on it, and the dome
+//!   turns green. A spark of the ring flies away, and the camera whips after it.
+//! - 10 to 15 s, [`rocket`]: dawn. The whip pan lands on a launch pad, and the spark runs up
+//!   the tower as a line of warm lights. The rocket lifts off in clouds of steam, and its
+//!   flare fills the frame for the cut to the sunrise of shot 9.
 //!
-//! The machines carry cold blue-white light. What they build carries warm light.
+//! The light goes from night to dawn: blue hour at the bridge, first light at the
+//! greenhouse, dawn at the rocket, then the sunrise of shot 9. The machines carry cold
+//! blue-white light. What they build carries warm light.
 
 mod bay;
 mod bridge;
@@ -40,6 +44,12 @@ const AMBER_EDGE: u32 = 0xff8a2a;
 const COLD: u32 = 0xcfe4ff;
 /// The cold blue of the machine LEDs.
 const COLD_BLUE: u32 = 0x7fb4ff;
+/// Half the angle of the whip pan from the greenhouse to the rocket, in radians. The camera
+/// turns this much to the left on each side of the cut.
+const WHIP_HALF: f32 = 0.72;
+/// The rate of the whip pan in 1/s. At the cut the camera turns at `WHIP_HALF * WHIP_RATE`
+/// rad/s.
+const WHIP_RATE: f32 = 12.0;
 
 /// The shot: the templates of the three parts.
 pub struct MontageSet {
@@ -65,9 +75,14 @@ pub struct Landmarks {
 impl MontageSet {
     /// Builds the three sets. It takes about a second.
     pub fn new(assets: &Assets) -> Self {
+        // The glow of the greenhouse sky is where the glow of the rocket sky is at the cut,
+        // so the whip pan crosses one sky.
+        let heading = |camera: Camera| camera.forward().z.atan2(camera.forward().x);
+        let glow = rocket::GLOW + heading(greenhouse::camera_at(ROCKET - GREENHOUSE))
+            - heading(rocket::camera_at(0.0));
         Self {
             bridge: bridge::Bridge::new(assets),
-            greenhouse: greenhouse::Greenhouse::new(assets),
+            greenhouse: greenhouse::Greenhouse::new(assets, glow),
             rocket: rocket::Rocket::new(assets),
         }
     }
@@ -95,22 +110,22 @@ impl MontageSet {
 
     /// The motion blur samples at `t`: more on the fast camera moves and the transitions.
     pub fn shutter(&self, t: f32) -> usize {
-        match t {
+        // The whip pan: about one sample for each 20 pixels of blur at 1920 pixels, and 6 at
+        // most, so the frame stays within its time.
+        let whip = WHIP_HALF * WHIP_RATE / (WHIP_RATE * (t - ROCKET)).cosh().powi(2);
+        let whip = (whip * 0.9).ceil() as usize;
+        let other = match t {
             // the pull back from the cable
             t if t < 1.8 => 3,
             // the car on the bridge: its glare is wider than the gap between two samples
             t if (4.4..GREENHOUSE).contains(&t) => 2,
             // the pen at the start of the ring
             t if (GREENHOUSE..5.6).contains(&t) => 3,
-            // the whip pan: the most samples at the cut, where it is fastest. The dome costs
-            // more per sample than the pad, so its side gets fewer.
-            t if (9.55..ROCKET).contains(&t) => 4,
-            t if (ROCKET..10.15).contains(&t) => 6,
-            t if (10.15..10.5).contains(&t) => 5,
-            // the lift off
-            t if t > 12.4 => 3,
+            // the shake of the launch and the climb
+            t if t > ROCKET + rocket::LIFTOFF => 2,
             _ => 1,
-        }
+        };
+        whip.clamp(other, 6)
     }
 
     /// The flare of the last frames turns the picture to warm white for the cut to the sun of
@@ -153,6 +168,58 @@ pub fn golden_gate_landmark() -> Scene {
 /// The opacity of the warm white that [`MontageSet::overlay`] draws at `t`, `0..1`.
 pub fn final_white(t: f32) -> f32 {
     rocket::final_white(t - ROCKET)
+}
+
+/// The turn of the whip pan to the left at `x` seconds from the cut, in radians. It goes
+/// from `-WHIP_HALF` long before the cut to `WHIP_HALF` long after it, fastest at the cut.
+fn whip(x: f32) -> f32 {
+    WHIP_HALF * (WHIP_RATE * x).tanh()
+}
+
+/// The samples along each view ray of the haze at `x` seconds from the cut of the whip pan.
+/// The pan smears the haze, so its fastest frames take fewer, and the motion blur can take
+/// more samples in the same time.
+fn haze_steps(x: f32) -> u32 {
+    if x.abs() < 0.12 { 12 } else { 32 }
+}
+
+/// The spark that leads the whip pan: a hot head at `at(t)`, a warm glow of `glow`
+/// strength, and a trail of light that fades over the last 0.07 s of its path.
+fn spark(at: impl Fn(f32) -> Vec3, t: f32, glow: f32) -> Vec<Particle> {
+    let head = at(t);
+    let mut items = vec![
+        Particle::new(head, 0.25, Rgb::hex(0xfff0d8) * 60.0),
+        Particle::new(head, 0.6 + 1.1 * glow, Rgb::hex(AMBER) * (2.0 + 4.0 * glow)),
+    ];
+    let segments = 6;
+    for k in 0..segments {
+        let fade = 1.0 - k as f32 / segments as f32;
+        let (a, b) = (at(t - k as f32 * 0.012), at(t - (k + 1) as f32 * 0.012));
+        items.push(
+            Particle::new(
+                a,
+                0.18 * fade + 0.05,
+                Rgb::hex(AMBER) * (30.0 * fade * fade),
+            )
+            .tail(b - a),
+        );
+    }
+    items
+}
+
+/// The point `distance` meters from `eye` in the direction `forward`, turned by `yaw` to
+/// the left and raised by `pitch` above the horizontal plane, in radians.
+fn polar(eye: Vec3, forward: Vec3, yaw: f32, pitch: f32, distance: f32) -> Vec3 {
+    let flat = (Quat::from_rotation_y(yaw) * forward.with_y(0.0)).normalize_or(Vec3::NEG_Z);
+    eye + (flat * pitch.cos() + Vec3::Y * pitch.sin()) * distance
+}
+
+/// The turn to the left from `forward` to `to`, and the pitch of `to` above the horizontal
+/// plane, in radians. It is the inverse of [`polar`] for directions.
+fn yaw_pitch(forward: Vec3, to: Vec3) -> (f32, f32) {
+    let (f, d) = (forward.with_y(0.0), to.with_y(0.0));
+    let yaw = f.cross(d).y.atan2(f.dot(d));
+    (yaw, to.y.atan2(d.length()))
 }
 
 /// Cubic ease in and out, `0..1` to `0..1`.

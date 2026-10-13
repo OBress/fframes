@@ -20,8 +20,10 @@ use std::time::Instant;
 
 use image::RgbaImage;
 
-const REVIEW: [f32; 13] = [
-    0.0, 0.5, 1.5, 3.0, 4.5, 5.5, 7.0, 9.0, 10.5, 12.0, 13.5, 14.5, 15.0,
+/// The review times: the bridge, the ring, the drones, the green dome, the whip pan, the
+/// line on the tower, the ignition, the steam, the climb, the flame and the flare.
+const REVIEW: [f32; 16] = [
+    0.0, 0.5, 1.5, 3.0, 4.5, 5.5, 7.5, 8.6, 9.95, 10.5, 11.2, 12.4, 13.2, 14.0, 14.7, 15.0,
 ];
 
 fn out_dir() -> PathBuf {
