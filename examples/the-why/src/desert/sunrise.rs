@@ -1,43 +1,50 @@
-//! Shot 9, "Sunrise": the cut comes from the flare of the rocket, so the shot starts with
-//! the low sun overexposed in the middle of the frame. The light comes down to the plateau.
-//! The engineer stands at the place of the line, a silhouette against the sun. In the
-//! distance: a bridge over the canyon to a village, a greenhouse dome, a rocket contrail.
+//! Shot 9, "Sunrise": the cut comes from the white flare of the rocket, so the shot starts
+//! looking into the low sun, overexposed. The light comes down to the plateau. The engineer
+//! stands near its edge, a silhouette against the sun. Below him: the Golden Gate over the
+//! canyon to a village, a greenhouse dome, the contrail of the rocket. Birds cross the
+//! light. For the quote the camera rises slowly behind him and shows the land below.
 
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
+use std::sync::Arc;
 
 use fframes_3d::math::{hash, noise1, smoothstep};
 use fframes_3d::*;
 
 use super::terrain::{EDGE, Terrain, canyon_center, canyon_width, rock};
-use super::{AMBER, DesertSet, ahead, expose, hide_dark_lights, segment};
+use super::{AMBER, DesertSet, ahead, expose, fbm, hide_dark_lights, segment};
 use crate::assets::Assets;
 use crate::figure::{FigureStyle, Pose};
 use crate::look;
 
-/// The direction to the sun in the panorama `sky_sunrise.hdr` without rotation: the
-/// brightest texel, 12.7 degrees above the horizon.
-const PANORAMA_SUN: Vec3 = vec3(0.7888, 0.2206, 0.5739);
+/// The height of the sun above the horizon, in radians: 4.6 degrees. A low sun gives long
+/// shadows and a warm light.
+const SUN_HEIGHT: f32 = 0.08;
 
-/// The turn of the sky panorama around Y, in radians. It puts the sun opposite the factory:
-/// the night cameras look at the factory, so they do not show the land of the sunrise.
-fn sky_rotation() -> f32 {
-    let a = ahead();
-    a.x.atan2(a.z) + PI - PANORAMA_SUN.x.atan2(PANORAMA_SUN.z)
-}
-
-/// The unit direction to the sun of shot 9. It is the sun of the panorama.
+/// The unit direction to the sun of shot 9. The sun stands opposite the factory: the night
+/// cameras look at the factory, so they do not show the land of the sunrise.
 pub(super) fn sun_direction() -> Vec3 {
-    Quat::from_rotation_y(sky_rotation()) * PANORAMA_SUN.normalize()
+    -ahead() * SUN_HEIGHT.cos() + Vec3::Y * SUN_HEIGHT.sin()
 }
 
 /// The horizontal direction to the sun.
 fn sunward() -> Vec3 {
-    sun_direction().with_y(0.0).normalize()
+    -ahead()
+}
+
+/// The horizontal direction to the right when you look at the sun.
+fn right() -> Vec3 {
+    sunward().cross(Vec3::Y)
+}
+
+/// The breeze at sunrise in meters per second: from the left, a little toward the sun. It
+/// moves the dust and the contrail.
+fn breeze() -> Vec3 {
+    right() * 2.5 + sunward() * 0.8
 }
 
 /// Dark clothes with a thin warm rim of the sun behind him.
 pub(super) fn figure_style() -> FigureStyle {
-    let rim = Rgb::hex(0xffc078) * 0.5;
+    let rim = Rgb::hex(0xffc078) * 0.22;
     // little light from the sky behind the camera, so he stays a silhouette
     let cloth = |color: u32, roughness: f32| {
         Material::standard(color)
@@ -61,38 +68,86 @@ fn stand_point(terrain: &Terrain) -> Vec3 {
     vec3(p.x, terrain.height(p.x, p.y), p.y)
 }
 
-/// Adds the light of the sunrise: the sky panorama, the low sun with long shadows and warm
-/// dusty air over the plain. Also adds boulders on the edge of the plateau: their shadows
-/// make shafts of light in the dust.
+/// The dawn sky as a panorama: deep blue at the top, a warm band at the horizon that is
+/// gold near the sun and rose on the other side, the glow around the sun, and thin
+/// clouds that the sun lights from below.
+fn dawn_sky() -> Arc<EnvironmentMap> {
+    let (width, height) = (1024, 512);
+    let sun = sun_direction();
+    let data = (0..width * height)
+        .map(|i| {
+            let (x, y) = (i % width, i / width);
+            // the inverse of the panorama mapping of the engine
+            let around = ((x as f32 + 0.5) / width as f32 - 0.5) * TAU;
+            let elevation = (0.5 - (y as f32 + 0.5) / height as f32) * PI;
+            let dir = vec3(
+                elevation.cos() * around.cos(),
+                elevation.sin(),
+                elevation.cos() * around.sin(),
+            );
+            // 1 toward the sun, 0 away from it, around the horizon
+            let side = 0.5 + 0.5 * dir.with_y(0.0).normalize_or_zero().dot(sunward());
+            let horizon = vec3(0.2, 0.15, 0.2).lerp(vec3(0.85, 0.42, 0.17), side * side);
+            let zenith = vec3(0.022, 0.05, 0.13);
+            let e = elevation.max(0.0);
+            let mut color = horizon.lerp(zenith, 1.0 - (-e / 0.13).exp());
+            // the glow of the sun in the dust of the air
+            let angle = dir.dot(sun).clamp(-1.0, 1.0).acos();
+            color +=
+                vec3(1.0, 0.7, 0.4) * (2.5 * (-angle / 0.035).exp() + 0.35 * (-angle / 0.25).exp());
+            if elevation < 0.0 {
+                // the ground far away, in the haze of the horizon
+                let ground = vec3(0.09, 0.06, 0.045);
+                return color.lerp(ground, smoothstep(0.0, -0.06, elevation));
+            }
+            // Thin clouds on a layer high above: big overhead, small near the horizon.
+            let layer = vec2(dir.x, dir.z) / dir.y.max(0.04);
+            // The coordinates bend with a slow noise, so the clouds do not follow a grid.
+            let warp = vec2(fbm(layer * 0.35, 2, 71), fbm(layer * 0.35 + 5.0, 2, 73));
+            let streak = fbm(
+                (layer + warp * 1.6) * vec2(0.9, 2.6) + vec2(3.0, 1.0),
+                4,
+                61,
+            );
+            let cloud = smoothstep(-0.05, 0.5, streak) * smoothstep(0.03, 0.12, e);
+            // Near the sun the clouds glow gold. Away from it they are rose and lavender.
+            let lit = vec3(0.3, 0.2, 0.26).lerp(vec3(1.8, 0.95, 0.4), side.powi(3));
+            color.lerp(lit * (0.5 + 0.5 * (-e / 0.4).exp()), 0.75 * cloud)
+        })
+        .collect();
+    Arc::new(EnvironmentMap::from_linear(width, height, data))
+}
+
+/// Adds the light of the sunrise: the dawn sky, the low sun with long shadows, warm dusty
+/// air over the plain, and rocks on the plateau. Their shadows make shafts of light in the
+/// dust, and the outcrop on the left keeps the lower left of the picture in shadow for the
+/// quote.
 pub(super) fn dawn_set(scene: &mut Scene, assets: &Assets, terrain: &Terrain) {
     let sun = sun_direction();
-    scene.environment = Environment::Map {
-        map: assets.sunrise_sky.clone(),
-        intensity: 0.8,
-        rotation: sky_rotation(),
-    };
+    scene.environment = Environment::map(dawn_sky(), 1.0);
     scene.background = Background::Environment { blur: 0.0 };
+    let feet = stand_point(terrain);
     scene.add(Node::light(
-        Light::sun(0xffc684, 3.4, sun * 100.0).with_shadow(Shadow {
+        Light::sun(0xffbe7a, 3.6, sun * 100.0).with_shadow(Shadow {
             map_size: 4096,
             softness: 1.5,
             strength: 0.95,
             bias: 1.5,
             bounds: Some(Aabb {
-                min: vec3(-90.0, -60.0, -90.0),
-                max: vec3(90.0, 14.0, 90.0),
+                min: feet - vec3(70.0, 50.0, 70.0),
+                max: feet + vec3(70.0, 14.0, 70.0),
             }),
         }),
     ));
     // Dust lies thick in the plain below the plateau and thin over the plateau.
     scene.atmosphere = Some(Atmosphere {
-        density: 0.0016,
-        color: Rgb::hex(0xffe4c4),
+        density: 0.0009,
+        color: Rgb::hex(0xffe0bc),
         base: -45.0,
-        falloff: 0.035,
-        anisotropy: 0.72,
-        ambient: Rgb::hex(0x1c2030),
-        noise: 0.55,
+        falloff: 0.045,
+        anisotropy: 0.68,
+        ambient: Rgb::hex(0x1a2236),
+        noise: 0.6,
         noise_size: 9.0,
         offset: Vec3::ZERO,
         distance: 2600.0,
@@ -100,6 +155,7 @@ pub(super) fn dawn_set(scene: &mut Scene, assets: &Assets, terrain: &Terrain) {
     });
 
     let material = assets.rock.material(0xb89a80, 0.95, 0.0);
+    // distance toward the sun, distance to the right, size, in meters
     let boulders = [
         (EDGE - 5.0, -14.0, 3.2),
         (EDGE - 2.0, -7.0, 1.4),
@@ -108,6 +164,10 @@ pub(super) fn dawn_set(scene: &mut Scene, assets: &Assets, terrain: &Terrain) {
         (EDGE - 15.0, -22.0, 1.8),
         (EDGE + 1.0, 32.0, 3.0),
         (EDGE - 3.0, 9.0, 0.9),
+        // the outcrop on the left of the camera
+        (EDGE - 22.0, -15.0, 5.5),
+        (EDGE - 26.0, -11.5, 3.0),
+        (EDGE - 19.0, -19.0, 4.0),
     ];
     let instances = boulders.iter().enumerate().map(|(i, &(s, a, size))| {
         let p = terrain.sunward_point(s, a);
@@ -129,13 +189,33 @@ pub(super) fn dawn_set(scene: &mut Scene, assets: &Assets, terrain: &Terrain) {
 pub struct Landmarks {
     /// The green light in the greenhouse dome.
     pub dome_light: NodeId,
+    /// The lit windows of the village. They go out as the day comes.
+    pub windows: NodeId,
+    /// The contrail of the rocket: soft puffs that the wind moves.
+    pub contrail: NodeId,
+    /// The birds that cross the light.
+    pub birds: NodeId,
 }
 
-/// Adds the Golden Gate over the canyon to the village, the village, the greenhouse dome and
-/// the contrail of the rocket. Except the bridge, they are simple shapes for the distance.
+/// The points of the path of the rocket from the launch pad, 61 of them. It goes up
+/// straight and bends over to the right high in the sky.
+fn rocket_path(terrain: &Terrain) -> Vec<Vec3> {
+    let p = terrain.sunward_point(5200.0, -900.0);
+    let launch = vec3(p.x, terrain.height(p.x, p.y), p.y);
+    (0..=60)
+        .map(|i| {
+            let u = i as f32 / 60.0;
+            let downrange = right() * (5200.0 * u.powf(2.2)) + sunward() * (1500.0 * u * u);
+            launch + Vec3::Y * (7000.0 * u) + downrange
+        })
+        .collect()
+}
+
+/// Adds the Golden Gate over the canyon to the village, the village, the greenhouse dome,
+/// the contrail of the rocket and the birds. Except the bridge, they are simple shapes for
+/// the distance.
 pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
-    let s_dir = sunward();
-    let right = s_dir.cross(Vec3::Y);
+    let right = right();
     let at = |s: f32, a: f32| {
         let p = terrain.sunward_point(s, a);
         vec3(p.x, terrain.height(p.x, p.y), p.y)
@@ -199,8 +279,8 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
         )
         .shadows(false, false),
     );
-    scene.add(
-        Node::mesh(Geometry::merge(windows), Material::glow(AMBER, 4.0)).shadows(false, false),
+    let windows = scene.add(
+        Node::mesh(Geometry::merge(windows), Material::glow(AMBER, 6.0)).shadows(false, false),
     );
 
     // The greenhouse: a geodesic dome of glass that glows green from the plants inside.
@@ -223,7 +303,7 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
             Geometry::from_triangles(&panes),
             Material::standard(0x1c3a24)
                 .roughness(0.15)
-                .emissive(0x5dff86, 1.6)
+                .emissive(0x3dd870, 1.5)
                 .opacity(0.85),
         )
         .shadows(false, false),
@@ -237,44 +317,16 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
         .shadows(false, false),
     );
     let dome_light = scene.add(
-        Node::light(Light::point(0x5dff86, 4.0e4, 260.0))
+        Node::light(Light::point(0x5dff86, 4.5e4, 260.0))
             .with_position(dome_center + Vec3::Y * 12.0),
     );
 
-    // The contrail of the rocket: it rises far beyond the plain, to the left of the sun.
-    // It goes up straight and bends over to the right high in the sky. The sun behind it
-    // lights it, so it glows.
-    let launch = at(5200.0, 750.0);
-    let path: Vec<Vec3> = (0..=60)
-        .map(|i| {
-            let u = i as f32 / 60.0;
-            let downrange = -right * (5200.0 * u.powf(2.2)) + s_dir * (1500.0 * u * u);
-            launch + Vec3::Y * (7000.0 * u) + downrange
-        })
-        .collect();
-    let rings = 13;
-    let mut trail = Geometry::tube(&path, 1.0, rings - 1);
-    // the trail widens with the height and fades at the ground and at the top
-    for (i, p) in trail.positions.iter_mut().enumerate() {
-        let k = i / rings as usize;
-        let u = k as f32 / 60.0;
-        *p = path[k] + (*p - path[k]) * (6.0 + 70.0 * u);
+    Landmarks {
+        dome_light,
+        windows,
+        contrail: scene.add(Node::particles(Vec::new(), Blending::Normal)),
+        birds: scene.add(Node::particles(Vec::new(), Blending::Normal).named("birds")),
     }
-    trail.colors = (0..trail.positions.len())
-        .map(|i| {
-            let u = (i / rings as usize) as f32 / 60.0;
-            let a = smoothstep(0.0, 0.03, u) * (1.0 - smoothstep(0.7, 1.0, u)) * (1.0 - 0.6 * u);
-            vec4(1.0, 1.0, 1.0, a)
-        })
-        .collect();
-    trail.update_bounds();
-    scene.add(Node::mesh(trail, Material::glow(0xffe4c8, 0.45)).shadows(false, false));
-    scene.add(Node::particles(
-        vec![Particle::new(path[60], 30.0, Rgb::hex(0xfff2d8) * 40.0)],
-        Blending::Additive,
-    ));
-
-    Landmarks { dome_light }
 }
 
 /// The multiplier of the scene light at `t`: the shot starts overexposed by the flare of
@@ -308,19 +360,31 @@ impl DesertSet {
         self.dawn_figure.apply(&mut scene, &stand);
         let camera = self.sunrise_camera(t, feet);
         if let Some(air) = &mut scene.atmosphere {
-            air.offset = vec3(1.2, 0.05, 0.4) * -t;
+            air.offset = -breeze() * t;
         }
         if let Object::Particles(dust) = &mut scene[self.dawn_dust].object {
             dust.items = dust_in_sun(camera.position, t);
-            // A warm glow around the sun: it fills the frame at the cut from the flare of
-            // the rocket and settles into a halo.
+            // The sun: a hot disc, and a warm glow around it. The glow fills the frame at
+            // the cut from the flare of the rocket and settles into a halo.
             let sun = camera.position + sun_direction() * 20000.0;
             let flash = 1.0 - smoothstep(0.0, 1.6, t);
+            dust.items
+                .push(Particle::new(sun, 95.0, Rgb::hex(0xfff4e0) * 60.0));
             dust.items.push(Particle::new(
                 sun,
                 900.0 + 2600.0 * flash,
-                Rgb::hex(0xffcf98) * (1.2 + 6.0 * flash),
+                Rgb::hex(0xffcf98) * (1.0 + 6.0 * flash),
             ));
+        }
+        if let Object::Particles(contrail) = &mut scene[self.landmarks.contrail].object {
+            contrail.items = self.contrail(t, camera.position);
+        }
+        if let Object::Particles(birds) = &mut scene[self.landmarks.birds].object {
+            birds.items = birds_at(t, feet);
+        }
+        // The village lights go out as the day comes.
+        if let Some(material) = scene[self.landmarks.windows].material_mut() {
+            material.emissive_intensity *= 1.0 - 0.85 * smoothstep(2.0, 9.5, t);
         }
         if let Some(light) = scene[self.landmarks.dome_light].light_mut() {
             *light.intensity_mut() *= 1.0 + 0.04 * noise1(3, t * 2.0);
@@ -329,13 +393,70 @@ impl DesertSet {
         hide_dark_lights(&mut scene);
         (scene, camera)
     }
+
+    /// The contrail of the rocket at `t`: soft puffs along the path that widen with the
+    /// height. The wind moves the old high parts more. Seen from `eye`, the puffs near the
+    /// sun are bright.
+    fn contrail(&self, t: f32, eye: Vec3) -> Vec<Particle> {
+        let path = rocket_path(&self.terrain);
+        let sun = sun_direction();
+        let mut items = Vec::new();
+        for i in 0..900u32 {
+            let h = |n: u32| hash(i * 31 + n * 7919 + 401);
+            let u = i as f32 / 900.0 * 0.97 + 0.02 * h(1);
+            let k = u * 60.0;
+            let (a, b) = (path[k as usize], path[(k as usize + 1).min(60)]);
+            let center = a.lerp(b, k.fract());
+            // the trail is older higher up: it has spread and drifted more
+            let age = 6.0 + 30.0 * u + t;
+            let spread = 30.0 + 160.0 * u.powf(0.8);
+            let jitter = vec3(h(2) - 0.5, h(3) - 0.5, h(4) - 0.5) * spread;
+            let sway = vec3(
+                noise1(i % 37, u * 9.0 + t * 0.05),
+                0.0,
+                noise1(i % 41 + 50, u * 9.0 + t * 0.05),
+            ) * (15.0 * u);
+            let p = center + jitter + sway + breeze() * (age * 2.5 * u);
+            let toward = sun.dot((p - eye).normalize()).max(0.0);
+            let light = 1.1 + 4.0 * toward.powi(30);
+            let fade = smoothstep(0.0, 0.03, u) * (1.0 - smoothstep(0.75, 1.0, u));
+            items.push(
+                Particle::new(p, spread * (0.6 + 0.5 * h(5)), Rgb::hex(0xffdcb8) * light)
+                    .opacity(0.07 * fade * (1.0 - 0.5 * u)),
+            );
+        }
+        items
+    }
+
+    /// The camera of shot 9. It looks into the sun at the cut and tilts down to the land.
+    /// Then it rises slowly behind the engineer, who stands at `feet`, and pushes in. The
+    /// plain and the canyon below the plateau come into view.
+    fn sunrise_camera(&self, t: f32, feet: Vec3) -> Camera {
+        let (s_dir, right) = (sunward(), right());
+        let rise = smoothstep(0.5, 10.5, t);
+        // he stands right of the center, so the quote has the left third
+        let place = feet - s_dir * (16.0 - 5.0 * rise) - right * (2.6 - 0.6 * rise);
+        let ground = self.terrain.height(place.x, place.z);
+        let position = place.with_y(ground + 0.9 + 1.5 * rise);
+        // The view goes over him to the bridge. When the camera is high it looks down a
+        // little more, so the horizon stays in the upper third.
+        let landscape = (s_dir - Vec3::Y * (0.028 + 0.01 * rise)).normalize();
+        let view = sun_direction()
+            .lerp(landscape, smoothstep(0.4, 3.2, t))
+            .normalize();
+        look::lens(40.0 + 10.0 * rise)
+            .position(position)
+            .look_at(position + view)
+            .clip(0.5, 30000.0)
+            .focus_on(feet + Vec3::Y * 1.4, 3.0)
+            .shake(t * 0.35, 0.0012, 21)
+    }
 }
 
 /// Dust in the air near the camera. Motes in front of the sun scatter its light toward the
-/// camera and sparkle.
+/// camera and sparkle. `eye` is the camera position.
 fn dust_in_sun(eye: Vec3, t: f32) -> Vec<Particle> {
     let sun = sun_direction();
-    let breeze = vec3(0.3, 0.05, -0.2);
     let half = 14.0;
     (0..2500u32)
         .map(|i| {
@@ -346,7 +467,7 @@ fn dust_in_sun(eye: Vec3, t: f32) -> Vec<Particle> {
                 noise1(i + 13, t * 0.3),
             );
             let base = vec3(h(1) * 2.0 - 1.0, h(2), h(3) * 2.0 - 1.0) * vec3(half, 6.0, half)
-                + breeze * t
+                + breeze() * (0.15 * t)
                 + wander * 0.4;
             let local = vec3(
                 (base.x + half).rem_euclid(2.0 * half) - half,
@@ -355,33 +476,53 @@ fn dust_in_sun(eye: Vec3, t: f32) -> Vec<Particle> {
             );
             let p = eye + sunward() * (half + 2.0) + local - Vec3::Y;
             let toward = (p - eye).normalize_or_zero().dot(sun).max(0.0);
-            let glint = 0.02 + 3.0 * toward.powi(40);
-            Particle::new(p, 0.0006 + 0.0014 * h(4), Rgb::hex(0xffe0b8) * glint)
+            let glint = 0.08 + 3.0 * toward.powi(10);
+            Particle::new(p, 0.001 + 0.002 * h(4), Rgb::hex(0xffe0b8) * glint)
         })
         .collect()
 }
 
-impl DesertSet {
-    /// The camera of shot 9: it looks into the sun, tilts down to the plain below the
-    /// plateau and comes down from a high view to the engineer, who stands at `feet`.
-    fn sunrise_camera(&self, t: f32, feet: Vec3) -> Camera {
-        let s_dir = sunward();
-        let right = s_dir.cross(Vec3::Y);
-        let push = smoothstep(0.8, 11.0, t);
-        // he stands right of the center, so the quote has the left third
-        let place = feet - s_dir * (30.0 - 17.0 * push) + right * (-2.6 + 1.74 * push);
-        let ground = self.terrain.height(place.x, place.z);
-        let position = place.with_y(ground + 4.5 - 2.0 * push);
-        // He stands in the lower third. The view goes over him to the bridge.
-        let landscape = (s_dir - Vec3::Y * (0.045 - 0.015 * push)).normalize();
-        let view = sun_direction()
-            .lerp(landscape, smoothstep(0.4, 3.2, t))
-            .normalize();
-        look::lens(50.0 + 15.0 * push)
-            .position(position)
-            .look_at(position + view)
-            .clip(0.5, 30000.0)
-            .focus_on(feet + Vec3::Y * 1.4, 3.0)
-            .shake(t * 0.35, 0.0015, 21)
+/// The birds take off at this time, in seconds. They enter the picture at about 2.5 s, with
+/// the sound of the birds, and leave it at about 7.7 s.
+pub const BIRDS: f32 = 1.0;
+
+/// The birds at `t`: a loose flock of seven that crosses the light from right to left over
+/// the plain, from [`BIRDS`] on. Each bird is a dark stroke for the body and two for the wings,
+/// which beat and glide. `feet` is the place of the engineer.
+fn birds_at(t: f32, feet: Vec3) -> Vec<Particle> {
+    let (s_dir, right) = (sunward(), right());
+    // They fly to the left and a little toward the camera, so the wings show.
+    let along = (-right * 0.85 - s_dir * 0.5).normalize();
+    let across = along.cross(Vec3::Y);
+    let dark = Rgb::hex(0x1a120e);
+    let mut items = Vec::new();
+    for b in 0..7u32 {
+        let h = |n: u32| hash(b * 13 + n * 7919 + 11);
+        let flight = t - BIRDS - 0.5 * h(1);
+        if !(0.0..8.0).contains(&flight) {
+            continue;
+        }
+        // They fly 55 to 75 m beyond him, 4 to 10 m above the plateau: through the glow
+        // of the sun.
+        let start = feet
+            + s_dir * (55.0 + 20.0 * h(2))
+            + right * (45.0 + 10.0 * h(3))
+            + Vec3::Y * (4.0 + 6.0 * h(4));
+        let speed = 11.0 + 3.0 * h(5);
+        let body = start
+            + along * (speed * flight)
+            + Vec3::Y * (1.5 * noise1(b + 20, flight * 0.4))
+            + across * (3.0 * noise1(b + 40, flight * 0.3));
+        // Beats, then a short glide with the wings up.
+        let beat = (TAU * 3.2 * flight + 6.0 * h(6)).sin();
+        let glide = smoothstep(0.3, 0.7, noise1(b + 60, flight * 0.7));
+        let angle = 0.75 * beat * (1.0 - glide) + 0.25 * glide;
+        let span = 0.38 + 0.08 * h(7);
+        for side in [1.0f32, -1.0] {
+            let tip = body + across * (side * span * angle.cos()) + Vec3::Y * (span * angle.sin());
+            items.push(Particle::new(body, 0.05, dark).tail(tip - body));
+        }
+        items.push(Particle::new(body + along * 0.12, 0.07, dark).tail(-along * 0.3));
     }
+    items
 }

@@ -4,8 +4,8 @@
 use fframes_3d::math::{hash, noise1, smoothstep};
 use fframes_3d::*;
 
-use super::{DesertSet, FAR, ahead, hide_dark_lights, kneel_heading, right};
-use crate::figure::{FigureStyle, Pose};
+use super::{DesertSet, FAR, WALK_SECONDS, ahead, hide_dark_lights, kneel_heading, right};
+use crate::figure::{FigureStyle, KNEEL_CONTACTS, Pose, RIGHT};
 use crate::look;
 
 /// The forward direction of the camera at the first frame. Shot 4 ends with this view of
@@ -16,7 +16,7 @@ const SPEED: f32 = 1.1;
 /// The story time at which he stops and begins to kneel, in seconds.
 const STOP: f32 = 8.5;
 /// The story time that the kneel takes, in seconds.
-const KNEEL: f32 = 1.1;
+pub(super) const KNEEL: f32 = 1.1;
 /// The wind over the plateau in meters per second. It blows from his right to his left.
 pub(super) fn wind() -> Vec3 {
     -right() * 7.5 - ahead() * 2.0
@@ -27,21 +27,23 @@ pub(super) fn wind() -> Vec3 {
 pub(super) fn light_night(scene: &mut Scene) -> NodeId {
     scene.environment = Environment::Gradient {
         // the zenith is as dark as the end of shot 4, which tilts up into the same stars
-        sky: Rgb::hex(0x02050d),
+        sky: Rgb::hex(0x040a1a),
         horizon: Rgb::hex(0x1c2c4c),
         ground: Rgb::hex(0x06080c),
         intensity: 1.0,
     };
     scene.background = Background::Environment { blur: 0.0 };
+    // Haze lies low over the ground: dense at the ground and thin at 1 m. Far away it
+    // hides the foot of the factory and glows in its light.
     scene.atmosphere = Some(Atmosphere {
-        density: 0.0006,
+        density: 0.03,
         color: Rgb::hex(0xc8d8ff),
         base: 0.0,
-        falloff: 0.01,
-        anisotropy: 0.55,
-        ambient: Rgb::hex(0x101a30),
-        noise: 0.6,
-        noise_size: 18.0,
+        falloff: 2.0,
+        anisotropy: 0.6,
+        ambient: Rgb::hex(0x16243f),
+        noise: 1.0,
+        noise_size: 8.0,
         offset: Vec3::ZERO,
         distance: 3200.0,
         steps: 32,
@@ -71,10 +73,11 @@ pub(super) fn figure_style() -> FigureStyle {
     let cloth =
         |color: u32, roughness: f32| Material::standard(color).roughness(roughness).rim(rim, 3.0);
     FigureStyle {
-        skin: cloth(0x2a1d17, 0.55),
-        jacket: cloth(0x1d2128, 0.85),
-        trousers: cloth(0x15171a, 0.9),
-        boots: cloth(0x1c1612, 0.6),
+        // Little light of the sky reaches the face, so it stays dark.
+        skin: cloth(0x5c4a42, 0.5).env_intensity(0.4),
+        jacket: cloth(0x2a3038, 0.85),
+        trousers: cloth(0x23262b, 0.9),
+        boots: cloth(0x2a1e16, 0.75).env_intensity(0.5),
         hair: cloth(0x0d0b0a, 0.75),
     }
 }
@@ -97,10 +100,13 @@ fn story_time(t: f32) -> f32 {
 /// The pose of the engineer at the story time `tau`: he walks to the origin and kneels.
 fn pose(tau: f32) -> Pose {
     let heading = kneel_heading();
-    let facing = vec3(heading.sin(), 0.0, heading.cos());
-    let start = -facing * SPEED * STOP;
-    let walk_at =
-        |tau: f32| Pose::walk(tau * SPEED / Pose::stride(SPEED), SPEED).placed(start, heading);
+    let walk = |tau: f32| Pose::walk(tau * SPEED / Pose::stride(SPEED), SPEED);
+    // The walk ends with the right foot planted where the kneel starts, so the foot does
+    // not slide in the blend.
+    let last = walk(STOP);
+    let offset = Pose::kneel(0.0).heel(RIGHT) - last.heel(RIGHT) - last.position;
+    let start = Quat::from_rotation_y(heading) * offset;
+    let walk_at = |tau: f32| walk(tau).placed(start, heading);
     if tau <= STOP {
         return walk_at(tau);
     }
@@ -108,6 +114,86 @@ fn pose(tau: f32) -> Pose {
     let blend = smoothstep(STOP, STOP + 0.45, tau);
     let kneel = Pose::kneel((tau - STOP) / KNEEL).placed(Vec3::ZERO, heading);
     walk_at(STOP + 0.25 * blend).lerp(&kneel, blend)
+}
+
+/// The part of [`Pose::kneel`] at the end of the shot. Shot 6 goes on from it.
+pub(super) fn kneel_at_cut() -> f32 {
+    (story_time(WALK_SECONDS) - STOP) / KNEEL
+}
+
+/// The shot time in seconds at the story time `tau`: the inverse of [`story_time`].
+fn shot_time(tau: f32) -> f32 {
+    let (mut low, mut high) = (0.0, WALK_SECONDS + 10.0);
+    for _ in 0..40 {
+        let mid = f32::midpoint(low, high);
+        if story_time(mid) < tau {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    high
+}
+
+/// The shot times in seconds when a foot of the engineer touches the ground in shot 5, for
+/// the sounds of the steps: the heel strikes of the walk, then the left foot, the right foot
+/// and the right knee of the kneel. The times after the end of the shot are left out.
+pub fn footfalls() -> Vec<f32> {
+    // One step is half a gait cycle.
+    let step = 0.5 * Pose::stride(SPEED) / SPEED;
+    let walk = (1..).map(|k| k as f32 * step).take_while(|&tau| tau < STOP);
+    let kneel = KNEEL_CONTACTS.map(|k| STOP + k * KNEEL);
+    walk.chain(kneel)
+        .map(shot_time)
+        .filter(|&t| t < WALK_SECONDS)
+        .collect()
+}
+
+/// The meteor: a slow one that crosses the stars in 0.9 s, from 0.35 s on. `eye` is the
+/// camera position.
+fn meteor_at(eye: Vec3, t: f32) -> Vec<Particle> {
+    const START: f32 = 0.35;
+    const LENGTH: f32 = 0.9;
+    let u = (t - START) / LENGTH;
+    if !(0.0..1.0).contains(&u) {
+        return Vec::new();
+    }
+    // It crosses the middle of the view of its time, from the upper right to the left.
+    let view = walk_camera(START + 0.5 * LENGTH, Vec3::ZERO);
+    let (forward, side, up) = (view.forward(), view.right(), view.up_vector());
+    let from = (forward + side * 0.34 + up * 0.12).normalize();
+    let to = (forward - side * 0.02 - up * 0.1).normalize();
+    let at = |u: f32| eye + from.slerp(to, u) * 6000.0;
+    // It flares up near its end and burns out.
+    let light = smoothstep(0.0, 0.15, u)
+        * (1.0 - smoothstep(0.8, 1.0, u))
+        * (1.0 + 1.5 * smoothstep(0.55, 0.75, u));
+    let mut items = vec![
+        Particle::new(at(u), 2.4, Rgb::hex(0xe8fff0) * (12.0 * light)).tail(at(u - 0.012) - at(u)),
+        Particle::new(at(u), 10.0, Rgb::hex(0xb8ffd8) * (0.35 * light)),
+    ];
+    // The glowing trail fades behind the head.
+    for k in 1..=30 {
+        let back = u - 0.008 * k as f32;
+        if back < 0.0 {
+            break;
+        }
+        let fade = (1.0 - k as f32 / 30.0).powi(2);
+        items.push(
+            Particle::new(at(back), 1.4, Rgb::hex(0xb8ffd8) * (1.2 * light * fade))
+                .tail(at(back - 0.008) - at(back)),
+        );
+    }
+    items
+}
+
+/// The rotation from the space of `camera` to the world.
+fn orientation(camera: &Camera) -> Quat {
+    Quat::from_mat3(&Mat3::from_cols(
+        camera.right(),
+        camera.up_vector(),
+        -camera.forward(),
+    ))
 }
 
 impl DesertSet {
@@ -129,10 +215,29 @@ impl DesertSet {
     pub fn moment_walk(&self, t: f32) -> (Scene, Camera) {
         let tau = story_time(t);
         let mut scene = self.night.clone();
-        let pose = pose(tau);
+        let mut pose = pose(tau);
+        pose.position.y = self.terrain.playa(pose.position.x, pose.position.z);
         self.night_figure.apply(&mut scene, &pose);
         let camera = walk_camera(t, pose.position);
         scene[self.stars].position = camera.position;
+        // At the cut the sky is as dark as at the end of shot 4, which has a lower exposure.
+        // It brightens as the eye adapts. In the tilt each sample of the motion blur draws
+        // the stars as streaks, so they do not break into dots.
+        let adapt = 0.45 + 0.55 * smoothstep(0.3, 2.8, t);
+        let samples = self.shutter_walk(t);
+        let next = walk_camera(t + look::SHUTTER / samples as f32, pose.position);
+        let turn = orientation(&camera) * orientation(&next).inverse();
+        if let Object::Particles(sky) = &mut scene[self.stars].object {
+            for p in &mut sky.items {
+                p.color = p.color * adapt;
+                if samples > 1 {
+                    p.tail = turn * p.position - p.position;
+                }
+            }
+        }
+        if let Object::Particles(meteor) = &mut scene[self.meteor].object {
+            meteor.items = meteor_at(camera.position, t);
+        }
         let rate = (story_time(t + 0.01) - story_time(t)) / 0.01;
         self.night_air(&mut scene, tau, rate, camera.position);
         hide_dark_lights(&mut scene);
@@ -197,38 +302,47 @@ impl DesertSet {
                 let edge = 1.0 - smoothstep(half * 0.6, half, x.abs().max(offset.abs()));
                 // sand in front of the factory glow scatters its light toward the camera
                 let toward = (position - eye).normalize_or_zero().dot(ahead()).max(0.0);
-                let light = (0.06 + 0.7 * toward.powi(12)) * gust * edge;
+                let light = (0.03 + 0.5 * toward.powi(12)) * gust * edge;
                 let color = Rgb::hex(0xa8c0e8) * (light * (0.4 + 0.6 * k(6)));
                 items.push(
                     Particle::new(position, 0.002 + 0.003 * k(7), color)
                         .tail(-wind * (pace * rate) * look::SHUTTER),
                 );
             }
-            // Fine sand drifts in soft bands over the first streams: small puffs, close
-            // together, so they blend into one flowing veil.
-            if s >= VEILS {
-                continue;
-            }
-            for g in 0..PUFFS {
-                let k = |n: u32| hash(s * 541 + g * 17 + n * 15_485_863);
-                let x = (g as f32 / PUFFS as f32 * 2.0 * half + speed * pace * 0.8 * tau)
-                    .rem_euclid(2.0 * half)
-                    - half;
-                let meander =
-                    0.6 * noise1(s + 7, x * 0.18 + h(3) * 40.0) + 0.25 * (k(1) * 2.0 - 1.0);
-                let p = center + along * x + across * (offset + meander);
-                let lift = 0.04 + 0.22 * k(2).powi(2);
-                let position = vec3(p.x, self.terrain.height(p.x, p.z) + lift, p.z);
-                let gust = (0.5 + 0.5 * noise1(s + 101, x * 0.25 - tau * 2.0)).powi(3);
-                let edge = 1.0 - smoothstep(half * 0.5, half, x.abs().max(offset.abs()));
-                // puffs right in front of the lens would blur into large blobs
-                let near = smoothstep(2.0, 6.0, position.distance(eye));
-                let toward = (position - eye).normalize_or_zero().dot(ahead()).max(0.0);
-                let light = (0.05 + 0.6 * toward.powi(12)) * gust * edge * near;
-                let color = Rgb::hex(0x9ab4e0) * (0.06 * light * (0.5 + k(3)));
+        }
+        // Thin ribbons of fine sand snake over the ground. Each ribbon is a chain of
+        // streaks that moves with the wind. Its shape changes slowly, and gusts run along
+        // it.
+        for r in 0..RIBBONS {
+            let h = |n: u32| hash(r * 53 + n * 7919 + 17);
+            let offset = (h(1) * 2.0 - 1.0) * half;
+            let length = 2.5 + 6.0 * h(2);
+            let head = (h(3) * 2.0 * half + speed * (0.8 + 0.2 * h(4)) * tau)
+                .rem_euclid(2.0 * half + length)
+                - half;
+            let lift = 0.008 + 0.03 * h(5);
+            let points: Vec<Vec3> = (0..=SEGMENTS)
+                .map(|k| {
+                    let x = head - length * k as f32 / SEGMENTS as f32;
+                    let meander = 0.45 * noise1(r + 3, x * 0.3 - tau * 0.5)
+                        + 0.1 * noise1(r + 9, x * 1.4 + tau * 1.5);
+                    let p = center + along * x + across * (offset + meander);
+                    let flutter = 0.012 * noise1(r + 11, x * 2.5 - tau * 4.0).abs();
+                    p.with_y(self.terrain.height(p.x, p.z) + lift + flutter)
+                })
+                .collect();
+            for (k, pair) in points.windows(2).enumerate() {
+                let u = (k as f32 + 0.5) / SEGMENTS as f32;
+                let x = head - length * u;
+                let taper = (std::f32::consts::PI * u).sin();
+                let gust = (0.5 + 0.5 * noise1(r + 101, x * 0.4 - tau * 1.2)).powi(2);
+                let edge = 1.0 - smoothstep(half * 0.6, half, x.abs().max(offset.abs()));
+                let near = smoothstep(1.5, 4.0, pair[0].distance(eye));
+                let toward = (pair[0] - eye).normalize_or_zero().dot(ahead()).max(0.0);
+                let light = (0.05 + 0.5 * toward.powi(10)) * taper * gust * edge * near;
                 items.push(
-                    Particle::new(position, 0.12 + 0.16 * k(4), color)
-                        .tail(-wind * (0.012 * (0.4 + 0.6 * rate))),
+                    Particle::new(pair[0], 0.003 + 0.004 * taper, Rgb::hex(0xa8c0e8) * light)
+                        .tail(pair[1] - pair[0]),
                 );
             }
         }
@@ -240,10 +354,10 @@ impl DesertSet {
 const STREAMS: u32 = 72;
 /// The grains in each stream.
 const GRAINS: u32 = 56;
-/// The streams that also carry a veil of fine sand.
-const VEILS: u32 = 34;
-/// The puffs of a veil.
-const PUFFS: u32 = 110;
+/// The number of ribbons of fine sand.
+const RIBBONS: u32 = 70;
+/// The streaks of a ribbon.
+const SEGMENTS: u32 = 24;
 
 /// The camera of shot 5 at `t`. `body` is the root of the figure.
 fn walk_camera(t: f32, body: Vec3) -> Camera {
@@ -314,5 +428,35 @@ mod tests {
             "{:?}",
             camera.forward()
         );
+    }
+
+    #[test]
+    fn planted_feet_do_not_slide() {
+        let mut scene = Scene::new();
+        let figure = crate::figure::Figure::build(&mut scene, None, &figure_style());
+        let soles = |t: f32| {
+            let mut scene = scene.clone();
+            figure.apply(&mut scene, &pose(story_time(t)));
+            figure.feet(&scene)
+        };
+        let mut worst = (0.0f32, 0.0);
+        let mut last = soles(0.0);
+        for frame in 1..(WALK_SECONDS * 60.0) as u32 {
+            let t = frame as f32 / 60.0;
+            let now = soles(t);
+            for (a, b) in last.iter().flatten().zip(now.iter().flatten()) {
+                // a point of a sole on the ground in both frames must stay in place
+                if a.y < 0.001 && b.y < 0.001 {
+                    let slide = (*a - *b).with_y(0.0).length();
+                    if slide > worst.0 {
+                        worst = (slide, t);
+                    }
+                }
+            }
+            last = now;
+        }
+        eprintln!("worst slide {:.1} mm at {:.2} s", worst.0 * 1000.0, worst.1);
+        eprintln!("footfalls {:?}", footfalls());
+        assert!(worst.0 < 0.004, "{worst:?}");
     }
 }

@@ -30,7 +30,8 @@ pub(super) struct Terrain {
 pub(super) struct Ground {
     sand: (Arc<Geometry>, Material),
     playa: (Arc<Geometry>, Material),
-    rocks: Vec<(Arc<Geometry>, Material, Arc<Instances>)>,
+    /// Rocks and dry shrubs. Each shape is one instanced mesh.
+    scatter: Vec<(Arc<Geometry>, Material, Arc<Instances>)>,
     mesas: (Arc<Geometry>, Material),
 }
 
@@ -109,7 +110,7 @@ impl Terrain {
         Ground {
             sand: (Arc::new(self.sand_mesh()), sand),
             playa: (Arc::new(self.playa_mesh()), playa),
-            rocks: self.rocks(&rock),
+            scatter: [self.rocks(&rock), self.shrubs()].concat(),
             mesas: (
                 Arc::new(self.mesas()),
                 rock.color(0x9a9aa4).normal_scale(0.6),
@@ -200,9 +201,13 @@ impl Terrain {
                 if back > -1.0 && back < 14.0 && (p + walk_dir * back).length() < 1.0 + size {
                     continue;
                 }
-                // big rocks stay out of the sunrise view
+                // Big rocks stay out of the sunrise view, and stones out of the lower left of
+                // it, where the quote is.
                 let (s, across) = self.sunward(p);
                 if class >= 2 && s > -60.0 && across.abs() < if s > 60.0 { 900.0 } else { 30.0 } {
+                    continue;
+                }
+                if class == 1 && (0.0..40.0).contains(&s) && (-30.0..1.0).contains(&across) {
                     continue;
                 }
                 let squash = if class == 3 { 0.45 } else { 0.6 + 0.3 * h(4) };
@@ -230,6 +235,64 @@ impl Terrain {
             }
         }
         out
+    }
+
+    /// Dry shrubs, from 0.4 m to 1.4 m wide, in four shapes. None grows on the path of
+    /// the engineer, on the line or its light, in the middle of the view of the walk, near
+    /// the sunrise camera, or in the lower left of the sunrise view, where the quote is.
+    fn shrubs(&self) -> Vec<(Arc<Geometry>, Material, Arc<Instances>)> {
+        let wood = Material::standard(0x4a3c30).roughness(0.9);
+        let walk = kneel_heading();
+        let walk_dir = vec2(walk.sin(), walk.cos());
+        let (a, side) = (ahead(), right());
+        let (a, side) = (vec2(a.x, a.z), vec2(side.x, side.z));
+        let mut lists: [Vec<Mat4>; 4] = Default::default();
+        for k in 0..2400u32 {
+            let h = |n: u32| hash(k * 29 + n * 7919 + 1301);
+            let r = 3.0 + 300.0 * h(1).powf(2.2);
+            let angle = h(2) * TAU;
+            let p = vec2(angle.cos(), angle.sin()) * r;
+            let along = p.dot(a);
+            if along > -4.0 && p.dot(side).abs() < 2.5 + 0.03 * along {
+                continue;
+            }
+            let back = -p.dot(walk_dir);
+            if back > -2.0 && back < 15.0 && (p + walk_dir * back).length() < 2.5 {
+                continue;
+            }
+            // the middle of the view of the walk, between the camera and the factory
+            let near = along + 9.0;
+            if (0.0..50.0).contains(&near) && (p.dot(side) - 2.0).abs() < 3.0 + 0.25 * near {
+                continue;
+            }
+            let (s, across) = self.sunward(p);
+            if (0.0..42.0).contains(&s) && (-30.0..8.0).contains(&across) {
+                continue;
+            }
+            // fewer on the mud of the pan, more on the sand around it
+            if r < PLAYA && h(3) > 0.25 {
+                continue;
+            }
+            let size = 0.4 + 1.0 * h(4).powi(2);
+            let rotation = Quat::from_rotation_y(h(5) * TAU);
+            let position = vec3(p.x, self.height(p.x, p.y) - 0.02, p.y);
+            lists[(h(6) * 4.0) as usize % 4].push(Mat4::from_scale_rotation_translation(
+                vec3(size, size * (0.7 + 0.5 * h(7)), size),
+                rotation,
+                position,
+            ));
+        }
+        lists
+            .into_iter()
+            .enumerate()
+            .map(|(k, list)| {
+                (
+                    Arc::new(shrub(k as u32)),
+                    wood.clone(),
+                    Arc::new(Instances::new(list)),
+                )
+            })
+            .collect()
     }
 
     /// Flat topped mesas with cliffs and slopes of scree, on the horizon. None stands in
@@ -391,6 +454,38 @@ pub(super) fn rock(seed: u32, detail: u32) -> Geometry {
     Geometry::new(positions, normals, uvs, indices)
 }
 
+/// A dry shrub about 1 m wide and 0.6 m high: branches grow from one root, bend out and up,
+/// and fork into twigs.
+fn shrub(seed: u32) -> Geometry {
+    let mut parts = Vec::new();
+    for b in 0..22u32 {
+        let h = |n: u32| hash(seed * 997 + b * 31 + n);
+        let angle = h(1) * TAU;
+        let out = vec3(angle.cos(), 0.0, angle.sin());
+        let length = 0.3 + 0.3 * h(2);
+        // the middle branches stand up, the outer ones spread
+        let steep = 0.7 + 1.6 * h(3).powi(2);
+        let bend = vec3(h(4) - 0.5, 0.0, h(5) - 0.5) * 0.2;
+        let point = |u: f32| {
+            (out * u + bend * u * u) * length + Vec3::Y * (steep * length * u * (1.2 - 0.4 * u))
+        };
+        let path: Vec<Vec3> = (0..=4).map(|k| point(k as f32 / 4.0)).collect();
+        parts.push(Geometry::tube(&path, 0.006, 4));
+        // three twigs fork from the outer part of the branch
+        for t in 0..3u32 {
+            let from = point(0.35 + 0.2 * t as f32 + 0.1 * h(6 + t));
+            let twig = random_direction(seed * 131 + b * 7 + t);
+            let reach = (twig.with_y(twig.y.abs() + 0.5)).normalize() * (0.06 + 0.12 * h(9 + t));
+            parts.push(Geometry::tube(
+                &[from, from + reach * 0.5, from + reach],
+                0.0025,
+                3,
+            ));
+        }
+    }
+    Geometry::merge(parts)
+}
+
 /// A mesa at `center` (x, z): a flat top `height` meters high, a cliff, and a slope of
 /// scree down to the plain.
 fn mesa(center: Vec2, radius: f32, height: f32, seed: u32) -> Geometry {
@@ -462,7 +557,7 @@ impl Ground {
         let tinted = |m: &Material| m.clone().color(m.color * tint);
         scene.add(Node::mesh(self.sand.0.clone(), tinted(&self.sand.1)).shadows(false, true));
         scene.add(Node::mesh(self.playa.0.clone(), tinted(&self.playa.1)).shadows(false, true));
-        for (geometry, material, instances) in &self.rocks {
+        for (geometry, material, instances) in &self.scatter {
             scene.add(Node::instanced(
                 geometry.clone(),
                 material.clone(),

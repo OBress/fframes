@@ -168,14 +168,14 @@ pub fn factory(scene: &mut Scene, assets: &Assets, front: Vec3, facing: Vec3) ->
     let dome = glow_card(2800.0, 1300.0, 0.0);
     scene.add_to(
         root,
-        Node::mesh(dome, Material::glow(COLD, 0.14))
+        Node::mesh(dome, Material::glow(COLD, 0.3))
             .at(0.0, 0.0, -depth - 60.0)
             .shadows(false, false),
     );
     let low = glow_card(1500.0, 160.0, 0.0);
     scene.add_to(
         root,
-        Node::mesh(low, Material::glow(COLD_WHITE, 0.06))
+        Node::mesh(low, Material::glow(COLD_WHITE, 0.12))
             .at(0.0, 0.0, 30.0)
             .shadows(false, false),
     );

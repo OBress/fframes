@@ -12,6 +12,7 @@ mod terrain;
 mod walk;
 
 pub use factory::{Factory, factory};
+pub use walk::footfalls;
 
 use fframes_3d::math::hash;
 use fframes_3d::*;
@@ -73,6 +74,8 @@ pub struct DesertSet {
     dust: NodeId,
     /// The moon of the night scene.
     moon: NodeId,
+    /// The meteor of shot 5. It is in world space.
+    meteor: NodeId,
     factory: Factory,
     line: line::LineNodes,
     /// The plateau at sunrise, shot 9.
@@ -103,12 +106,13 @@ impl DesertSet {
         let night_figure = Figure::build(&mut night, None, &walk::figure_style());
         let stars = night.add(crate::stars::stars().scaled(STAR_SCALE));
         let dust = night.add(Node::particles(Vec::new(), Blending::Additive));
+        let meteor = night.add(Node::particles(Vec::new(), Blending::Additive));
         let line = line::LineNodes::build(&mut night, assets);
         let moon = walk::light_night(&mut night);
 
         let mut dawn = Scene::new();
         // the sand at sunrise is seen against the sun, so it looks darker
-        ground.add_to(&mut dawn, Rgb::linear(0.2, 0.17, 0.14));
+        ground.add_to(&mut dawn, Rgb::linear(0.15, 0.125, 0.1));
         let landmarks = sunrise::landmarks(&mut dawn, &terrain);
         let dawn_figure = Figure::build(&mut dawn, None, &sunrise::figure_style());
         let dawn_dust = dawn.add(Node::particles(Vec::new(), Blending::Additive));
@@ -120,6 +124,7 @@ impl DesertSet {
             stars,
             dust,
             moon,
+            meteor,
             factory,
             line,
             dawn,
