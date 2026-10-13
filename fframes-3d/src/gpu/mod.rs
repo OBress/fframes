@@ -22,6 +22,7 @@
 //! premultiplied sRGB pixels.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use bytemuck::{Pod, Zeroable};
@@ -120,6 +121,7 @@ struct GpuShadow {
 struct FrameUniform {
     view_proj: [f32; 16],
     inv_view_proj: [f32; 16],
+    view_proj_rel: [f32; 16],
     camera: [f32; 4],
     forward: [f32; 4],
     viewport: [f32; 4],
@@ -141,6 +143,8 @@ struct FrameUniform {
     haze_ambient: [f32; 4],
     haze_shape: [f32; 4],
     haze_noise: [f32; 4],
+    /// x: the start of the haze steps for this moment, see `jitter` in `atmosphere.wgsl`
+    haze_march: [f32; 4],
     lights: [GpuLight; MAX_LIGHTS],
     softboxes: [GpuSoftBox; MAX_SOFTBOXES],
     shadows: [GpuShadow; MAX_SHADOWS],
@@ -526,6 +530,9 @@ struct FrameContext {
 
 static OWN_GPU: OnceLock<Option<Arc<Gpu>>> = OnceLock::new();
 
+/// The frames that the GPU has not finished, see [`Gpu::frames_in_flight`].
+static FRAMES_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
 /// The renderer on a device of its own. It is made on first use. `None` when no adapter is
 /// usable.
 fn own_gpu() -> Option<Arc<Gpu>> {
@@ -783,7 +790,12 @@ impl Gpu {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: Some(depth_test(true, wgpu::CompareFunction::Less)),
             multisample: wgpu::MultisampleState::default(),
-            fragment: None,
+            fragment: Some(wgpu::FragmentState {
+                module: &shadow_module,
+                entry_point: Some("fs_shadow"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[],
+            }),
             multiview_mask: None,
             cache: None,
         });
@@ -1335,19 +1347,22 @@ impl Gpu {
     }
 
     /// Takes a free frame context of this size from the pool, or makes one. Waits while all
-    /// contexts are in use.
-    fn take_context(&self, width: u32, height: u32, shadow_size: u32) -> FrameContext {
+    /// contexts are in use. The shadow maps get exactly `shadow_size` texels, as on the CPU:
+    /// a context that kept larger maps from an earlier shot would shade the frame with
+    /// another texel size and normal offset than a fresh one. `None` keeps the maps.
+    fn take_context(&self, width: u32, height: u32, shadow_size: Option<u32>) -> FrameContext {
         let mut pool = lock(&self.contexts);
         loop {
-            if let Some(i) = pool
-                .free
-                .iter()
-                .position(|c| c.width == width && c.height == height)
-            {
+            let fits = |c: &FrameContext| c.width == width && c.height == height;
+            // A context with maps of this size first, so that shots do not reallocate them.
+            let found = (pool.free.iter())
+                .position(|c| fits(c) && shadow_size.is_none_or(|s| c.shadow_size == s))
+                .or_else(|| pool.free.iter().position(fits));
+            if let Some(i) = found {
                 let mut context = pool.free.swap_remove(i);
                 drop(pool);
-                if context.shadow_size < shadow_size {
-                    context.resize_shadows(&self.device, shadow_size);
+                if let Some(size) = shadow_size.filter(|&s| s != context.shadow_size) {
+                    context.resize_shadows(&self.device, size);
                 }
                 return context;
             }
@@ -1365,7 +1380,7 @@ impl Gpu {
                 .unwrap_or_else(PoisonError::into_inner);
         }
         drop(pool);
-        FrameContext::new(&self.device, width, height, shadow_size.max(1024))
+        FrameContext::new(&self.device, width, height, shadow_size.unwrap_or(1024))
     }
 
     /// Puts a frame context back into the pool.
@@ -1377,9 +1392,19 @@ impl Gpu {
     /// Renders the moments (one, or more for motion blur) and returns the pixels.
     pub(crate) fn render(&self, renderer: &Renderer, moments: &[(&Scene, &Camera)]) -> Pixels {
         let context = self.render_moments(renderer, moments);
+        FRAMES_IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
         let pixels = self.finish(&context, renderer);
+        FRAMES_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
         self.give_back(context);
         pixels
+    }
+
+    /// The number of frames that the GPU has not finished. [`Renderer::hybrid`] renders
+    /// on the CPU while it is high.
+    pub(crate) fn frames_in_flight(&self) -> usize {
+        // Runs the callbacks of the finished submissions. This does not wait for the GPU.
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        FRAMES_IN_FLIGHT.load(Ordering::Relaxed)
     }
 
     /// Renders the moments into a texture that the backend samples in place, see
@@ -1397,7 +1422,11 @@ impl Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         self.post_process(&context, renderer, &mut encoder, &view);
         fframes::finish_wgpu_layer(&mut encoder, &texture);
+        FRAMES_IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
         self.submit(encoder.finish());
+        self.queue.on_submitted_work_done(|| {
+            FRAMES_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
+        });
         self.give_back(context);
         let image = fframes::wgpu_layer(shared, &texture);
         let mut layers = lock(&self.layers);
@@ -1446,37 +1475,30 @@ impl Gpu {
             .flat_map(|(scene, _)| {
                 scene.nodes().filter_map(|(_, n)| match &n.object {
                     Object::Light(crate::Light::Directional(l)) => {
-                        l.shadow.as_ref().map(|s| s.map_size.clamp(256, 8192))
+                        l.shadow.as_ref().map(|s| s.map_size.clamp(64, 8192))
                     }
                     _ => None,
                 })
             })
-            .max()
-            .unwrap_or(1024);
+            .max();
         let mut context = self.take_context(renderer.width, renderer.height, shadow_size);
         let weight = 1.0 / moments.len().max(1) as f32;
         for (i, (scene, camera)) in moments.iter().enumerate() {
-            self.render_moment(
-                &mut context,
-                scene,
-                camera,
-                weight,
-                i == 0,
-                moments.len() == 1,
-            );
+            self.render_moment(&mut context, scene, camera, weight, i, moments.len() == 1);
         }
         context
     }
 
-    /// Renders one moment and adds it with `weight` to the average of the frame. `first`
-    /// starts a new average. `single` tells that the moment is the whole frame.
+    /// Renders the moment with index `moment` and adds it with `weight` to the average of
+    /// the frame. Moment 0 starts a new average. `single` tells that the moment is the
+    /// whole frame.
     fn render_moment(
         &self,
         cx: &mut FrameContext,
         scene: &Scene,
         camera: &Camera,
         weight: f32,
-        first: bool,
+        moment: usize,
         single: bool,
     ) {
         let (width, height) = (cx.width, cx.height);
@@ -1637,6 +1659,7 @@ impl Gpu {
         let mut frame = FrameUniform::zeroed();
         frame.view_proj = view_proj.to_cols_array();
         frame.inv_view_proj = view_proj.inverse().to_cols_array();
+        frame.view_proj_rel = (projection * relative(view)).to_cols_array();
         frame.camera = camera
             .position
             .extend(f32::from(camera.ortho_height.is_some()))
@@ -1682,6 +1705,7 @@ impl Gpu {
             frame.haze_ambient = a.ambient.0.extend(a.anisotropy).to_array();
             frame.haze_shape = [a.base, a.falloff, a.noise, a.distance];
             frame.haze_noise = (a.offset * scale).extend(scale).to_array();
+            frame.haze_march[0] = moment as f32;
         }
         if let (Some(reflector), Some(targets)) = (reflector, reflection) {
             let (rw, rh) = (targets.width as f32, targets.height as f32);
@@ -1690,6 +1714,7 @@ impl Gpu {
             let mut mirrored = frame;
             mirrored.view_proj = view_proj.to_cols_array();
             mirrored.inv_view_proj = view_proj.inverse().to_cols_array();
+            mirrored.view_proj_rel = (projection * relative(view * mirror)).to_cols_array();
             mirrored.camera = mirror
                 .transform_point3(camera.position)
                 .extend(frame.camera[3])
@@ -1864,7 +1889,7 @@ impl Gpu {
         } else {
             let black = &self.black_hdr;
             let group = self.post_group(cx, 0, [source, &cx.key, &cx.tiles, black, black]);
-            let clear = first.then_some(wgpu::Color::TRANSPARENT);
+            let clear = (moment == 0).then_some(wgpu::Color::TRANSPARENT);
             fullscreen(
                 &mut encoder,
                 &self.post.accumulate,
@@ -2286,6 +2311,13 @@ impl Gpu {
     }
 }
 
+/// `view` for positions relative to the camera, which `view` moves to the origin: the
+/// matrix without its translation. `relative(view) * (p - camera)` is `view * p`. Without
+/// the large translation, a small part far from the origin keeps its precision.
+fn relative(view: Mat4) -> Mat4 {
+    Mat4::from_cols(view.x_axis, view.y_axis, view.z_axis, Vec4::W)
+}
+
 /// A depth test against a `DEPTH` target.
 fn depth_test(write: bool, compare: wgpu::CompareFunction) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
@@ -2575,7 +2607,9 @@ fn fit_shadows(lights: &Lights, items: &[DrawItem], map_size: u32) -> Vec<Option
 }
 
 /// Merges small rigid opaque meshes that look the same into batches. Their vertices move to
-/// world space and into `streamed`. Returns the indices of the batches.
+/// the space of the batch and into `streamed`. The space of a batch is the world space moved
+/// to the position of its first mesh, so that the vertices keep their precision far from the
+/// origin. Returns the indices of the batches.
 fn batch(items: &mut Vec<DrawItem>, streamed: &mut Vec<Vertex>) -> Vec<u32> {
     let texture_id = |t: &Option<Arc<Texture>>| t.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize);
     let mut groups: HashMap<BatchKey, Vec<usize>> = HashMap::new();
@@ -2619,16 +2653,16 @@ fn batch(items: &mut Vec<DrawItem>, streamed: &mut Vec<Vertex>) -> Vec<u32> {
         let mut bounds = crate::Aabb::EMPTY;
         let mut depth = f32::INFINITY;
         let mut base = 0u32;
+        let origin = Mat4::from_cols_array(&items[members[0]].uniform.model)
+            .w_axis
+            .truncate();
         for &i in &members {
             let item = &mut items[i];
             let g = &item.geometry;
             let model = Mat4::from_cols_array(&item.uniform.model);
             let normal_matrix = Mat4::from_cols_array(&item.uniform.normal_matrix);
-            let positions: Vec<Vec3> = g
-                .positions
-                .iter()
-                .map(|p| model.transform_point3(*p))
-                .collect();
+            let (linear, offset) = (Mat3::from_mat4(model), model.w_axis.truncate() - origin);
+            let positions: Vec<Vec3> = g.positions.iter().map(|p| linear * *p + offset).collect();
             let normals: Vec<Vec3> = (0..g.positions.len())
                 .map(|k| {
                     normal_matrix.transform_vector3(g.normals.get(k).copied().unwrap_or(Vec3::Y))
@@ -2649,7 +2683,7 @@ fn batch(items: &mut Vec<DrawItem>, streamed: &mut Vec<Vertex>) -> Vec<u32> {
         }
         let first = &items[members[0]];
         let mut uniform = first.uniform;
-        uniform.model = Mat4::IDENTITY.to_cols_array();
+        uniform.model = Mat4::from_translation(origin).to_cols_array();
         uniform.normal_matrix = Mat4::IDENTITY.to_cols_array();
         let batch = DrawItem {
             material: first.material,

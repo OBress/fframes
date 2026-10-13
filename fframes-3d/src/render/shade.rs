@@ -362,7 +362,9 @@ fn standard(
 
 /// three.js `getDistanceAttenuation`.
 pub(crate) fn attenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
-    let mut att = 1.0 / distance.max(0.01).powf(decay);
+    let d = distance.max(0.01);
+    // `powf` is slow, and the haze calls this for each light at each step.
+    let mut att = 1.0 / if decay == 2.0 { d * d } else { d.powf(decay) };
     if cutoff > 0.0 {
         let x = (1.0 - (distance / cutoff).powi(4)).clamp(0.0, 1.0);
         att *= x * x;

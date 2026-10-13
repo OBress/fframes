@@ -32,6 +32,8 @@ struct Shadow {
 struct Frame {
     view_proj: mat4x4f,
     inv_view_proj: mat4x4f,
+    // `view_proj` for positions relative to the camera
+    view_proj_rel: mat4x4f,
     // xyz, 1 for an orthographic camera
     camera: vec4f,
     // xyz, angle of one pixel
@@ -68,6 +70,8 @@ struct Frame {
     haze_shape: vec4f,
     // noise offset / noise size, 1 / noise size
     haze_noise: vec4f,
+    // x: the index of the moment of a motion blurred frame
+    haze_march: vec4f,
     lights: array<Light, 16>,
     softboxes: array<SoftBox, 8>,
     shadows: array<Shadow, 2>,
@@ -137,6 +141,11 @@ override NORMAL_MAP: bool = false;
 fn smooth_step(e0: f32, e1: f32, x: f32) -> f32 {
     let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
+}
+
+// The largest component of `v`.
+fn largest(v: vec3f) -> f32 {
+    return max(v.x, max(v.y, v.z));
 }
 
 fn normalize_or(v: vec3f, fallback: vec3f) -> vec3f {
@@ -345,7 +354,9 @@ struct InstanceIn {
 
 struct VertexOut {
     @builtin(position) clip: vec4f,
-    @location(0) @interpolate(perspective, centroid) world: vec3f,
+    // The position relative to the camera. Its steps between pixels keep their precision
+    // in close views and far from the origin.
+    @location(0) @interpolate(perspective, centroid) rel: vec3f,
     @location(1) @interpolate(perspective, centroid) normal: vec3f,
     @location(2) @interpolate(perspective, centroid) uv: vec2f,
     @location(3) @interpolate(perspective, centroid) color: vec4f,
@@ -363,9 +374,13 @@ fn vs_main(in: VertexIn, copy: InstanceIn) -> VertexOut {
     var out: VertexOut;
     let model = mat4x4f(copy.model_0, copy.model_1, copy.model_2, copy.model_3);
     let normal = mat3x3f(copy.normal_0.xyz, copy.normal_1.xyz, copy.normal_2.xyz);
-    let world = draw.model * (model * vec4f(in.position, 1.0));
-    out.clip = frame.view_proj * world;
-    out.world = world.xyz;
+    let local = model * vec4f(in.position, 1.0);
+    // The translation of the mesh minus the camera position is exact. A small part far
+    // from the origin keeps its shape.
+    let m = draw.model;
+    let rel = mat3x3f(m[0].xyz, m[1].xyz, m[2].xyz) * local.xyz + (m[3].xyz - frame.camera.xyz) * local.w;
+    out.clip = frame.view_proj_rel * vec4f(rel, 1.0);
+    out.rel = rel;
     out.normal = (draw.normal_matrix * vec4f(normal * in.normal, 0.0)).xyz;
     out.uv = in.uv;
     out.color = in.color * copy.color;
@@ -375,12 +390,19 @@ fn vs_main(in: VertexIn, copy: InstanceIn) -> VertexOut {
 
 @fragment
 fn fs_main(in: VertexOut) -> FragmentOut {
-    if (REFLECTION_PASS && dot(frame.clip_plane.xyz, in.world) + frame.clip_plane.w < 0.0) {
+    let world = in.rel + frame.camera.xyz;
+    if (REFLECTION_PASS && dot(frame.clip_plane.xyz, world) + frame.clip_plane.w < 0.0) {
         discard;
     }
     // Derivatives and texture samples come first. They need uniform control flow.
-    let dx = dpdx(in.world);
-    let dy = dpdy(in.world);
+    // In a close view the steps between pixels are micrometers, and the products of two
+    // steps fall below the threshold of `normalize_or`. Only their directions matter, so
+    // they are scaled to about 1.
+    let step_x = dpdx(in.rel);
+    let step_y = dpdy(in.rel);
+    let step = 1.0 / max(largest(max(abs(step_x), abs(step_y))), 1e-30);
+    let dx = step_x * step;
+    let dy = step_y * step;
     // How much the smooth normal turns across the pixel, for the specular antialiasing.
     let n_smooth = normalize_or(in.normal, vec3f(0.0, 1.0, 0.0));
     let dnx = dpdx(n_smooth);
@@ -404,8 +426,11 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     var dpdv = vec3f(0.0);
     if (NORMAL_MAP) {
         normal_texel = textureSample(normal_tex, tex_sampler, uv);
-        let duvx = dpdx(uv);
-        let duvy = dpdy(uv);
+        let uv_x = dpdx(uv);
+        let uv_y = dpdy(uv);
+        let uv_step = 1.0 / max(largest(vec3f(max(abs(uv_x), abs(uv_y)), 0.0)), 1e-30);
+        let duvx = uv_x * uv_step;
+        let duvy = uv_y * uv_step;
         let side = sign(duvx.x * duvy.y - duvy.x * duvx.y);
         dpdu = (dx * duvy.y - dy * duvx.y) * side;
         dpdv = (dy * duvx.x - dx * duvy.x) * side;
@@ -436,14 +461,14 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     }
 
     var v: vec3f;
-    let to_camera = frame.camera.xyz - in.world;
+    let to_camera = -in.rel;
     let distance = length(to_camera);
     if (frame.camera.w > 0.5) {
         v = -frame.forward.xyz;
     } else {
         v = to_camera / max(distance, 1e-6);
     }
-    var face = normalize_or(cross(dx, dy), vec3f(0.0, 1.0, 0.0));
+    var face = normalize_or(cross(dx, dy), n_smooth);
     if (dot(face, v) < 0.0) {
         face = -face;
     }
@@ -451,7 +476,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // other values are live at this point.
     var shadows = vec2f(1.0);
     if (SHADING == 0u && draw.maps.w > 0.5) {
-        shadows = shadow_factors(in.world, face);
+        shadows = shadow_factors(world, face);
     }
     var n = n_smooth;
     if (draw.flags.x > 0.5) {
@@ -471,7 +496,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         emissive += draw.rim.rgb * pow(1.0 - n_dot_v, draw.rim.w);
     }
     if (GRID && draw.grid_color.w > 0.5) {
-        emissive += draw.grid_color.rgb * grid_coverage(in.world, face, distance, n_dot_v) * (1.0 - smooth_step(draw.grid.z * 0.5, draw.grid.z, distance));
+        emissive += draw.grid_color.rgb * grid_coverage(world, face, distance, n_dot_v) * (1.0 - smooth_step(draw.grid.z * 0.5, draw.grid.z, distance));
     }
 
     var out: FragmentOut;
@@ -487,13 +512,13 @@ fn fs_main(in: VertexOut) -> FragmentOut {
             let light = &frame.lights[i];
             let index = light.params.z;
             if (i32(light.color.w) == 0 && index >= 0.0) {
-                shadow *= shadow_visibility(i32(index), in.world, face, dot(face, -light.direction.xyz));
+                shadow *= shadow_visibility(i32(index), world, face, dot(face, -light.direction.xyz));
             }
         }
         out.color = vec4f(0.0, 0.0, 0.0, (1.0 - shadow) * draw.color.a);
         return out;
     } else {
-        rgb = standard(in.world, in.clip.xy, base, n, face, v, n_dot_v, metal_rough, occlusion, shadows, normal_variation) + emissive;
+        rgb = standard(in.rel, in.clip.xy, base, n, face, v, n_dot_v, metal_rough, occlusion, shadows, normal_variation) + emissive;
     }
 
     if (FOG && draw.flags.z > 0.5 && frame.fog.w > 0.5) {
@@ -544,10 +569,10 @@ fn shadow_factors(position: vec3f, face: vec3f) -> vec2f {
     return shadows;
 }
 
-// The light of a standard (PBR) surface. `metal_rough` scales the metalness and the
-// roughness. `shadows` comes from `shadow_factors`. `normal_variation` tells how much the
-// normal turns across the pixel.
-fn standard(position: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: vec3f, n_dot_v: f32, metal_rough: vec2f, occlusion: f32, shadows: vec2f, normal_variation: f32) -> vec3f {
+// The light of a standard (PBR) surface at `rel`, the position relative to the camera.
+// `metal_rough` scales the metalness and the roughness. `shadows` comes from
+// `shadow_factors`. `normal_variation` tells how much the normal turns across the pixel.
+fn standard(rel: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: vec3f, n_dot_v: f32, metal_rough: vec2f, occlusion: f32, shadows: vec2f, normal_variation: f32) -> vec3f {
     var metalness = draw.pbr.x * metal_rough.x;
     var roughness = draw.pbr.y * metal_rough.y;
     roughness = clamp(roughness, 0.045, 1.0);
@@ -625,7 +650,9 @@ fn standard(position: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, 
         } else {
             let lp = light.position;
             let ld = light.direction;
-            let d = lp.xyz - position;
+            // Both positions relative to the camera: a light close to a small part far
+            // from the origin keeps its direction.
+            let d = (lp.xyz - frame.camera.xyz) - rel;
             let dist = length(d);
             l = d / max(dist, 1e-6);
             radiance *= attenuation(dist, lp.w, ld.w);

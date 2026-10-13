@@ -38,6 +38,9 @@ pub(crate) struct Air<'a> {
     pub camera: Vec3,
     pub forward: Vec3,
     pub inverse_view_proj: Mat4,
+    /// The moment of the frame, `0` for a frame without motion blur. Each moment starts
+    /// its steps elsewhere, so that the motion blur averages the starts.
+    pub moment: usize,
 }
 
 impl Air<'_> {
@@ -62,7 +65,8 @@ impl Air<'_> {
                 let near = self.inverse_view_proj.project_point3(ndc(0.0));
                 let far = self.inverse_view_proj.project_point3(ndc(1.0));
                 let ray = (far - near).normalize_or(self.forward);
-                *out = self.march(ray, key[fy * width + fx], jitter(x, y), &mut suns);
+                let start = jitter(x, y, self.moment);
+                *out = self.march(ray, key[fy * width + fx], start, &mut suns);
             }
         });
 
@@ -122,8 +126,17 @@ impl Air<'_> {
                 continue;
             }
             let mut light = constant + self.lamps(p, ray);
+            // A long step crosses many shafts of light. The shadow is the mean of taps
+            // spread over the step, so the shafts do not alias into ripples.
+            let start = end * (i / n) * (i / n);
             for (sun, map) in suns.iter() {
-                light += *sun * map.lit(p);
+                let lit: f32 = (0..SHADOW_TAPS)
+                    .map(|k| {
+                        let s = start + dt * (k as f32 + jitter) / SHADOW_TAPS as f32;
+                        map.lit(self.camera + ray * s)
+                    })
+                    .sum();
+                light += *sun * (lit / SHADOW_TAPS as f32);
             }
             // The light scattered in the step, without the part that the air absorbs
             // again on its way to the camera (Hillaire 2015).
@@ -190,11 +203,17 @@ fn phase(cos: f32, g: f32) -> f32 {
     (1.0 - g * g) / (4.0 * PI * x * x.sqrt())
 }
 
-/// The start of the steps of a pixel, `0..1`: a 4x4 Bayer pattern. The filter covers the
-/// 16 starts of a 4x4 block, so the haze gets 16 times the steps without a pattern.
-fn jitter(x: usize, y: usize) -> f32 {
-    const BAYER: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-    (f32::from(BAYER[(y % 4) * 4 + x % 4]) + 0.5) / 16.0
+/// The shadow taps of a step in the haze.
+const SHADOW_TAPS: usize = 4;
+
+/// The start of the steps of a half resolution pixel, `0..1`: interleaved gradient noise
+/// (Jimenez 2014). Its values in a small block are spread over `0..1`, and the filter
+/// averages them, without the regular pattern that a fixed matrix shows when the camera
+/// moves. Each moment of a motion blurred frame moves the starts by the golden ratio.
+fn jitter(x: usize, y: usize, moment: usize) -> f32 {
+    let fract = |v: f32| v - v.floor();
+    let noise = fract(52.982_918 * fract(0.067_110_56 * x as f32 + 0.005_837_15 * y as f32));
+    fract(noise + 0.618_034 * moment as f32)
 }
 
 /// Two octaves of smooth 3D value noise, `0..1`.
@@ -226,7 +245,7 @@ fn value_noise(p: Vec3) -> f32 {
 }
 
 /// The haze at the full resolution pixel `x`, `y`: a box filter, 4 half resolution samples
-/// wide, around it. The box gives each of the 4x4 jitter starts the same weight. Samples at
+/// wide, around it. The box averages the jitter starts of 16 samples. Samples at
 /// another depth get less weight, so the haze of the sky does not leak onto the edges of
 /// objects.
 fn filter(

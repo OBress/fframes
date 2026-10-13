@@ -82,6 +82,20 @@ impl<A: Args> Cli<A> {
     pub fn parse() -> Self {
         <Self as Parser>::parse()
     }
+
+    /// The size of the frames that the command renders, relative to the size of the video:
+    /// `--scale`, the `--width` of `strip`, and half size for `onion` and `render --draft`
+    /// without `--scale`. A video that renders images of its own (3D, for example) can make
+    /// them at this size, so that a strip does not render 4K images for small cells.
+    pub fn output_scale<V: crate::Video>(&self) -> f64 {
+        match &self.command {
+            Some(Command::Strip(args)) => f64::from(args.width) / V::WIDTH as f64,
+            Some(Command::Onion(_) | Command::Render(RenderArgs { draft: true, .. })) => {
+                self.scale.unwrap_or(0.5)
+            }
+            _ => self.scale.unwrap_or(1.0),
+        }
+    }
 }
 
 /// Parses the command line with application specific flags `A` (available as `.app`). Needed
@@ -735,12 +749,30 @@ fn frame<'a, 'm: 'a, V: Video>(
     args: FrameArgs,
 ) -> CliResult {
     std::fs::create_dir_all(&args.output).map_err(err)?;
+    let specs = resolve_frames(previewer, &args.at)?;
+    let frames: Vec<usize> = specs.iter().map(|(_, frame)| *frame).collect();
+    let rendered = previewer
+        .render_inspected_many(&frames, renderer)
+        .map_err(err)?;
+    let paths: Vec<PathBuf> = specs
+        .iter()
+        .map(|(spec, _)| {
+            let name = snapshot::snapshot_name(spec);
+            args.output.join(format!("{name}.png"))
+        })
+        .collect();
+    // PNG encoding of a 4K frame takes about a second, so the frames save in parallel.
+    {
+        use rayon::prelude::*;
+        rendered
+            .par_iter()
+            .zip(&paths)
+            .try_for_each(|((pixels, _), path)| pixels.save_png(path))
+            .map_err(err)?;
+    }
     let mut results = Vec::new();
-    for (spec, frame) in resolve_frames(previewer, &args.at)? {
-        let (pixels, report) = previewer.render_inspected(frame, renderer).map_err(err)?;
+    for (((spec, frame), (_, report)), path) in specs.into_iter().zip(rendered).zip(paths) {
         let name = snapshot::snapshot_name(&spec);
-        let path = args.output.join(format!("{name}.png"));
-        pixels.save_png(&path).map_err(err)?;
         let svg = if args.svg {
             let svg_path = args.output.join(format!("{name}.svg"));
             std::fs::write(&svg_path, previewer.svg(frame).map_err(err)?).map_err(err)?;
@@ -792,8 +824,10 @@ fn render_cells<'a, 'm: 'a, V: Video>(
 ) -> CliResult<(Vec<sheet::SheetCell>, Vec<FrameReport>)> {
     let mut cells = Vec::new();
     let mut reports = Vec::new();
-    for &frame in frames {
-        let (pixels, report) = previewer.render_inspected(frame, renderer).map_err(err)?;
+    let rendered = previewer
+        .render_inspected_many(frames, renderer)
+        .map_err(err)?;
+    for (&frame, (pixels, report)) in frames.iter().zip(rendered) {
         cells.push(sheet::SheetCell {
             frame: pixels,
             label: format!(
@@ -1035,8 +1069,8 @@ fn inspect<'a, 'm: 'a, V: Video>(
     frames.dedup();
 
     let mut findings: Vec<Finding> = Vec::new();
-    for &frame in &frames {
-        let report = previewer.inspect(frame).map_err(err)?;
+    let reports = previewer.inspect_many(&frames).map_err(err)?;
+    for (&frame, report) in frames.iter().zip(reports) {
         for diagnostic in report.diagnostics {
             if diagnostic.severity == Severity::Info && !args.info {
                 continue;

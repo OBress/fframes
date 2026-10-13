@@ -415,15 +415,16 @@ impl ScreenTri {
 }
 
 /// The clipping planes in clip space: `dot(plane, clip) >= 0` is inside. They are the near
-/// plane and a guard band. The guard band keeps screen coordinates in a range where the
-/// `f32` edge functions stay exact.
+/// plane, a guard band and the far plane. The guard band keeps screen coordinates in a range
+/// where the `f32` edge functions stay exact. The GPU also clips at the far plane.
 const GUARD: f32 = 32.0;
-const PLANES: [Vec4; 5] = [
+const PLANES: [Vec4; 6] = [
     Vec4::new(0.0, 0.0, 1.0, 0.0),
     Vec4::new(-1.0, 0.0, 0.0, GUARD),
     Vec4::new(1.0, 0.0, 0.0, GUARD),
     Vec4::new(0.0, -1.0, 0.0, GUARD),
     Vec4::new(0.0, 1.0, 0.0, GUARD),
+    Vec4::new(0.0, 0.0, -1.0, 1.0),
 ];
 
 /// Bit `i` is set when the clip space point `c` is outside `PLANES[i]`, with the guard
@@ -434,6 +435,7 @@ fn outcode(c: Vec4, guard: f32) -> u8 {
         | (u8::from(c.x < -c.w * guard) << 2)
         | (u8::from(c.y > c.w * guard) << 3)
         | (u8::from(c.y < -c.w * guard) << 4)
+        | (u8::from(c.z > c.w) << 5)
 }
 
 /// A view of the scene.
@@ -477,8 +479,8 @@ pub(crate) fn setup_triangles(
         };
         let side = draw.material.side;
         let c = tri.v.map(|i| clip[i as usize]);
-        // All three vertices are outside the same plane of the frustum (bit 5 is far).
-        let outside = c.map(|c| outcode(c, 1.0) | (u8::from(c.z > c.w) << 5));
+        // All three vertices are outside the same plane of the frustum.
+        let outside = c.map(|c| outcode(c, 1.0));
         if outside[0] & outside[1] & outside[2] != 0 {
             continue;
         }
@@ -615,14 +617,15 @@ pub(crate) fn setup_sprites(
     camera: &Camera,
     vp: &Viewport,
 ) -> Vec<ScreenSprite> {
-    let project = |p: Vec3| -> Option<(Vec2, f32, f32)> {
+    // Also the far end of the particle: whether it is beyond the far plane.
+    let project = |p: Vec3| -> Option<(Vec2, f32, f32, bool)> {
         let c = vp.view_proj * p.extend(1.0);
         if c.w <= camera.near {
             return None;
         }
         let screen = Vec2::new(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5) * vp.size;
         let key = if vp.ortho { 1.0 - c.z / c.w } else { 1.0 / c.w };
-        Some((screen, key, c.w))
+        Some((screen, key, c.w, c.z > c.w))
     };
     // pixels per world unit, at a distance of 1 for perspective cameras
     let focal = match camera.ortho_height {
@@ -630,8 +633,12 @@ pub(crate) fn setup_sprites(
         None => vp.size.y / (2.0 * (camera.fov.to_radians() * 0.5).tan()),
     };
     let project_sprite = |s: &WorldSprite| {
-        let (p0, z0, w0) = project(s.position)?;
-        let (p1, z1) = project(s.tail_end).map_or((p0, z0), |(p, z, _)| (p, z));
+        let (p0, z0, w0, far0) = project(s.position)?;
+        let (p1, z1, far1) = project(s.tail_end).map_or((p0, z0, far0), |(p, z, _, f)| (p, z, f));
+        // The GPU clips a particle with both ends beyond the far plane.
+        if far0 && far1 {
+            return None;
+        }
         let radius = if camera.ortho_height.is_some() {
             s.size * focal
         } else {
