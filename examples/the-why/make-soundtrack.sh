@@ -19,6 +19,12 @@ fi
 voice="${VOICE_ID:-nPczCjzI2devNBz1zQrb}"
 api=https://api.elevenlabs.io/v1
 
+# The takes of the film are in sound/ in the repository: the generation gives other takes
+# every time, so the film keeps the ones it was mixed with. Missing takes are generated.
+for take in sound/*.mp3; do
+    [ -s "$out/$(basename "$take")" ] || cp "$take" "$out/"
+done
+
 # post <endpoint> <file> <json>: writes the audio of the answer to <file>.
 post() {
     if [ -s "$2" ]; then

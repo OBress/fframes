@@ -11,9 +11,8 @@
 #
 # Needs: cargo, python3, ffmpeg, curl, bc, and uv (for yt-dlp). On macOS:
 #   brew install ffmpeg python uv
-# Step 5 needs an ElevenLabs API key in $ELEVENLABS_API_KEY or ~/.config/fframes/elevenlabs_key
-# unless the sound files are in dynamic_media/play already. A new generation gives other takes
-# than the original film; copy dynamic_media/play from the original machine for the same sound.
+# Step 5 masters the takes of the film in sound/ (no API key needed). A missing take is generated
+# with ElevenLabs ($ELEVENLABS_API_KEY or ~/.config/fframes/elevenlabs_key).
 set -eu
 cd "$(dirname "$0")"
 
@@ -53,17 +52,8 @@ else
 fi
 
 step "5/6 sound"
-if [ -s dynamic_media/play/score.mp3 ] && [ -s dynamic_media/play/voice_how.mp3 ]; then
-    # the files exist: this only masters the takes that are not mastered yet
-    ./make-soundtrack.sh
-elif [ -n "${ELEVENLABS_API_KEY:-}" ] || [ -f "$HOME/.config/fframes/elevenlabs_key" ]; then
-    echo "generating new takes: they differ from the original film" >&2
-    ./make-soundtrack.sh
-else
-    echo "no sound files and no ElevenLabs key." >&2
-    echo "copy dynamic_media/play from the original machine, or set ELEVENLABS_API_KEY." >&2
-    exit 1
-fi
+# the takes of the film come from sound/; this masters them, no API key needed
+./make-soundtrack.sh
 
 step "6/6 billboards"
 ./make-billboards.sh
