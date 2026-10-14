@@ -1,39 +1,56 @@
 #!/bin/sh
-# Makes dynamic_media/play/billboards.mp4 from made_of_motion.mp4: 20 tiles of 640 x 480 in a
-# 5 x 4 grid. Tile k plays the film from k / 20 of its length, so every billboard of the city
-# shows another part of it. Each tile loops without a seam, so the whole file loops too.
-# Tile 16 (the screen with the pink frame in Times Square) is a cameo instead: ThePrimeagen
-# in "0 to LSP: Neovim RC From Scratch", from his official channel (needs uvx and yt-dlp).
+# Makes dynamic_media/play/billboards.mp4: 20 tiles of 640 x 480 in a 5 x 4 grid, one per screen
+# of Times Square. Tile 11 (the biggest wall) plays made_of_motion.mp4. The other tiles are
+# cameos: 10 s from the most watched video of a programming channel, from its official
+# YouTube channel (cameos/list.txt: tile|video id|channel), and ThePrimeagen on tile 16 (the
+# screen with the pink frame). A tile without a cameo plays a part of made-of-motion. Every
+# tile loops without a seam, so the whole file loops too. The clips are fetched once with
+# yt-dlp (needs uvx); each full video is deleted after its 10 s are cut.
 set -eu
 cd "$(dirname "$0")/dynamic_media/play"
 src=made_of_motion.mp4
 length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")
-if [ ! -s primeagen.mp4 ]; then
-    uvx -q yt-dlp -f "bv*[height<=720][ext=mp4]" -o primeagen_full.mp4 \
-        "https://www.youtube.com/watch?v=w7i4amO_zaE"
-    # 10 s of him on camera, cut to 4:3 around his face
-    ffmpeg -v error -y -ss 2 -t 10.2 -i primeagen_full.mp4 -an -vf "crop=960:720:134:0" \
-        -c:v libopenh264 -b:v 8M primeagen.mp4
-    rm primeagen_full.mp4
+mkdir -p cameos
+
+# cut <video id> <start s> <out>: 10 s of the video, cropped to 4:3
+cut() {
+    [ -s "$3" ] && return
+    uvx -q yt-dlp --no-progress -f "bv*[height<=720][ext=mp4]/bv*[height<=720]" \
+        -o cameos/full.mp4 "https://www.youtube.com/watch?v=$1" >/dev/null
+    ffmpeg -v error -y -ss "$2" -t 10.2 -i cameos/full.mp4 -an \
+        -vf "crop=ih*4/3:ih,scale=960:720" -c:v libopenh264 -b:v 8M "$3"
+    rm -f cameos/full.mp4
+}
+cut w7i4amO_zaE 2 primeagen.mp4
+if [ -f cameos/list.txt ]; then
+    while IFS='|' read -r tile id _; do
+        cut "$id" 140 "cameos/t$tile.mp4" || echo "no cameo for tile $tile"
+    done <cameos/list.txt
 fi
-# Tiles are cut from the film twice in a row, by exact frame time; the cameo loops.
+
+inputs="-i $src -i $src"
 filters="[0:v][1:v]concat=n=2:v=1:a=0,fps=24,scale=640:480,setsar=1,split=20"
 for k in $(seq 0 19); do filters="$filters[s$k]"; done
-filters="$filters;[2:v][3:v]concat=n=2:v=1:a=0,fps=24,scale=640:480,setsar=1,trim=duration=$length,setpts=PTS-STARTPTS[cameo];"
+filters="$filters;"
 pads=""
 layout=""
+next=2
 for k in $(seq 0 19); do
-    start=$(echo "$length * $k / 20" | bc -l)
-    if [ "$k" -eq 16 ]; then
-        filters="$filters[s$k]nullsink;"
-        pads="$pads[cameo]"
+    clip=""
+    [ "$k" -eq 16 ] && clip=primeagen.mp4
+    [ -s "cameos/t$k.mp4" ] && clip="cameos/t$k.mp4"
+    if [ -n "$clip" ] && [ "$k" -ne 11 ]; then
+        inputs="$inputs -i $clip -i $clip"
+        filters="$filters[s$k]nullsink;[$next:v][$((next + 1)):v]concat=n=2:v=1:a=0,fps=24,scale=640:480,setsar=1,trim=duration=$length,setpts=PTS-STARTPTS[t$k];"
+        next=$((next + 2))
     else
+        start=$(echo "$length * $k / 20" | bc -l)
         filters="$filters[s$k]trim=start=$start:duration=$length,setpts=PTS-STARTPTS[t$k];"
-        pads="$pads[t$k]"
     fi
+    pads="$pads[t$k]"
     layout="$layout$((k % 5 * 640))_$((k / 5 * 480))|"
 done
-ffmpeg -v error -y -i "$src" -i "$src" -i primeagen.mp4 -i primeagen.mp4 \
-    -filter_complex "${filters}${pads}xstack=inputs=20:layout=${layout%|}[v]" \
+# shellcheck disable=SC2086
+ffmpeg -v error -y $inputs -filter_complex "${filters}${pads}xstack=inputs=20:layout=${layout%|}[v]" \
     -map "[v]" -an -c:v libopenh264 -b:v 40M -pix_fmt yuv420p -t "$length" billboards.mp4
 echo "made billboards.mp4"
