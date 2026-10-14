@@ -9,19 +9,22 @@
 #   5. The score, voices and sound effects                 make-soundtrack.sh (ElevenLabs)
 #   6. The Times Square billboards                         make-billboards.sh (yt-dlp)
 #
-# Needs: cargo, python3, ffmpeg, curl, bc, and uv (for yt-dlp). On macOS:
-#   brew install ffmpeg python uv
+# Needs in PATH: cargo, python3, ffmpeg, curl, bc, and yt-dlp (or uv to run it). On macOS:
+#   brew install ffmpeg python yt-dlp
 # Step 5 masters the takes of the film in sound/ (no API key needed). A missing take is generated
 # with ElevenLabs ($ELEVENLABS_API_KEY or ~/.config/fframes/elevenlabs_key).
 set -eu
 cd "$(dirname "$0")"
 
 missing=""
-for tool in cargo python3 ffmpeg ffprobe curl bc uvx; do
+for tool in cargo python3 ffmpeg ffprobe curl bc; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
+# the billboards need yt-dlp itself or uv to run it
+command -v yt-dlp >/dev/null 2>&1 || command -v uvx >/dev/null 2>&1 ||
+    command -v uv >/dev/null 2>&1 || missing="$missing yt-dlp-or-uv"
 if [ -n "$missing" ]; then
-    echo "missing:$missing (macOS: brew install ffmpeg python uv; cargo from rustup.rs)" >&2
+    echo "not found in PATH:$missing (macOS: brew install ffmpeg python yt-dlp; cargo from rustup.rs)" >&2
     exit 1
 fi
 

@@ -5,7 +5,7 @@
 # other tiles are cameos: 10 s from the most watched video of a programming channel, from its
 # official YouTube channel (cameos/list.txt: tile|video id|channel). A tile without a cameo plays a part of made-of-motion. Every
 # tile loops without a seam, so the whole file loops too. The clips are fetched once with
-# yt-dlp (needs uvx); each full video is deleted after its 10 s are cut.
+# yt-dlp (from PATH, or through uv); each full video is deleted after its 10 s are cut.
 set -eu
 film_tile=14
 prime_tile=1
@@ -13,6 +13,16 @@ cd "$(dirname "$0")/dynamic_media/play"
 src=made_of_motion.mp4
 length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")
 mkdir -p cameos
+# yt-dlp from PATH, or through uv
+if command -v yt-dlp >/dev/null 2>&1; then
+    ytdlp="yt-dlp"
+elif command -v uvx >/dev/null 2>&1; then
+    ytdlp="uvx -q yt-dlp"
+elif command -v uv >/dev/null 2>&1; then
+    ytdlp="uv tool run -q yt-dlp"
+else
+    ytdlp=""
+fi
 # Homebrew's ffmpeg has libx264, some Linux builds only libopenh264
 if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264; then
     h264="-c:v libx264 -crf 16 -preset fast"
@@ -23,7 +33,11 @@ fi
 # cut <video id> <start s> <out>: 10 s of the video, cropped to 4:3
 cut() {
     [ -s "$3" ] && return
-    uvx -q yt-dlp --no-progress -f "bv*[height<=720][ext=mp4]/bv*[height<=720]" \
+    if [ -z "$ytdlp" ]; then
+        echo "no yt-dlp for $3: install it (brew install yt-dlp) or uv" >&2
+        return 1
+    fi
+    $ytdlp --no-progress -f "bv*[height<=720][ext=mp4]/bv*[height<=720]" \
         -o cameos/full.mp4 "https://www.youtube.com/watch?v=$1" >/dev/null
     ffmpeg -v error -y -ss "$2" -t 10.2 -i cameos/full.mp4 -an \
         -vf "crop=ih*4/3:ih,scale=960:720" $h264 "$3"
