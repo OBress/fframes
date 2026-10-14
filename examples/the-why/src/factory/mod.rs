@@ -567,8 +567,18 @@ impl FactorySet {
         (scene, camera)
     }
 
+    /// Motion blur samples: the flight passes the arms at 6 m/s, and with few samples the
+    /// edges of the arms near the camera show as separate copies. Over the grid the thin
+    /// seams of the parts and the far arcs are smaller than a pixel and crawl with few
+    /// samples.
     pub fn shutter_factory(&self, t: f32) -> usize {
-        if (4.2..8.6).contains(&t) { 3 } else { 2 }
+        if (2.6..11.4).contains(&t) {
+            6
+        } else if t < 16.8 {
+            4
+        } else {
+            2
+        }
     }
 
     /// The camera of shot 2, 24 mm. `arc` is the welding arc of the welder.

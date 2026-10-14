@@ -726,7 +726,8 @@ impl OpeningSet {
 
     /// Motion blur samples at `t`: the scrolling code and the fast moves of the camera blur.
     /// The pull back moves the screens near the camera fast, so it takes many samples.
-    /// Without the reflection of the floor they cost less.
+    /// Without the reflection of the floor they cost less. The rush at the end passes the
+    /// monitors so fast that six samples show as separate copies of their stands.
     pub fn shutter(&self, t: f32) -> usize {
         if t < ANSWER_START + 0.2 {
             1
@@ -734,8 +735,10 @@ impl OpeningSet {
             4
         } else if t < REFLECT_START {
             7
-        } else {
+        } else if t < GROW_START {
             6
+        } else {
+            12
         }
     }
 

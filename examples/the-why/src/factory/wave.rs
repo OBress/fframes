@@ -69,12 +69,12 @@ impl FactorySet {
         // haze in front of the light turns the far rows of arms into a flat bright wall.
         let thin = smoothstep(ARRIVAL, ARRIVAL + 1.0, t) * (1.0 - smoothstep(4.0, 6.0, t));
         scene.atmosphere = Some(Atmosphere {
-            density: 0.014 * (1.0 - 0.55 * thin),
+            density: 0.014 * (1.0 - 0.75 * thin),
             color: Rgb::hex(0xe8eef8),
             base: 1.0,
             falloff: 0.05,
-            anisotropy: 0.65 - 0.15 * thin,
-            ambient: Rgb::hex(0x0c1a30).lerp(Rgb::hex(0x6a3a14), glow_air),
+            anisotropy: 0.65 + 0.2 * thin,
+            ambient: Rgb::hex(0x0c1a30).lerp(Rgb::hex(0x46260e), glow_air),
             noise: 0.5,
             noise_size: 8.0,
             offset: vec3(0.3, 0.05, 0.2) * t,
@@ -89,11 +89,13 @@ impl FactorySet {
         scene.environment = Environment::None;
         scene.add(Node::light(Light::hemisphere(0x34486a, 0x06080c, 0.8)));
         self.hall.light_lamps(&mut scene, Rgb::hex(0xbcd8ff) * 6.0);
+        // The lamps nearest to the start of the camera. A choice that follows the camera
+        // swaps a lamp during the shot, and its light pops.
         self.hall.lamp_lights(
             &mut scene,
-            camera.position,
+            vec3(2.9, 0.85, hall::Z_FAR + 40.0),
             5,
-            Light::point(0xbcd8ff, 70.0, 24.0),
+            Light::point(0xbcd8ff, 280.0, 32.0),
         );
         self.hall.night(&mut scene);
         // The glass wall flares when the light comes through it and stays warm. The light
@@ -106,15 +108,22 @@ impl FactorySet {
             .light_glass(&mut scene, Rgb::hex(WARM) * (0.015 * warm + 0.9 * flash));
         // Outside, the light of the line glows over the desert, low behind the middle of
         // the glass wall. It is the source of the warm light in the hall.
+        // Its glow lies along the horizon: a band that fades to the sides and upward, so the
+        // upper panes keep the night sky and the wall has a gradient behind the arms.
         let glow = vec3(0.0, 2.0, hall::Z_FAR - 50.0);
-        scene.add(Node::particles(
-            vec![
-                Particle::new(glow, 4.0, Rgb::hex(0xffd29a) * (3.0 * warm)),
-                Particle::new(glow, 40.0, Rgb::hex(WARM) * (0.45 * warm)),
-                Particle::new(glow, 120.0, Rgb::hex(0xff8a2a) * (0.08 * warm)),
-            ],
-            Blending::Additive,
-        ));
+        let mut particles = vec![
+            Particle::new(glow, 4.0, Rgb::hex(0xffd29a) * (3.0 * warm)),
+            Particle::new(glow, 40.0, Rgb::hex(WARM) * (0.45 * warm)),
+        ];
+        particles.extend((-4..=4).map(|i| {
+            let side = 1.0 - (i as f32 / 5.0).abs();
+            Particle::new(
+                vec3(i as f32 * 22.0, 0.0, hall::Z_FAR - 50.0),
+                36.0,
+                Rgb::hex(0xff8a2a) * (0.1 * side * warm),
+            )
+        }));
+        scene.add(Node::particles(particles, Blending::Additive));
         self.crowd.rim(&mut scene, Rgb::hex(WARM) * (0.25 * warm));
         // the stars over the desert
         let stars = &mut scene[self.stars];

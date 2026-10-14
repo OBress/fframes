@@ -83,6 +83,23 @@ impl FactorySet {
         // studio with one large soft light straight above.
         let daylight = 1.0 - smoothstep(8.4, 9.6, t);
         let mut scene = self.day(time, bounds, daylight);
+        // The eye looks up at the catwalk. The roof over it is in the shadow of the sawtooth,
+        // so thicker haze shows the shafts of the glazing, and the lamps under the trusses
+        // light the steel. Both go with the swing to the board.
+        let up = 1.0 - smoothstep(WHIP, KEY, t);
+        if let Some(air) = &mut scene.atmosphere {
+            air.density *= 1.0 + 0.3 * up;
+        }
+        if up > 0.0 {
+            self.hall.lamp_lights(
+                &mut scene,
+                ENGINEER.lerp(jig, 0.5),
+                4,
+                Light::point(0xdcecff, 16.0 * up, 36.0),
+            );
+            // the light of the lamps and the floor on the faces that look down
+            scene.add(Node::light(Light::hemisphere(0x000000, 0x2a3a52, 0.6 * up)));
+        }
         let view = View::new(&camera);
         self.work(&mut scene, time, &camera);
         self.pose_hero(
@@ -177,9 +194,9 @@ impl FactorySet {
 
     pub fn shutter_engineer(&self, t: f32) -> usize {
         // The whip moves the picture by up to 70 pixels per frame. With few samples the blur
-        // shows separate copies.
+        // shows separate copies of the mullions.
         if (WHIP + 0.1..WHIP + 0.9).contains(&t) {
-            9
+            16
         // the start of the dive too: the pins and the traces shrink fast and would crawl
         } else if (WHIP..ARRIVE).contains(&t) || t > DETACH {
             3

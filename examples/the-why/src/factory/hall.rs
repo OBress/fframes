@@ -231,8 +231,14 @@ impl Hall {
         let panes: Vec<Vec3> = teeth()
             .flat_map(|z| (0..60).map(move |i| vec3(-59.0 + i as f32 * 2.0, 0.0, z)))
             .collect();
-        let glazing = scene
-            .add(Node::instanced(pane, Material::unlit(0xd8e4f4), at(panes)).shadows(false, false));
+        let glazing = scene.add(
+            Node::instanced(
+                pane,
+                Material::unlit(0xd8e4f4).map(Arc::new(window_glass(1, 1))),
+                at(panes),
+            )
+            .shadows(false, false),
+        );
         let mullion = Geometry::cuboid(0.08, rise, 0.12).translate(0.0, WALL + rise * 0.5, 0.0);
         let mullions: Vec<Vec3> = teeth()
             .flat_map(|z| (0..=60).map(move |i| vec3(-60.0 + i as f32 * 2.0, 0.0, z)))
@@ -303,7 +309,12 @@ impl Hall {
             .filter(|p| p.z > Z_FAR + 3.0)
             .collect();
         let clerestory = scene.add(
-            Node::instanced(window, Material::unlit(0xc4d3e8), at(windows)).shadows(false, false),
+            Node::instanced(
+                window,
+                Material::unlit(0xc4d3e8).map(Arc::new(window_glass(3, 2))),
+                at(windows),
+            )
+            .shadows(false, false),
         );
         // the near end wall
         scene.add(
@@ -718,6 +729,37 @@ impl Hall {
             m.color = color;
         }
     }
+}
+
+/// The light through a window of `lites_u` by `lites_v` lites of glass in a frame: brighter
+/// at the top, with dirt along the bars and the sill. `v` runs down.
+fn window_glass(lites_u: u32, lites_v: u32) -> Texture {
+    // value noise: the bilinear blend of a lattice of random values
+    let value = |u: f32, v: f32, cells: f32, seed: u32| {
+        let (x, y) = (u * cells, v * cells);
+        let (i, j) = (x.floor(), y.floor());
+        let (fx, fy) = (x - i, y - j);
+        let at = |di: f32, dj: f32| hash(((i + di) * 131.0 + (j + dj) * 7.0) as u32 + seed);
+        let top = at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * fx;
+        let bottom = at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * fx;
+        top + (bottom - top) * fy
+    };
+    Texture::from_fn(384, 224, |u, v| {
+        // the bars of the frame: 6 cm in a window of 5.6 by 3.2 m
+        let lite_u = (u * lites_u as f32).fract();
+        let lite_v = (v * lites_v as f32).fract();
+        let bar = lite_u < 0.011 || lite_u > 0.989 || lite_v < 0.019 || lite_v > 0.981;
+        let edge = smoothstep(0.0, 0.06, lite_u.min(1.0 - lite_u))
+            * smoothstep(0.0, 0.1, lite_v.min(1.0 - lite_v));
+        let dirt = 0.5 * value(u, v, 9.0, 11) + 0.3 * value(u, v, 31.0, 23);
+        let grime = (1.0 - edge) * (0.15 + 0.4 * dirt) + lite_v * 0.12 * dirt;
+        let l = if bar {
+            0.22
+        } else {
+            (1.0 - 0.1 * v) * (1.0 - grime)
+        };
+        Rgb::linear(l, l, l).to_color()
+    })
 }
 
 /// The X of the production line nearest to `x`.
