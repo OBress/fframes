@@ -690,16 +690,18 @@ impl DesertSet {
         // The trail: a chain of sparks on the ground that fades behind the head. The sparks
         // are dense near the line and sparse far away, and they grow with the distance, so
         // the trail stays a line to the horizon.
+        // Each spark streaks to the next one, so the trail is one line and not beads.
         let tail = 0.4 + 0.2 * run;
-        for i in 0..=320u32 {
-            let s = (run + 1.0).powf(i as f32 / 320.0) - 1.0;
+        let at = |i: u32| (run + 1.0).powf(i as f32 / 320.0) - 1.0;
+        for i in 0..320u32 {
+            let (s, next) = (at(i), at(i + 1));
             let b = 0.1 + 0.9 * (-(run - s) / tail).exp();
             let color = Rgb::hex(AMBER) * (6.0 * b * fade.max(0.35));
-            items.push(Particle::new(
-                ground(s) + Vec3::Y * 0.003,
-                0.0018 + 0.0011 * s,
-                color,
-            ));
+            let p = ground(s) + Vec3::Y * 0.003;
+            items.push(
+                Particle::new(p, 0.0018 + 0.0011 * s, color)
+                    .tail(ground(next) + Vec3::Y * 0.003 - p),
+            );
         }
         // dust that the light lifts as it passes, warm and fading
         for i in 0..240u32 {

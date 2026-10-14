@@ -73,8 +73,9 @@ pub(super) fn figure_style() -> FigureStyle {
     let cloth =
         |color: u32, roughness: f32| Material::standard(color).roughness(roughness).rim(rim, 3.0);
     FigureStyle {
-        // Little light of the sky reaches the face, so it stays dark.
-        skin: cloth(0x5c4a42, 0.6).env_intensity(0.4),
+        // Little light of the sky reaches the face, so it stays dark. The skin is matte:
+        // a gloss makes the hand of shot 6 look like plastic under the lamps.
+        skin: cloth(0x5c4a42, 0.82).env_intensity(0.3),
         // Cloth is matte: little of the sky reflects from it at grazing angles.
         jacket: cloth(0x2a3038, 0.85).env_intensity(0.5),
         // The legs have no rim: in the close views of shot 6 it outlines them.

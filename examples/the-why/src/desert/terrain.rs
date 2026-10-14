@@ -13,7 +13,7 @@ use crate::assets::Assets;
 /// The radius of the terrain mesh in meters. The mesas stand inside it.
 const RADIUS: f32 = 8500.0;
 /// The number of vertices on each ring of the terrain mesh.
-const SEGMENTS: u32 = 256;
+const SEGMENTS: u32 = 512;
 /// The radius of the pan of dry mud around the origin, in meters.
 const PLAYA: f32 = 38.0;
 /// The pan of mud is this high above the sand, in meters, so the sand does not show
@@ -620,42 +620,44 @@ fn mesa(center: Vec2, radius: f32, height: f32, seed: u32) -> Geometry {
             dir * radius * (1.0 + wobble) * vec2(1.0, 0.7 + 0.3 * hash(seed))
         })
         .collect();
-    // height, scale of the outline: the top, the foot of the cliff, the foot of the scree
-    let rings = [
-        (height, 1.0),
-        (height * 0.97, 1.01),
-        (height * 0.5, 1.06),
-        (-10.0, 1.0 + 1.1 * height / radius),
-    ];
-    let mut parts = Vec::new();
-    for w in rings.windows(2) {
-        let [(y0, s0), (y1, s1)] = [w[0], w[1]];
-        let mut positions = Vec::new();
-        for (y, s) in [(y0, s0), (y1, s1)] {
-            for p in &outline {
-                let q = center + *p * s;
-                positions.push(vec3(q.x, y, q.y));
-            }
+    // The side in rings from the rim to the plain, one smooth mesh: a steep cliff in the
+    // upper half, then a slope of scree. Gullies cut the cliff and boulders bulge the
+    // scree, so no facet is flat.
+    let rings = 18;
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+    for k in 0..=rings {
+        let u = k as f32 / rings as f32;
+        let cliff = smoothstep(0.0, 0.45, u);
+        let scree = smoothstep(0.4, 1.0, u);
+        for (i, p) in outline.iter().enumerate() {
+            let angle = i as f32 / n as f32 * TAU;
+            let bumps = fbm(vec2(angle * 5.0, u * 4.0 + seed as f32 * 2.1), 3, seed + 7);
+            let out = 1.0 + 0.05 * bumps * (0.6 + scree);
+            let s = (1.0 + 0.06 * cliff + 1.1 * height / radius * scree.powf(0.85)) * out;
+            let y = height * (1.0 - 0.5 * cliff) - (height * 0.5 + 10.0) * scree
+                + 0.03 * height * bumps * scree;
+            let q = center + *p * s;
+            positions.push(vec3(q.x, y, q.y));
+            // bands of rock on the cliff, sand between the boulders of the scree
+            let band = 0.8 + 0.08 * noise2(vec2(y / 14.0, 0.5), seed);
+            let rock = vec3(band * 0.8, band * 0.78, band * 0.8);
+            let sand = vec3(0.7, 0.65, 0.58);
+            colors.push(rock.lerp(sand, 0.6 * scree).extend(1.0));
         }
-        let mut indices = Vec::new();
-        for i in 0..n {
-            let (a, b) = (i as u32, ((i + 1) % n) as u32);
+    }
+    let mut indices = Vec::new();
+    for k in 0..rings as u32 {
+        for i in 0..n as u32 {
+            let (a, b) = (k * n as u32 + i, k * n as u32 + (i + 1) % n as u32);
             let (c, d) = (a + n as u32, b + n as u32);
             indices.extend([a, b, c, b, d, c]);
         }
-        let uvs = positions.iter().map(|p| vec2(p.x + p.z, p.y)).collect();
-        let mut part = Geometry::new(positions, Vec::new(), uvs, indices);
-        // bands of rock in other tones
-        part.colors = part
-            .positions
-            .iter()
-            .map(|p| {
-                let band = 0.8 + 0.08 * noise2(vec2(p.y / 14.0, 0.5), seed);
-                vec4(band * 0.8, band * 0.78, band * 0.8, 1.0)
-            })
-            .collect();
-        parts.push(part);
     }
+    let uvs = positions.iter().map(|p| vec2(p.x + p.z, p.y)).collect();
+    let mut side = Geometry::new(positions, Vec::new(), uvs, indices);
+    side.colors = colors;
+    let mut parts = vec![side];
     let mut positions = vec![vec3(center.x, height, center.y)];
     positions.extend(
         outline
@@ -679,7 +681,8 @@ impl Ground {
     pub fn add_to(&self, scene: &mut Scene) {
         scene.add(Node::mesh(self.sand.0.clone(), self.sand.1.clone()).shadows(false, true));
         scene.add(Node::mesh(self.playa.0.clone(), self.playa.1.clone()).shadows(false, true));
-        self.add_scatter(scene);
+        // The red of the rock stays cold at night: the moon takes the color of a stone.
+        self.add_scatter(scene, Rgb::hex(0x8ea0c4));
     }
 
     /// Adds the ground of the sunrise to `scene`. The sand has wind ripples and no pan of
@@ -694,15 +697,16 @@ impl Ground {
             Node::mesh(canyon.clone(), rock.clone().color(rock.color * tint * 4.0))
                 .shadows(false, true),
         );
-        self.add_scatter(scene);
+        self.add_scatter(scene, Rgb::WHITE);
     }
 
-    /// Adds the rocks, the shrubs and the mesas.
-    fn add_scatter(&self, scene: &mut Scene) {
+    /// Adds the rocks, the shrubs and the mesas. `tint` multiplies the color of the rocks
+    /// and the shrubs.
+    fn add_scatter(&self, scene: &mut Scene, tint: Rgb) {
         for (geometry, material, instances) in &self.scatter {
             scene.add(Node::instanced(
                 geometry.clone(),
-                material.clone(),
+                material.clone().color(material.color * tint),
                 instances.clone(),
             ));
         }
