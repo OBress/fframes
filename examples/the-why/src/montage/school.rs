@@ -347,10 +347,11 @@ impl School {
             *light.intensity_mut() = if at.is_some() { 150.0 } else { 0.0 };
         }
 
-        // the roof slabs come down on the walls
+        // the roof slabs come down on the walls, 0.11 s each: a faster drop steps 3 m a
+        // frame and pops
         for (k, id) in ids.slabs.into_iter().enumerate() {
-            let start = mix(ROOF.0, ROOF.1 - 0.07, k as f32 / 3.0);
-            let down = ease_out(progress(t, start, start + 0.07));
+            let start = mix(ROOF.0, ROOF.1 - 0.11, k as f32 / 3.0);
+            let down = ease_out(progress(t, start, start + 0.11));
             scene[id].visible = t > start;
             scene[id].position.y = WALL_HEIGHT + 14.0 * (1.0 - down);
         }
@@ -418,6 +419,9 @@ impl School {
         // hot layers move with it. Fewer samples show it as separate copies that flicker.
         if t < 0.14 || (PRINT.0..PRINT.1 + 0.02).contains(&t) {
             5
+        } else if (ROOF.0..ROOF.1).contains(&t) {
+            // the roof slabs drop 14 m in 0.11 s
+            4
         } else if t > 0.85 {
             3
         } else {
@@ -637,14 +641,15 @@ fn build(assets: &Assets) -> (Scene, Ids) {
 
     // stones, tufts of dry grass, and the trees of the yard and the street
     let mut stones = Vec::new();
-    for i in 0..2500u32 {
+    for i in 0..5000u32 {
         let r = 12.0 + 200.0 * hash(i * 3 + 1).powi(2);
         let a = hash(i * 3 + 2) * TAU;
         let (x, z) = (r * a.sin(), r * a.cos());
         if x.abs() < 25.0 && z.abs() < 14.0 {
             continue;
         }
-        let size = 0.08 + 0.3 * hash(i * 3 + 3).powi(3);
+        // pebbles: big stones read as lumps on the gravel
+        let size = 0.05 + 0.16 * hash(i * 3 + 3).powi(3);
         stones.push(Mat4::from_scale_rotation_translation(
             vec3(size * 1.4, size * 0.6, size),
             Quat::from_rotation_y(hash(i) * TAU),
@@ -653,7 +658,7 @@ fn build(assets: &Assets) -> (Scene, Ids) {
     }
     scene.add(Node::instanced(
         Geometry::icosahedron(1.0, 1).flat(),
-        assets.rock.material(0x8a7a6a, 1.0, 0.0),
+        assets.rock.material(0xb0a494, 1.0, 0.0),
         Instances::new(stones),
     ));
     let leaves = Material::standard(0x0e160a)
@@ -919,17 +924,37 @@ fn build(assets: &Assets) -> (Scene, Ids) {
     );
     let slab_paint = assets.concrete.material(0xa8a298, 0.9, 0.0);
     let slabs = [-12.0f32, -4.0, 4.0, 12.0].map(|x| {
+        // each slab comes with its roof plant: a row of solar panels on stands and a
+        // vent unit, so the roof is not a bare lid
+        let mut parts = vec![
+            Geometry::cuboid(8.05, 0.35, 2.0 * HALF.y + 1.2)
+                .translate(0.0, 0.175, 0.0)
+                .with_color(0xffffff),
+            // the fascia that hides the edge of the roof
+            Geometry::cuboid(8.05, 0.5, 0.12)
+                .translate(0.0, 0.25, HALF.y + 0.6)
+                .with_color(0xffffff),
+            Geometry::cuboid(1.3, 0.7, 1.0)
+                .translate(2.6, 0.7, HALF.y * 0.45)
+                .with_color(0x909090),
+        ];
+        for px in [-2.7f32, -0.6, 1.5] {
+            parts.push(
+                Geometry::cuboid(2.0, 0.05, 1.3)
+                    .rotate_x(-0.45)
+                    .translate(px, 0.75, -HALF.y * 0.35)
+                    .with_color(0x202a3c),
+            );
+            parts.push(
+                Geometry::cuboid(1.8, 0.5, 0.06)
+                    .translate(px, 0.6, -HALF.y * 0.35 - 0.55)
+                    .with_color(0x606060),
+            );
+        }
         scene.add(
-            Node::mesh(
-                Geometry::merge([
-                    Geometry::cuboid(8.05, 0.35, 2.0 * HALF.y + 1.2).translate(0.0, 0.175, 0.0),
-                    // the fascia that hides the edge of the roof
-                    Geometry::cuboid(8.05, 0.5, 0.12).translate(0.0, 0.25, HALF.y + 0.6),
-                ]),
-                slab_paint.clone(),
-            )
-            .with_position(vec3(x, WALL_HEIGHT, 0.0))
-            .hidden(),
+            Node::mesh(Geometry::merge(parts), slab_paint.clone())
+                .with_position(vec3(x, WALL_HEIGHT, 0.0))
+                .hidden(),
         )
     });
     let panes = scene.add(

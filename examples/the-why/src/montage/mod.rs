@@ -446,7 +446,7 @@ fn span(a: Vec3, b: Vec3, thickness: f32) -> Mat4 {
 /// clouds near the horizon are dark against the sky and warm in the glow.
 fn sky(zenith: Rgb, horizon: Rgb, glow: Rgb, azimuth: f32) -> std::sync::Arc<EnvironmentMap> {
     use std::f32::consts::{PI, TAU};
-    let (width, height) = (1024, 512);
+    let (width, height) = (2048, 1024);
     let ground = horizon.0 * 0.08;
     let data = (0..width * height)
         .map(|i| {
@@ -463,12 +463,14 @@ fn sky(zenith: Rgb, horizon: Rgb, glow: Rgb, azimuth: f32) -> std::sync::Arc<Env
             let away = (around - azimuth).rem_euclid(TAU) - PI;
             let band = (-(away / 0.9).powi(2)).exp();
             color += glow.0 * band * ((-elevation / 0.06).exp() + 0.08 * (-elevation / 0.3).exp());
-            let streak = fbm(71, around * 7.0, elevation * 55.0, 4);
-            let cloud = math::smoothstep(0.1, 0.45, streak)
+            // cirrus: long thin streaks with torn edges, in two layers
+            let streak = fbm(71, around * 5.0, elevation * 90.0, 6)
+                + 0.5 * fbm(72, around * 11.0, elevation * 160.0, 4);
+            let cloud = math::smoothstep(0.12, 0.55, streak)
                 * math::smoothstep(0.02, 0.05, elevation)
-                * math::smoothstep(0.2, 0.06, elevation);
+                * math::smoothstep(0.24, 0.07, elevation);
             let lit = glow.0 * (0.08 + 0.8 * band);
-            color.lerp(lit.max(zenith.0 * 0.6), cloud * 0.7)
+            color.lerp(lit.max(zenith.0 * 0.6), cloud * 0.6)
         })
         .collect();
     std::sync::Arc::new(EnvironmentMap::from_linear(width, height, data))

@@ -752,18 +752,19 @@ fn build(assets: &Assets, houses: &[House]) -> (Scene, Ids, Vec<(Vec3, Vec3, f32
         Instances::new(clumps),
     ));
 
-    // the village: plastered houses with roofs, and their windows
+    // the village: plastered houses with roofs, and their windows. The walls are dark,
+    // so the houses sit in the night until their windows come on.
     let house = Geometry::merge([
         Geometry::cuboid(1.0, 1.0, 1.0)
             .translate(0.0, 0.5, 0.0)
-            .with_color(0xb8b0a4),
+            .with_color(0x5a5048),
         Geometry::extrude(
             &[vec2(-0.56, 0.0), vec2(0.56, 0.0), vec2(0.0, 0.42)],
             1.08,
             0.0,
         )
         .translate(0.0, 1.0, 0.0)
-        .with_color(0x6a4438),
+        .with_color(0x3a2824),
     ]);
     let places: Vec<Mat4> = houses.iter().map(|h| h.place).collect();
     scene.add(Node::instanced(

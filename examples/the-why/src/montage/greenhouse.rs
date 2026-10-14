@@ -524,7 +524,7 @@ impl Greenhouse {
         let dawn = ease(progress(t, 0.0, END));
         scene.environment = scene.environment.clone().intensity(mix(1.0, 1.3, dawn));
         if let Some(light) = scene[ids.dawn].light_mut() {
-            *light.intensity_mut() = mix(1.9, 1.7, dawn);
+            *light.intensity_mut() = mix(2.6, 1.7, dawn);
         }
         if let Some(light) = scene[ids.glow].light_mut() {
             *light.intensity_mut() = mix(0.15, 0.55, dawn);
@@ -1327,20 +1327,21 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         .named("desert")
         .shadows(false, false),
     );
-    // stones and dry bushes on the sand, out of the way of the track
+    // pale pebbles and dry bushes on the sand, out of the way of the track. Small, so
+    // they read as the grain of the ground and not as objects.
     let mut stones = Vec::new();
     let mut bushes = Vec::new();
-    for i in 0..900u32 {
-        let r = 30.0 + 600.0 * hash(i * 3 + 1).powi(2);
+    for i in 0..1800u32 {
+        let r = 27.0 + 600.0 * hash(i * 3 + 1).powi(2);
         let a = hash(i * 3 + 2) * TAU;
         let (x, z) = (r * a.sin(), r * a.cos());
-        let size = 0.15 + 0.6 * hash(i * 3 + 3).powi(3);
+        let size = 0.07 + 0.3 * hash(i * 3 + 3).powi(3);
         let m = Mat4::from_scale_rotation_translation(
             vec3(size * 1.3, size * 0.6, size),
             Quat::from_rotation_y(hash(i) * TAU),
             vec3(x, dunes(x, z).max(0.0) + size * 0.15, z),
         );
-        if i % 3 == 0 {
+        if i % 4 == 0 {
             bushes.push(m);
         } else {
             stones.push(m);
@@ -1349,15 +1350,15 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
     scene.add(
         Node::instanced(
             Geometry::icosahedron(1.0, 1).flat(),
-            assets.rock.material(0xb89a80, 1.0, 0.0),
+            assets.rock.material(0xb0a088, 1.0, 0.0),
             Instances::new(stones),
         )
         .named("desert"),
     );
     scene.add(
         Node::instanced(
-            Geometry::icosahedron(1.0, 0).flat(),
-            Material::standard(0x6a6440).roughness(0.95),
+            Geometry::icosahedron(1.0, 1).flat(),
+            Material::standard(0x8a8464).roughness(0.95),
             Instances::new(bushes),
         )
         .named("desert"),
@@ -1737,7 +1738,8 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
 /// turns green.
 fn rest(t: f32) -> (Vec3, Vec3) {
     let azimuth = mix(25.0f32, -20.0, ease(progress(t, 0.0, 4.6))).to_radians();
-    let height = mix(34.0, 5.0, ease(progress(t, 0.2, 2.6)));
+    // it comes down early, so the dawn sky enters the picture while the ring closes
+    let height = mix(28.0, 5.0, ease(progress(t, 0.0, 2.4)));
     let distance =
         mix(95.0, 70.0, ease(progress(t, 0.0, 3.0))) - 8.0 * ease(progress(t, GREEN.0, END));
     let position = vec3(distance * azimuth.sin(), height, distance * azimuth.cos());
@@ -1776,7 +1778,7 @@ pub(super) fn camera_at(t: f32) -> Camera {
     let turn = WHIP_HALF + whip(t - END);
     let view = polar(position, forward, turn, pitch, 60.0);
     let settle = ease(progress(t, 0.15, 1.5));
-    let mm = mix(40.0, 32.0, settle);
+    let mm = mix(36.0, 32.0, settle);
     let focus = ring_point(ring_progress(t)).lerp(Vec3::ZERO, settle);
     let focus = focus.lerp(spark_at(t), ease(progress(t, SPARK, SPARK + 0.4)));
     camera(mm, position, view)

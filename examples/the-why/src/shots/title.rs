@@ -131,9 +131,16 @@ pub fn title(t: f32) -> Svgr<'static> {
         <g>
             <defs>
                 <radialGradient id="why-glow" cx="50%" cy="50%" r="50%">
-                    <stop offset="0" stop-color={WARM} stop-opacity="0.22" />
+                    <stop offset="0" stop-color={WARM} stop-opacity="0.16" />
+                    <stop offset="0.5" stop-color={WARM} stop-opacity="0.05" />
                     <stop offset="1" stop-color={WARM} stop-opacity="0" />
                 </radialGradient>
+                // the bloom of the line: wide and faint, like the line in the dust
+                <linearGradient id="line-glow" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color={WARM} stop-opacity="0" />
+                    <stop offset="0.5" stop-color={WARM} stop-opacity="0.35" />
+                    <stop offset="1" stop-color={WARM} stop-opacity="0" />
+                </linearGradient>
                 <radialGradient id="tip-glow" cx="50%" cy="50%" r="50%">
                     <stop offset="0" stop-color="#fff2d8" stop-opacity="0.9" />
                     <stop offset="0.3" stop-color={WARM} stop-opacity="0.45" />
@@ -142,11 +149,12 @@ pub fn title(t: f32) -> Svgr<'static> {
             </defs>
             <rect x="0" y={BAR} width={WIDTH} height={PICTURE_HEIGHT} fill="#000" />
             <g opacity={out}>
-                <ellipse cx={f32::midpoint(word_left, word_right)} cy={y - 40.0} rx="420" ry="190"
+                <ellipse cx={f32::midpoint(word_left, word_right)} cy={y - 40.0} rx="360" ry="160"
                     fill="url(#why-glow)" opacity={why} />
                 {first}
                 {second}
-                <rect x={start} y={line_y - 9.0} width={length} height="18" rx="9" fill={WARM} opacity={0.18 * drawn} />
+                <rect x={start - 8.0} y={line_y - 22.0} width={length + 16.0} height="44" rx="22"
+                    fill="url(#line-glow)" opacity={drawn} />
                 <rect x={start} y={line_y - 2.5} width={length} height="5" rx="2.5" fill={WARM} />
                 <rect x={start} y={line_y - 1.0} width={length} height="2" rx="1" fill="#fff2d8" opacity="0.8" />
                 <ellipse cx={end} cy={line_y} rx="70" ry="34" fill="url(#tip-glow)" opacity={tip} />

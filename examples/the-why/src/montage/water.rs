@@ -81,10 +81,15 @@ fn water_time(x: f32) -> f32 {
     WATER + (1.0 - (1.0 - p).cbrt()) * (HEAD_END - WATER)
 }
 
-/// The X of the paver at `t`: it runs at an even speed through the picture.
+/// The X of the paver at `t`: it runs at an even speed through the picture, and comes
+/// from the left of the picture before `PAVER.0`, so it does not pop in standing.
 fn paver_x(t: f32) -> f32 {
-    mix(PAVER_X.0, PAVER_X.1, progress(t, PAVER.0, PAVER.1))
+    let along = ((t - PAVER.0) / (PAVER.1 - PAVER.0)).min(1.0);
+    mix(PAVER_X.0, PAVER_X.1, along)
 }
+
+/// The time the paver enters the picture from the left.
+const PAVER_ENTER: f32 = PAVER.0 - 0.12;
 
 /// The node ids that the frames animate.
 struct Ids {
@@ -157,9 +162,9 @@ impl Water {
         // the paver and the channel behind it
         let paver = paver_x(t);
         scene[ids.paver].position = vec3(paver, 0.0, 0.0);
-        scene[ids.paver].visible = t > PAVER.0 - 0.05 && t < PAVER.1 + 0.05;
-        let working =
-            smoothstep(PAVER.0 - 0.05, PAVER.0, t) * (1.0 - smoothstep(PAVER.1 - 0.05, PAVER.1, t));
+        scene[ids.paver].visible = t > PAVER_ENTER && t < PAVER.1 + 0.05;
+        let working = smoothstep(PAVER_ENTER, PAVER_ENTER + 0.03, t)
+            * (1.0 - smoothstep(PAVER.1 - 0.05, PAVER.1, t));
         if let Some(light) = scene[ids.paver_light].light_mut() {
             *light.intensity_mut() = 6000.0 * working;
         }
@@ -497,27 +502,48 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
         )
         .shadows(false, false),
     );
+    // dry shrubs and pale stones on the plain: the ground has grain where the light of
+    // the head sweeps over it
     let mut shrubs = Vec::new();
-    for i in 0..3000u32 {
+    let mut stones = Vec::new();
+    for i in 0..9000u32 {
         let x = (hash(i * 3 + 1) - 0.5) * 1600.0;
         let z = -900.0 + hash(i * 3 + 2) * 1150.0;
         let in_field = x.abs() < FIELD_HALF + 8.0 && z < 4.0 && z > FIELD_END - 4.0;
         if in_field || z.abs() < 6.0 {
             continue;
         }
-        let size = 0.3 + 0.9 * hash(i * 3 + 3).powi(2);
-        shrubs.push(Mat4::from_scale_rotation_translation(
+        let shrub = i % 3 == 0;
+        let size = if shrub {
+            0.3 + 0.9 * hash(i * 3 + 3).powi(2)
+        } else {
+            0.08 + 0.4 * hash(i * 3 + 3).powi(3)
+        };
+        let m = Mat4::from_scale_rotation_translation(
             vec3(size * 1.3, size * 0.7, size),
             Quat::from_rotation_y(hash(i) * TAU),
             vec3(x, land(x, z) + size * 0.2, z),
-        ));
+        );
+        if shrub {
+            shrubs.push(m);
+        } else {
+            stones.push(m);
+        }
     }
     add(
         &mut scene,
         Node::instanced(
             Geometry::icosahedron(1.0, 1).flat(),
-            Material::standard(0x4a4632).roughness(1.0),
+            Material::standard(0x6a6448).roughness(1.0),
             Instances::new(shrubs),
+        ),
+    );
+    add(
+        &mut scene,
+        Node::instanced(
+            Geometry::icosahedron(1.0, 1).flat(),
+            assets.rock.material(0xd0c0a8, 1.0, 0.0),
+            Instances::new(stones),
         ),
     );
 
@@ -720,7 +746,7 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
     // the light of the sky, and the dawn glow low ahead: it rims the crop
     add(
         &mut scene,
-        Node::light(Light::hemisphere(0x5a6a98, 0x1a1410, 0.7)),
+        Node::light(Light::hemisphere(0x5a6a98, 0x1a1410, 1.0)),
     );
     add(
         &mut scene,
