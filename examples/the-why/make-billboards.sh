@@ -1,12 +1,14 @@
 #!/bin/sh
 # Makes dynamic_media/play/billboards.mp4: 20 tiles of 640 x 480 in a 5 x 4 grid, one per screen
-# of Times Square. Tile 11 (the biggest wall) plays made_of_motion.mp4. The other tiles are
-# cameos: 10 s from the most watched video of a programming channel, from its official
-# YouTube channel (cameos/list.txt: tile|video id|channel), and ThePrimeagen on tile 16 (the
-# screen with the pink frame). A tile without a cameo plays a part of made-of-motion. Every
+# of Times Square. The two screens seen most in the flight (measured: tile 14 has the most
+# area over the pass, tile 1 the largest view) play made_of_motion.mp4 and ThePrimeagen. The
+# other tiles are cameos: 10 s from the most watched video of a programming channel, from its
+# official YouTube channel (cameos/list.txt: tile|video id|channel). A tile without a cameo plays a part of made-of-motion. Every
 # tile loops without a seam, so the whole file loops too. The clips are fetched once with
 # yt-dlp (needs uvx); each full video is deleted after its 10 s are cut.
 set -eu
+film_tile=14
+prime_tile=1
 cd "$(dirname "$0")/dynamic_media/play"
 src=made_of_motion.mp4
 length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")
@@ -37,9 +39,9 @@ layout=""
 next=2
 for k in $(seq 0 19); do
     clip=""
-    [ "$k" -eq 16 ] && clip=primeagen.mp4
     [ -s "cameos/t$k.mp4" ] && clip="cameos/t$k.mp4"
-    if [ -n "$clip" ] && [ "$k" -ne 11 ]; then
+    [ "$k" -eq "$prime_tile" ] && clip=primeagen.mp4
+    if [ -n "$clip" ] && [ "$k" -ne "$film_tile" ]; then
         inputs="$inputs -i $clip -i $clip"
         filters="$filters[s$k]nullsink;[$next:v][$((next + 1)):v]concat=n=2:v=1:a=0,fps=24,scale=640:480,setsar=1,trim=duration=$length,setpts=PTS-STARTPTS[t$k];"
         next=$((next + 2))
