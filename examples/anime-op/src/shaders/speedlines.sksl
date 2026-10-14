@@ -1,0 +1,27 @@
+// 集中線: focus lines rushing at a point, drawn anew on every drawing (uSeed changes on twos).
+uniform float3 iResolution;
+uniform float2 uCenter;
+uniform float uClear;
+uniform float4 uColor;
+uniform float uDensity;
+uniform float uSeed;
+
+half4 main(float2 coord) {
+    float2 d = coord - uCenter;
+    float r = length(d);
+    float a = atan(d.y, d.x) / 6.2831853 + 0.5;
+    float x = a * uDensity;
+    float i = floor(x);
+    float f = fract(x);
+    float h1 = hash1(i + uSeed * 13.0);
+    float h2 = hash1(i + 17.0 + uSeed * 7.0);
+    float h3 = hash1(i + 31.0 + uSeed * 3.0);
+    float start = uClear * (1.0 + 0.7 * h3);
+    float grow = smoothstep(start, start + 0.6 * uClear, r);
+    // wedges hold a line or not; lines thicken towards the frame edge
+    float width = (0.06 + 0.5 * h1 * h1) * grow;
+    float aa = uDensity / (6.2831853 * max(r, 1.0));
+    float line = 1.0 - smoothstep(width * 0.5 - aa, width * 0.5 + aa, abs(f - 0.5));
+    float k = line * step(0.3, h2);
+    return half4(uColor.rgb * uColor.a * k, uColor.a * k);
+}

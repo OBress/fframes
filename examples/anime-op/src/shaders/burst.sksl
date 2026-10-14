@@ -1,0 +1,33 @@
+// An impact: a spiky white flash that collapses, a shock ring racing out, thin rays.
+uniform float3 iResolution;
+uniform float2 uCenter;
+uniform float uRadius;
+uniform float uT;
+uniform float4 uFlash;
+uniform float4 uRing;
+uniform float uSeed;
+
+half4 main(float2 coord) {
+    float2 d = coord - uCenter;
+    float r = length(d);
+    float a = atan(d.y, d.x);
+    float spikes = 0.5 + 0.5 * sin(a * 9.0 + uSeed) * sin(a * 5.0 - uSeed * 1.7);
+    spikes = pow(spikes, 3.0);
+    float flashR = uRadius * (0.25 + 0.95 * spikes) * (1.0 - uT) * (1.0 - uT);
+    float flash = 1.0 - smoothstep(flashR - 1.5, flashR + 1.5, r);
+    float core = 1.0 - smoothstep(uRadius * 0.18 * (1.0 - uT) - 1.5, uRadius * 0.18 * (1.0 - uT) + 1.5, r);
+    float ringR = uRadius * (0.35 + 1.5 * uT);
+    float ringW = uRadius * 0.07 * (1.0 - uT) + 1.0;
+    float ring = (1.0 - smoothstep(ringW - 1.5, ringW + 1.5, abs(r - ringR))) * step(0.02, 1.0 - uT);
+    float rays = 0.0;
+    float sector = floor((a / 6.2831853 + 0.5) * 40.0);
+    float h = hash1(sector + uSeed);
+    float fa = fract((a / 6.2831853 + 0.5) * 40.0);
+    float rayLen = uRadius * (0.8 + 1.2 * h) * (0.4 + uT);
+    rays = step(0.6, h) * (1.0 - smoothstep(0.06, 0.12, abs(fa - 0.5))) * step(r, rayLen) * step(flashR, r) * (1.0 - uT);
+    float lit = max(flash, rays);
+    float3 rgb = mix(uRing.rgb, uFlash.rgb, lit);
+    rgb = mix(rgb, float3(1.0), core);
+    float alpha = max(max(ring * uRing.a, lit * uFlash.a), core);
+    return half4(rgb * alpha, alpha);
+}

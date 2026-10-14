@@ -1,0 +1,18 @@
+// A glint sweeping across a card: a soft diagonal band of light with a holographic rainbow
+// edge following it.
+uniform float3 iResolution;
+uniform float uPos;
+uniform float4 uColor;
+
+half4 main(float2 coord) {
+    float2 uv = coord / iResolution.xy;
+    float aspect = iResolution.x / iResolution.y;
+    float d = (uv.x + (uv.y - 0.5) * 0.45 / aspect * 3.0) - mix(-0.35, 1.35, uPos);
+    float band = exp(-d * d / 0.0018);
+    float e = d + 0.06;
+    float edge = exp(-e * e / 0.0006);
+    float3 rainbow = 0.5 + 0.5 * cos(6.2831853 * (uv.x * 3.0 + uv.y + float3(0.0, 0.33, 0.67)));
+    float3 rgb = uColor.rgb * band * uColor.a + rainbow * edge * 0.7;
+    float alpha = clamp(band * uColor.a + edge * 0.6, 0.0, 1.0);
+    return half4(rgb, alpha);
+}

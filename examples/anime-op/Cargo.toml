@@ -1,0 +1,30 @@
+[package]
+name = "anime-op"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+fframes = { workspace = true, features = ["compile-time-svgtree", "cli"] }
+fframes_skia_renderer = { workspace = true, features = ["metal"] }
+fframes_native_player = { workspace = true, features = ["metal"] }
+fframes-anime = { path = "../../fframes-anime" }
+rapier2d = "0.36"
+rapier3d = "0.36"
+
+[target.'cfg(not(windows))'.dependencies]
+fframes = { workspace = true, features = ["h264", "libav-agree-gpl"] }
+
+[features]
+# Render at 60 fps instead of 24: drawings keep their 24 fps timing (on twos a drawing is 5
+# frames), camera moves, pulled cels and motion blur play on every frame.
+fps60 = []
+
+[lib]
+name = "anime_op"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "anime-op"
+path = "src/main.rs"

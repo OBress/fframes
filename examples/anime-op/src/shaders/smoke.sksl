@@ -1,0 +1,100 @@
+// A toon explosion cloud the way anime draws it: one cauliflower silhouette (balls with
+// scalloped edges, melted together), cel-shaded as a whole from the top left (a band of mid tone
+// and a thin dark band along the far edges, following every bump), C-shaped ink lines where front
+// lobes overlap the ones behind, and specks of debris. Balls swell and rise as uGrow goes to 1;
+// redrawn on twos.
+uniform float3 iResolution;
+uniform float iTime;
+uniform float uGrow;
+uniform float4 uLight;
+uniform float4 uMid;
+uniform float4 uDark;
+uniform float4 uLine;
+uniform float uSeed;
+
+float smin(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+// ball `i`: centre and radius
+float3 ball(float fi, float t) {
+    float h1 = hash1(fi * 3.1 + uSeed);
+    float h2 = hash1(fi * 7.3 + uSeed * 1.7);
+    float h3 = hash1(fi * 11.9 + uSeed * 2.3);
+    // a dome sitting on the ground (y = 0.85), biggest and highest in the middle
+    float x = (h1 * 2.0 - 1.0) * 1.2 * uGrow;
+    float dome = max(1.0 - (x / (1.35 * uGrow)) * (x / (1.35 * uGrow)), 0.0);
+    float2 c = float2(x, 0.85 - (0.12 + h2 * 1.2) * dome * uGrow);
+    c += float2(sin(t * 3.0 + fi), cos(t * 2.3 + fi)) * 0.01;
+    float r = (0.2 + 0.2 * h3) * uGrow * (0.75 + 0.45 * dome);
+    return float3(c, r);
+}
+
+// distance to one scalloped ball: bumps with cusps between them, like a drawn cloud
+float lobe(float2 p, float3 b, float fi, float t) {
+    float2 o = p - b.xy;
+    float a = atan(o.y, o.x);
+    float bumps = abs(sin(a * 3.5 + fi * 1.9 + t * 0.6));
+    return length(o) - b.z * (0.93 + 0.1 * bumps);
+}
+
+float cloud(float2 p, float t) {
+    float d = 1e5;
+    for (int i = 0; i < 18; i++) {
+        float fi = float(i);
+        d = smin(d, lobe(p, ball(fi, t), fi, t), 0.035);
+    }
+    return d;
+}
+
+half4 main(float2 coord) {
+    // the element spans x -1.6..1.6, y -1..1 (y down)
+    float2 p = (coord - iResolution.xy * 0.5) / (iResolution.y * 0.5);
+    float t = floor(iTime * 12.0) / 12.0;
+    float px = 2.0 / iResolution.y;
+    float d = cloud(p, t);
+    // debris: dark chips thrown out of the cloud
+    float chips = 1e5;
+    for (int i = 0; i < 9; i++) {
+        float fi = float(i);
+        float a = -2.6 + 2.2 * hash1(fi * 5.7 + uSeed);
+        float reach = (1.0 + 0.5 * hash1(fi * 2.9 + uSeed)) * uGrow;
+        float2 c = float2(cos(a) * reach * 1.25, 0.85 + sin(a) * reach);
+        float r = 0.025 + 0.02 * hash1(fi * 9.1 + uSeed);
+        float2 q = p - c;
+        chips = min(chips, max(abs(q.x) + abs(q.y) * 0.6, abs(q.y) + abs(q.x) * 0.6) - r);
+    }
+    if (d > px * 6.0 && chips > px * 2.0) {
+        return half4(0.0);
+    }
+    // the light comes from the top left: moving away from it leaves the cloud near its far edges
+    float2 l = normalize(float2(-0.6, -0.8));
+    float4 c = uLight;
+    c = mix(c, uMid, step(0.0, cloud(p - l * 0.16, t)));
+    c = mix(c, uDark, step(0.0, cloud(p - l * 0.055, t)));
+    // a few white glints on the lit lumps
+    float glint = step(cloud(p + l * 0.03, t), 0.0) * step(0.0, cloud(p + l * 0.075, t));
+    c = mix(c, float4(1.0), glint * 0.7);
+    // C-lines: the edge of a front lobe over the cloud behind it, drawn on its upper half
+    float arcs = 1e5;
+    for (int i = 0; i < 18; i++) {
+        float fi = float(i);
+        float3 b = ball(fi, t);
+        float2 o = p - b.xy;
+        float e = abs(lobe(p, b, fi, t));
+        // a short cap over the top of the bigger front lobes only (a line on every ball reads
+        // as wire, not smoke)
+        float cap = step(o.y, -0.45 * b.z) * step(abs(o.x), 0.75 * b.z);
+        float big = step(0.27 * uGrow, b.z) * step(fi, 11.0);
+        arcs = min(arcs, mix(1e5, e, cap * big));
+    }
+    float inside = 1.0 - smoothstep(-px, px, d);
+    float arc_k = (1.0 - smoothstep(px * 1.2, px * 3.0, arcs)) * step(d, -px * 3.0);
+    float outline = 1.0 - smoothstep(px * 2.0, px * 4.5, abs(d));
+    c = mix(c, uLine, max(outline, arc_k * 0.85));
+    float chip = 1.0 - smoothstep(-px, px, chips);
+    c = mix(c, uLine, chip * (1.0 - inside));
+    float alpha = max(max(inside, outline), chip) * c.a;
+    return half4(c.rgb * alpha, alpha);
+}

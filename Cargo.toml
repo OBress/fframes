@@ -10,6 +10,7 @@ members = [
     "fframes-media",
     "fframes-skia-renderer",
     "fframes-native-player",
+    "fframes-anime",
     "media-dir-macro",
     "render-bench",
     "render-bench/vs-remotion",
@@ -48,6 +49,7 @@ members = [
     # "fframes-lyon-renderer",
     "examples/signal-lab",
     "examples/fframes-intro",
+    "examples/anime-op",
 ]
 
 [workspace.lints.rust]

@@ -1,0 +1,8 @@
+/target
+/dynamic/
+/.venv/
+*.mp4
+frames/
+strip.png
+onion.png
+*.wav

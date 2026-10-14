@@ -1,0 +1,19 @@
+[package]
+name = "fframes-anime"
+version = "1.2.0"
+edition = "2024"
+authors = ["Dmitriy Kovalenko <dmtr.kovalenko@outlook.com>"]
+license = "MIT"
+description = "Character animation toolkit for fframes: mocap retargeting, spring bones, cloth, toon bodies and koma timing"
+homepage = "https://fframes.studio"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+glam = "0.34"
+rayon = "1.5.1"
+
+[lints]
+workspace = true
