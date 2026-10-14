@@ -86,6 +86,15 @@ const GREEN: (f32, f32) = (2.6, 3.6);
 const MIST: f32 = 3.2;
 /// The spark leaves the ring.
 const SPARK: f32 = 4.4;
+/// The camera comes down until `RISE.0`, then rises over the dome until `RISE.1`, and
+/// shows the graph of the planting cells until [`SWOOP`].
+const RISE: (f32, f32) = (1.9, 3.5);
+/// The camera swoops down beside the dome to the horizon.
+const SWOOP: (f32, f32) = (3.65, 4.95);
+/// The height of the camera over the dome and its distance from the axis of the dome.
+const HIGH: (f32, f32) = (40.0, 40.0);
+/// The camera tilts up from the graph to the horizon for the whip pan.
+const TILT: f32 = 4.1;
 /// The length of the part. The cut to the rocket is at its end.
 const END: f32 = 5.0;
 /// The ring of the grow lights inside the dome: its radius and its height.
@@ -335,7 +344,11 @@ struct Ids {
     beam: NodeId,
     anchors: NodeId,
     soil: NodeId,
-    beds: [NodeId; 5],
+    beds: NodeId,
+    /// The paved band and the curbs of the graph, and the soil in its cells.
+    garden: [NodeId; 2],
+    /// The glow of the grow light in each cell of the graph.
+    tiles: NodeId,
     struts: NodeId,
     hot: NodeId,
     gaskets: NodeId,
@@ -380,6 +393,7 @@ pub struct Greenhouse {
     stalks: Vec<Plant>,
     trunks: Vec<Plant>,
     crowns: Vec<Plant>,
+    cells: Vec<Cell>,
     landmark: Scene,
 }
 
@@ -474,7 +488,8 @@ impl Greenhouse {
         let (ring_parts, piece_ends) = light_ring(&hubs);
         struts.extend(ring_parts);
 
-        let (crops, stalks, trunks, crowns) = plants();
+        let cells = cells();
+        let (crops, stalks, trunks, crowns) = plants(&cells);
         let (scene, ids) = build(assets, glow);
         let line_times = (0..LINE_SEGMENTS)
             .map(|i| ring_time(i as f32 / LINE_SEGMENTS as f32))
@@ -492,6 +507,7 @@ impl Greenhouse {
             stalks,
             trunks,
             crowns,
+            cells,
             landmark: Scene::new(),
         };
         // the finished dome for shot 9, without the desert, the machines and the lights.
@@ -674,10 +690,29 @@ impl Greenhouse {
 
         // the soil comes up inside from the middle outward, then the raised beds
         scene[ids.soil].position.y = -0.6 * (1.0 - ease(progress(t, SOIL.0, SOIL.1)));
-        for (k, id) in ids.beds.into_iter().enumerate() {
-            let at = SOIL.0 + 0.25 + 0.1 * k as f32;
-            scene[id].position.y = -0.9 * (1.0 - ease(progress(t, at, at + 0.5)));
+        let at = SOIL.0 + 0.25;
+        scene[ids.beds].position.y = -0.9 * (1.0 - ease(progress(t, at, at + 0.5)));
+        for id in ids.garden {
+            scene[id].position.y = -0.7 * (1.0 - ease(progress(t, at - 0.1, at + 0.4)));
         }
+        // the grow light of each cell of the graph comes on with its plants, pale for a
+        // quiet day and deep green for a busy one
+        let mut tiles = Vec::new();
+        let mut tile_colors = Vec::new();
+        for cell in self.cells.iter().filter(|c| c.level > 0) {
+            let on = smoothstep(cell.start, cell.start + 0.3, t);
+            if on <= 0.0 {
+                continue;
+            }
+            let size = CELL - 0.18;
+            tiles.push(Mat4::from_scale_rotation_translation(
+                vec3(size, 1.0, size),
+                Quat::IDENTITY,
+                cell.center + Vec3::Y * 0.02,
+            ));
+            tile_colors.push(Rgb::hex(GRAPH[cell.level - 1]) * (GLOW[cell.level - 1] * on));
+        }
+        set(scene, ids.tiles, Instances::new(tiles).colors(tile_colors));
 
         // the light climbs the frame: each strut is printed from its lower hub, hot at its
         // tip, and cools from amber to steel. A gasket for the glass follows on its outer
@@ -1204,77 +1239,203 @@ fn mist(t: f32) -> Vec<Particle> {
         .collect()
 }
 
-/// The radii of the rings of raised beds inside the dome.
-const BEDS: [f32; 5] = [6.5, 9.0, 11.5, 14.0, 16.5];
-/// The height of the crest of a raised bed, where the plants stand.
+/// The planting cells in the middle of the dome are a contribution graph: [`DAYS`] rows of
+/// [`WEEKS`] columns, a week in each column, Sunday in the far row. Each cell is a square
+/// planter with a curb of concrete, on a paved band across the dome.
+const WEEKS: usize = 27;
+const DAYS: usize = 7;
+/// The distance between the centers of two cells, and the outer size of a cell, in meters.
+const CELL_PITCH: f32 = 1.31;
+const CELL: f32 = 1.05;
+/// The top of the paved band and the top of the soil in the cells.
+const PAVING: f32 = 0.32;
+const CELL_SOIL: f32 = 0.56;
+/// The cells fill week by week, from the left to the right, like a year of commits.
+const COMMITS: (f32, f32) = (BLOOM + 0.05, 3.65);
+/// The four greens of the graph, from few commits to many.
+const GRAPH: [u32; 4] = [0x9be9a8, 0x40c463, 0x30a14e, 0x216e39];
+/// The strength of the grow light under each green: the pale green is bright by itself.
+const GLOW: [f32; 4] = [0.45, 0.7, 0.8, 0.95];
+/// The raised beds outside the band: straight rows across the dome, and the height of
+/// their crest, where the plants stand.
+const ROW_PITCH: f32 = 1.25;
 const BED_TOP: f32 = 0.52;
 
-/// The crops in the rows of the beds, the corn, and the small trees. Each plant has its
-/// transform in place, its color, and the time it starts to sprout. They sprout from the
-/// middle outward after the bloom.
-fn plants() -> (Vec<Plant>, Vec<Plant>, Vec<Plant>, Vec<Plant>) {
+/// A cell of the graph: its center, its level `0..=4` (0 is bare soil), and the time it
+/// fills.
+struct Cell {
+    center: Vec3,
+    level: usize,
+    start: f32,
+}
+
+/// The cells of the graph. The levels look like the year of a real developer: quiet
+/// weekends, a few busy weeks, one week of vacation, and the last week is the current one,
+/// so it has only four days.
+fn cells() -> Vec<Cell> {
+    let mut cells = Vec::new();
+    for week in 0..WEEKS {
+        let days = if week == WEEKS - 1 { 4 } else { DAYS };
+        let busy = hash(week as u32 + 700);
+        for day in 0..days {
+            let seed = (week * DAYS + day) as u32 + 900;
+            let weekend = day == 0 || day == DAYS - 1;
+            let vacation = week == 11;
+            let activity = hash(seed) * if weekend { 0.55 } else { 1.0 } + 0.35 * busy - 0.1;
+            let level = if vacation {
+                0
+            } else {
+                match activity {
+                    a if a < 0.3 => 0,
+                    a if a < 0.55 => 1,
+                    a if a < 0.75 => 2,
+                    a if a < 0.92 => 3,
+                    _ => 4,
+                }
+            };
+            let center = vec3(
+                (week as f32 - (WEEKS - 1) as f32 * 0.5) * CELL_PITCH,
+                CELL_SOIL,
+                (day as f32 - (DAYS - 1) as f32 * 0.5) * CELL_PITCH,
+            );
+            let (first, last) = COMMITS;
+            let start = mix(first, last - 0.4, week as f32 / (WEEKS - 1) as f32)
+                + 0.025 * day as f32
+                + 0.03 * hash(seed + 50);
+            cells.push(Cell {
+                center,
+                level,
+                start,
+            });
+        }
+    }
+    cells
+}
+
+/// The half depth of the paved band of the graph, with a margin.
+fn band() -> f32 {
+    (DAYS as f32 * 0.5) * CELL_PITCH + 0.6
+}
+
+/// The straight rows of raised beds outside the band: the Z of each row and the half
+/// length of each of its two halves, left and right of the middle path.
+fn bed_rows() -> Vec<(f32, f32)> {
+    let mut rows = Vec::new();
+    let mut z = band() + 1.0;
+    while z < RADIUS - 3.0 {
+        let half = ((RADIUS - 2.2).powi(2) - z * z).sqrt();
+        for side in [-1.0, 1.0] {
+            rows.push((side * z, half));
+        }
+        z += ROW_PITCH;
+    }
+    rows
+}
+
+/// The plants of the graph cells, the crops and the corn in the rows of the beds, and the
+/// small trees along the wall. Each plant has its transform in place, its color, and the
+/// time it starts to sprout. The rows sprout from the middle outward after the bloom, the
+/// cells week by week.
+fn plants(cells: &[Cell]) -> (Vec<Plant>, Vec<Plant>, Vec<Plant>, Vec<Plant>) {
     let start = |r: f32, seed: u32| BLOOM + 0.05 + r / RADIUS * 0.9 + 0.2 * hash(seed);
     let greens = [0x4f8a2e, 0x6aa03a, 0x3d7a34, 0x86b04a, 0x5c9440];
     let mut crops = Vec::new();
     let mut stalks = Vec::new();
-    // three rows in each bed, with a gap for the path to the door at +Z
-    for (ring, r) in BEDS.into_iter().enumerate() {
-        let count = (TAU * r / 0.55) as usize;
+    // more commits, more plants: one rosette, then 2 x 2, then 2 x 2 and one in the
+    // middle, then 3 x 3. The color of the level is the green of the graph.
+    for (i, cell) in cells.iter().enumerate() {
+        let spots: Vec<(Vec2, f32)> = match cell.level {
+            0 => Vec::new(),
+            1 => vec![(Vec2::ZERO, 0.27)],
+            2 => [-1.0, 1.0]
+                .into_iter()
+                .flat_map(|x| [-1.0, 1.0].map(|z| (vec2(x, z) * 0.21, 0.21)))
+                .collect(),
+            3 => [-1.0, 1.0]
+                .into_iter()
+                .flat_map(|x| [-1.0, 1.0].map(|z| (vec2(x, z) * 0.22, 0.24)))
+                .chain([(Vec2::ZERO, 0.2)])
+                .collect(),
+            _ => (-1..=1)
+                .flat_map(|x| (-1..=1).map(move |z| (vec2(x as f32, z as f32) * 0.29, 0.19)))
+                .collect(),
+        };
+        let color = Rgb::hex(GRAPH[cell.level.max(1) - 1]) * 0.75;
+        for (k, (offset, size)) in spots.into_iter().enumerate() {
+            let seed = (i * 16 + k) as u32 + 5000;
+            let jitter = vec2(hash(seed) - 0.5, hash(seed + 1) - 0.5) * 0.04;
+            let size = size * (0.92 + 0.16 * hash(seed + 2));
+            crops.push(Plant {
+                transform: Mat4::from_scale_rotation_translation(
+                    vec3(size, size * 0.8, size),
+                    Quat::from_rotation_y(hash(seed + 3) * TAU),
+                    cell.center + vec3(offset.x + jitter.x, 0.0, offset.y + jitter.y),
+                ),
+                color: color * (0.9 + 0.2 * hash(seed + 4)),
+                start: cell.start + 0.04 * k as f32,
+                time: 0.35,
+            });
+        }
+    }
+    // two lines of crops on each bed, and corn on every third bed, with a path in the
+    // middle to the door at +Z
+    for (row, (z, half)) in bed_rows().into_iter().enumerate() {
+        let count = (half / 0.55) as usize;
         for i in 0..count {
-            let a = i as f32 / count as f32 * TAU;
-            if !(0.12..=TAU - 0.12).contains(&a) {
-                continue;
-            }
-            for (side, row) in [-0.5f32, 0.5, 0.0].into_iter().enumerate() {
-                let seed = ((ring * 1000 + i) * 3 + side) as u32;
-                let rr = r + row + 0.12 * (hash(seed * 3 + 1) - 0.5);
-                let p = around(a) * rr + Vec3::Y * (BED_TOP - 0.06);
-                let color = Rgb::hex(greens[(seed as usize + ring) % greens.len()])
-                    * (0.8 + 0.4 * hash(seed * 7));
-                if (ring == 1 || ring == 3) && side == 1 {
-                    let lean = Quat::from_rotation_x(0.12 * (hash(seed * 13) - 0.5));
-                    stalks.push(Plant {
-                        transform: Mat4::from_scale_rotation_translation(
-                            vec3(1.0, 0.6 + 0.6 * hash(seed * 17), 1.0),
-                            Quat::from_rotation_y(hash(seed) * TAU) * lean,
-                            p,
-                        ),
-                        color,
-                        start: start(rr, seed + 5),
-                        time: 0.8,
-                    });
-                } else {
-                    let size = 0.42 + 0.2 * hash(seed * 5 + 2);
-                    crops.push(Plant {
-                        transform: Mat4::from_scale_rotation_translation(
-                            vec3(size, size * 0.75, size),
-                            Quat::from_rotation_y(hash(seed * 11) * TAU),
-                            p,
-                        ),
-                        color,
-                        start: start(rr, seed),
-                        time: 0.6,
-                    });
+            let x = 0.9 + i as f32 * 0.55;
+            for side in [-1.0f32, 1.0] {
+                for (line, dz) in [-0.2f32, 0.2].into_iter().enumerate() {
+                    let seed = ((row * 1000 + i) * 4 + line * 2 + usize::from(side > 0.0)) as u32;
+                    let p = vec3(
+                        side * x + 0.1 * (hash(seed * 3 + 1) - 0.5),
+                        BED_TOP - 0.06,
+                        z + dz,
+                    );
+                    let r = p.length();
+                    let color = Rgb::hex(greens[(seed as usize + row) % greens.len()])
+                        * (0.8 + 0.4 * hash(seed * 7));
+                    if row % 3 == 1 && line == 0 {
+                        if i % 2 == 0 {
+                            let lean = Quat::from_rotation_x(0.12 * (hash(seed * 13) - 0.5));
+                            stalks.push(Plant {
+                                transform: Mat4::from_scale_rotation_translation(
+                                    vec3(1.0, 0.6 + 0.6 * hash(seed * 17), 1.0),
+                                    Quat::from_rotation_y(hash(seed) * TAU) * lean,
+                                    p,
+                                ),
+                                color,
+                                start: start(r, seed + 5),
+                                time: 0.8,
+                            });
+                        }
+                    } else {
+                        let size = 0.3 + 0.12 * hash(seed * 5 + 2);
+                        crops.push(Plant {
+                            transform: Mat4::from_scale_rotation_translation(
+                                vec3(size, size * 0.75, size),
+                                Quat::from_rotation_y(hash(seed * 11) * TAU),
+                                p,
+                            ),
+                            color,
+                            start: start(r, seed),
+                            time: 0.6,
+                        });
+                    }
                 }
             }
         }
     }
-    // small fruit trees: one in the middle, six around it, and a ring along the wall
+    // small fruit trees in a ring along the wall, away from the ends of the graph
     let mut trunks = Vec::new();
     let mut crowns = Vec::new();
-    for i in 0..19u32 {
-        let (r, a) = match i {
-            0 => (0.0, 0.0),
-            1..=6 => (3.3, i as f32 / 6.0 * TAU + 0.3),
-            _ => (18.6, (i - 7) as f32 / 12.0 * TAU + 0.26),
-        };
-        let base = around(a) * r + Vec3::Y * 0.3;
-        let h = match i {
-            0 => 6.5,
-            1..=6 => 3.6 + 1.2 * hash(i + 40),
-            _ => 2.6 + 1.0 * hash(i + 40),
-        };
-        let begin = start(r, i + 300) - 0.2;
+    for i in 0..16u32 {
+        let a = i as f32 / 16.0 * TAU + 0.2;
+        let base = around(a) * 18.4 + Vec3::Y * 0.2;
+        if base.z.abs() < band() + 1.5 {
+            continue;
+        }
+        let h = 2.6 + 1.0 * hash(i + 40);
+        let begin = start(18.4, i + 300) - 0.2;
         trunks.push(Plant {
             transform: Mat4::from_translation(base) * Mat4::from_scale(vec3(0.16, h * 0.7, 0.16)),
             color: Rgb::hex(0x5a4030),
@@ -1449,25 +1610,58 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         Geometry::lathe(&lens, 96),
         soil_material.clone(),
     ));
-    let beds = BEDS.map(|r| {
-        let mut mound = vec![vec2(r + 0.8, -0.5)];
-        for k in 0..=10 {
-            let a = k as f32 / 10.0 * PI;
-            mound.push(vec2(r + 0.8 * a.cos(), 0.12 + (BED_TOP - 0.12) * a.sin()));
+    // the straight raised beds outside the graph
+    let beds = Geometry::merge(bed_rows().into_iter().flat_map(|(z, half)| {
+        [-1.0f32, 1.0].map(|side| {
+            let length = half - 0.6;
+            Geometry::rounded_box(length, 0.9, 0.9, 0.2, 2).translate(
+                side * (0.6 + length * 0.5),
+                BED_TOP - 0.45,
+                z,
+            )
+        })
+    }));
+    let beds = scene.add(Node::mesh(beds, soil_material.clone()));
+    // the graph: a paved band across the dome with a square planter for each day
+    let (width, depth) = (WEEKS as f32 * CELL_PITCH + 0.8, band() * 2.0);
+    let mut paving = vec![Geometry::cuboid(width, 0.4, depth).translate(0.0, PAVING - 0.2, 0.0)];
+    let mut fill = Vec::new();
+    let curb = 0.08;
+    for cell in cells() {
+        let c = cell.center.with_y(PAVING);
+        let h = CELL_SOIL + 0.06 - PAVING;
+        for (dx, dz, w, d) in [
+            (0.0, (CELL - curb) * 0.5, CELL, curb),
+            (0.0, -(CELL - curb) * 0.5, CELL, curb),
+            ((CELL - curb) * 0.5, 0.0, curb, CELL - 2.0 * curb),
+            (-(CELL - curb) * 0.5, 0.0, curb, CELL - 2.0 * curb),
+        ] {
+            paving.push(Geometry::cuboid(w, h, d).translate(c.x + dx, c.y + h * 0.5, c.z + dz));
         }
-        mound.push(vec2(r - 0.8, -0.5));
-        let drips = [-0.3f32, 0.3].map(|d| {
-            Geometry::tube_ring(r + d + 0.025, r + d - 0.025, 0.05, 96)
-                .translate(0.0, BED_TOP - 0.03, 0.0)
-                .with_color(0x101010)
-        });
-        let geometry = Geometry::merge([
-            Geometry::lathe(&mound, 96).with_color(0xffffff),
-            drips[0].clone(),
-            drips[1].clone(),
-        ]);
-        scene.add(Node::mesh(geometry, soil_material.clone()))
-    });
+        let inner = CELL - 2.0 * curb;
+        fill.push(
+            Geometry::cuboid(inner, CELL_SOIL - PAVING, inner).translate(
+                c.x,
+                f32::midpoint(PAVING, CELL_SOIL),
+                c.z,
+            ),
+        );
+    }
+    let garden = [
+        scene.add(Node::mesh(
+            Geometry::merge(paving),
+            assets.concrete.material(0xc8c2b8, 0.9, 0.0),
+        )),
+        scene.add(Node::mesh(Geometry::merge(fill), soil_material.clone())),
+    ];
+    let tiles = scene.add(
+        Node::instanced(
+            Geometry::floor(1.0, 1.0),
+            Material::unlit(Rgb::WHITE).additive(),
+            Instances::default(),
+        )
+        .shadows(false, false),
+    );
 
     // the frame: struts of white steel, their hot glow while they are printed, the gaskets,
     // and the hub connectors: a plate with a cap and six bolts
@@ -1667,10 +1861,10 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
     // the light of the grow lights, and a thin shell inside the glass that glows green at
     // its edges: the light in the damp air under the glass
     let inside = [
-        vec3(0.0, 4.0, 9.0),
-        vec3(-9.0, 3.5, -4.0),
-        vec3(9.0, 3.5, -3.0),
-        vec3(0.0, 6.0, -2.0),
+        vec3(0.0, 7.4, 11.0),
+        vec3(-11.0, 7.4, -7.0),
+        vec3(11.0, 7.4, -6.0),
+        vec3(0.0, 7.4, -12.0),
     ]
     .map(|p| {
         scene.add(
@@ -1718,6 +1912,8 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
         anchors,
         soil,
         beds,
+        garden,
+        tiles,
         struts,
         hot,
         gaskets,
@@ -1748,19 +1944,27 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
 
 /// The place of the camera and the point that it looks at, without the whip pan. The
 /// camera starts high on the pen, where the car of the bridge was in the picture. It
-/// follows the ring down to a low orbit around the dome, and comes closer when the dome
-/// turns green.
+/// follows the ring down, so the dawn sky enters the picture while the frame is printed.
+/// When the plants sprout it rises over the dome, to look down through the glass at the
+/// planting cells while they fill. Then it swoops down beside the dome to the horizon for
+/// the whip pan.
 fn rest(t: f32) -> (Vec3, Vec3) {
-    let azimuth = mix(25.0f32, -20.0, ease(progress(t, 0.0, 4.6))).to_radians();
-    // it comes down early, so the dawn sky enters the picture while the ring closes
-    let height = mix(28.0, 5.0, ease(progress(t, 0.0, 2.4)));
-    let distance =
-        mix(95.0, 70.0, ease(progress(t, 0.0, 3.0))) - 8.0 * ease(progress(t, GREEN.0, END));
+    let azimuth = mix(25.0f32, -14.0, ease(progress(t, 0.0, 4.6))).to_radians();
+    let down = ease(progress(t, 0.0, RISE.0));
+    let rise = ease(progress(t, RISE.0, RISE.1));
+    let swoop = ease(progress(t, SWOOP.0, SWOOP.1));
+    let height = mix(mix(mix(28.0, 18.0, down), HIGH.0, rise), 7.0, swoop);
+    let distance = mix(mix(mix(95.0, 72.0, down), HIGH.1, rise), 58.0, swoop);
     let position = vec3(distance * azimuth.sin(), height, distance * azimuth.cos());
-    let dome = vec3(0.0, mix(4.0, 10.0, ease(progress(t, 0.8, 3.0))), 0.0);
-    // the target starts on the pen and settles on the dome
+    let dome = vec3(0.0, mix(4.0, 9.0, ease(progress(t, 0.8, RISE.0))), 0.0);
+    // the target starts on the pen, settles on the dome, goes down to the graph and back
+    // to the dome
     let settle = ease(progress(t, 0.15, 1.5));
-    (position, ring_point(ring_progress(t)).lerp(dome, settle))
+    let target = ring_point(ring_progress(t))
+        .lerp(dome, settle)
+        .lerp(vec3(0.0, 1.0, -2.5), rise)
+        .lerp(vec3(0.0, 9.0, 0.0), swoop);
+    (position, target)
 }
 
 /// The spark at `t`. It lifts off the ring in front of the camera, comes nearer and darts
@@ -1768,7 +1972,9 @@ fn rest(t: f32) -> (Vec3, Vec3) {
 fn spark_at(t: f32) -> Vec3 {
     let (eye, target) = rest(t);
     let forward = target - eye;
-    let front = rest(SPARK).0.with_y(0.0).normalize() * LINE_RADIUS + vec3(0.0, 0.1, 0.0);
+    // it leaves the ring at the far left of the dome, where the high camera sees it
+    let eye = rest(SPARK).0;
+    let front = around(eye.x.atan2(eye.z) - 1.9) * LINE_RADIUS + vec3(0.0, 0.1, 0.0);
     let (yaw, pitch) = yaw_pitch(forward, front - eye);
     let (cut_pitch, cut_distance) = SPARK_AT_CUT;
     let lift = ease(progress(t, SPARK, END));
@@ -1787,13 +1993,17 @@ fn spark_at(t: f32) -> Vec3 {
 pub(super) fn camera_at(t: f32) -> Camera {
     let (position, target) = rest(t);
     let forward = (target - position).normalize();
-    let level = ease(progress(t, 4.3, END));
+    let level = ease(progress(t, TILT, END));
     let pitch = mix(forward.y.asin(), LEVEL.atan(), level);
     let turn = WHIP_HALF + whip(t - END);
     let view = polar(position, forward, turn, pitch, 60.0);
     let settle = ease(progress(t, 0.15, 1.5));
-    let mm = mix(36.0, 32.0, settle);
-    let focus = ring_point(ring_progress(t)).lerp(Vec3::ZERO, settle);
+    let high = ease(progress(t, RISE.0, RISE.1)) * (1.0 - ease(progress(t, SWOOP.0, SWOOP.1)));
+    let mm = mix(mix(36.0, 32.0, settle), 36.0, high);
+    // the focus goes from the pen to the dome and down to the graph
+    let focus = ring_point(ring_progress(t))
+        .lerp(Vec3::ZERO, settle)
+        .lerp(vec3(0.0, CELL_SOIL, 0.0), high);
     let focus = focus.lerp(spark_at(t), ease(progress(t, SPARK, SPARK + 0.4)));
     camera(mm, position, view)
         .focus_on(focus, 4.0)

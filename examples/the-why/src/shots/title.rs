@@ -4,7 +4,7 @@ use fframes::{Svgr, svgr};
 use fframes_3d::math::smoothstep;
 
 use crate::WIDTH;
-use crate::look::{BAR, PICTURE_HEIGHT, SERIF};
+use crate::look::{BAR, CODE, PICTURE_HEIGHT, SERIF};
 
 /// The one warm color of the film: human intent.
 const WARM: &str = "#ffb35c";
@@ -99,7 +99,8 @@ fn title_line(
 }
 
 /// The title at `t` seconds into shot 10. The second line ends with a warm line drawn under
-/// "why", like the line in the dust of shot 6. The name of the film and the credit follow.
+/// "why", like the line in the dust of shot 6. The name of the film and the credit follow,
+/// and last a dim line from a terminal: the film is a program, and it ran well.
 pub fn title(t: f32) -> Svgr<'static> {
     let middle = (BAR + PICTURE_HEIGHT / 2) as f32;
     // the first line comes, then steps back for the second
@@ -126,6 +127,7 @@ pub fn title(t: f32) -> Svgr<'static> {
     // the drawing tip glows brighter while it moves
     let tip = (1.0 - fade_in(t, 3.9, 0.6)) * drawn;
     let credit = fade_in(t, 3.9, 0.7);
+    let exit = fade_in(t, 5.15, 0.3);
     let out = 1.0 - smoothstep(5.6, 6.0, t);
     svgr!(
         <g>
@@ -165,6 +167,10 @@ pub fn title(t: f32) -> Svgr<'static> {
                 <text x={WIDTH as f32 * 0.5} y={(BAR + PICTURE_HEIGHT) as f32 - 90.0} font-family={SERIF} font-size="30"
                     letter-spacing="7" fill="#8a8f98" text-anchor="middle" opacity={credit}>
                     "MADE WITH FFRAMES"
+                </text>
+                <text x={WIDTH as f32 * 0.5} y={(BAR + PICTURE_HEIGHT) as f32 - 46.0} font-family={CODE} font-size="21"
+                    fill="#5d6168" text-anchor="middle" opacity={exit * 0.8}>
+                    "Process finished with exit code 0"
                 </text>
             </g>
         </g>
