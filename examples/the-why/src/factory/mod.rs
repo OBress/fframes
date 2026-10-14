@@ -480,10 +480,24 @@ impl FactorySet {
                 crowd::frames(arm.base, &arm.joints)[6].transform_point3(vec3(0.0, 0.0, arm::GRIP));
             let welding = |b: f32| crowd::work(b + station.phase).welding;
             let glow = arc_glow(index as u32, t, welding);
-            if glow > 0.0 {
-                arcs.push((distance, glow, tip));
+            // The light of an arc fades out with the distance, so an arc that enters or
+            // leaves the set of the four nearest arcs does so at no light and does not pop.
+            let fade = 1.0 - smoothstep(35.0, 58.0, distance);
+            if glow > 0.0 && fade > 0.0 {
+                arcs.push((distance, glow * fade, tip));
             }
-            sparks.extend(weld_sparks(index as u32, tip, t, welding));
+            // An arc farther than 10 m is smaller than a pixel. The renderer draws it one
+            // pixel wide, so its light is scaled by the area it would cover. Without this a
+            // far arc is a white dot that blooms and pops on.
+            let scale = (10.0 / distance).min(1.0).powi(2);
+            sparks.extend(
+                weld_sparks(index as u32, tip, t, welding)
+                    .into_iter()
+                    .map(|mut p| {
+                        p.color = p.color * scale;
+                        p
+                    }),
+            );
         }
         add_sparks(scene, sparks, camera);
         // the nearest arcs light their surroundings
@@ -537,6 +551,7 @@ impl FactorySet {
             ));
         }
         let awake = smoothstep(10.4, 11.2, t);
+        let swoop = smoothstep(10.1, 12.0, t);
         let (watcher, grip) = self.watcher_at_work(t);
         self.pose_watcher(&mut scene, &watcher, &grip, awake);
         // The eye of the watcher scans the engineer: a faint beam in the haze, from the eye
@@ -562,6 +577,23 @@ impl FactorySet {
             scene.add(Node::particles(beam, Blending::Additive));
         }
         self.pose_engineer(&mut scene, 12.0 + t, 0.0);
+        // The swoop looks up at the roof over the catwalk, which is in the shadow of the
+        // sawtooth. The lamps under the trusses light the steel and glow in the haze, as
+        // they do at the start of shot 3, so the roof is not a black field.
+        if swoop > 0.0 {
+            let jig = self.watcher.base.transform_point3(JIG);
+            self.hall.lamp_lights(
+                &mut scene,
+                ENGINEER.lerp(jig, 0.5),
+                4,
+                Light::point(0xdcecff, 16.0 * swoop, 36.0),
+            );
+            scene.add(Node::light(Light::hemisphere(
+                0x000000,
+                0x2a3a52,
+                0.6 * swoop,
+            )));
+        }
         self.show(&mut scene, &self.welder, &view);
         self.show(&mut scene, &self.watcher, &view);
         (scene, camera)
@@ -572,8 +604,11 @@ impl FactorySet {
     /// seams of the parts and the far arcs are smaller than a pixel and crawl with few
     /// samples.
     pub fn shutter_factory(&self, t: f32) -> usize {
-        if (2.6..11.4).contains(&t) {
+        if (2.6..11.0).contains(&t) {
             6
+        // the swoop passes the eye housing of the watcher close to the lens
+        } else if t < 12.0 {
+            10
         } else if t < 16.8 {
             4
         } else {
@@ -607,7 +642,9 @@ impl FactorySet {
             (self.watcher.base * arm::flange(&self.watcher_gaze())).transform_point3(arm::EYE);
         let gaze = (head - eye).normalize();
         let side = gaze.cross(Vec3::Y).normalize();
-        let shoulder = eye - gaze * 1.5 + side * 0.55 - Vec3::Y * 0.1;
+        // The eye housing of the watcher stays at the edge of the picture as a foreground,
+        // so the over the shoulder view reads as his view.
+        let shoulder = eye - gaze * 1.6 + side * 0.42 - Vec3::Y * 0.16;
         let position = high.lerp(shoulder, swoop);
         let ahead = vec3(7.0, 1.4, position.z - 25.0);
         let watcher = self.watcher.base.w_axis.truncate();
@@ -619,7 +656,7 @@ impl FactorySet {
             .lerp(ahead, smoothstep(2.6, 4.2, t))
             .lerp(hall_end, smoothstep(8.4, 10.8, t))
             .lerp(up_to_him, smoothstep(10.4, 11.9, t));
-        let mut camera = lens(24.0 + 26.0 * swoop)
+        let mut camera = lens(24.0 + 14.0 * swoop)
             .position(position)
             .look_at(target)
             .roll(0.03 * (t * 0.9).sin() * flight)
@@ -821,13 +858,14 @@ fn weld_sparks(seed: u32, tip: Vec3, t: f32, welding: impl Fn(f32) -> bool) -> V
     }
     let glow = arc_glow(seed, t, welding);
     if glow > 0.0 {
-        // the arc: a flickering white core in a blue halo
+        // The arc: a flickering white core in a blue halo. The core is small and bright;
+        // a brighter or larger one blows the part under it and the belt to white.
         out.push(Particle::new(
             tip,
-            0.008,
-            Rgb::hex(0xffffff) * (900.0 * glow),
+            0.006,
+            Rgb::hex(0xffffff) * (260.0 * glow),
         ));
-        out.push(Particle::new(tip, 0.05, Rgb::hex(0x9fc8ff) * (6.0 * glow)));
+        out.push(Particle::new(tip, 0.06, Rgb::hex(0x9fc8ff) * (2.5 * glow)));
     }
     out
 }
@@ -880,18 +918,19 @@ fn add_sparks(scene: &mut Scene, sparks: Vec<Particle>, camera: &Camera) {
 }
 
 /// The brightness of a welding arc at `t`, `0..1`. `welding(b)` tells whether the torch
-/// burns at time `b`. The arc comes on and goes out over 0.04 s, and it flickers below
-/// 15 Hz. A faster flicker or a hard switch changes the light of the whole frame from one
-/// frame to the next, and the picture strobes.
+/// burns at time `b`. The arc comes on and goes out over 0.12 s (seven frames), and it
+/// flickers below 15 Hz. A faster flicker or a hard switch changes the light of the whole
+/// frame from one frame to the next, and the picture strobes.
 fn arc_glow(seed: u32, t: f32, welding: impl Fn(f32) -> bool) -> f32 {
-    let on = (0..4).filter(|&k| welding(t - k as f32 * 0.01)).count() as f32 / 4.0;
+    let on = (0..8).filter(|&k| welding(t - k as f32 * 0.015)).count() as f32 / 8.0;
     if on == 0.0 {
         return 0.0;
     }
     on * (0.85 + 0.09 * noise1(seed, t * 13.0) + 0.06 * noise1(seed + 7, t * 7.0))
 }
 
-/// The light of a welding arc at `tip` with the brightness `glow`.
+/// The light of a welding arc at `tip` with the brightness `glow`. It is 5 cm over the
+/// arc, so the part under the torch takes a bright spot and not a white field.
 fn arc_light(tip: Vec3, glow: f32) -> Node {
-    Node::light(Light::point(0xbfdcff, 6.0 * glow, 9.0)).at(tip.x, tip.y + 0.05, tip.z)
+    Node::light(Light::point(0xbfdcff, 2.4 * glow, 7.0)).at(tip.x, tip.y + 0.05, tip.z)
 }

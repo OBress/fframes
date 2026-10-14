@@ -79,7 +79,9 @@ impl FactorySet {
             noise_size: 8.0,
             offset: vec3(0.3, 0.05, 0.2) * t,
             distance: 260.0,
-            steps: 24,
+            // more steps than by day: the low warm light makes long shafts through the
+            // arms, and with few steps their noise flickers
+            steps: 40,
         });
         // the night sky over the desert, lighter at the horizon
         scene.background = Background::Gradient {
@@ -110,16 +112,23 @@ impl FactorySet {
         // the glass wall. It is the source of the warm light in the hall.
         // Its glow lies along the horizon: a band that fades to the sides and upward, so the
         // upper panes keep the night sky and the wall has a gradient behind the arms.
-        let glow = vec3(0.0, 2.0, hall::Z_FAR - 50.0);
+        // The glow sits low: its discs reach up to 7 m on the wall, so the upper panes
+        // keep the night and the far arms stand dark against the band of light. Wider
+        // discs turn the whole wall into one flat field of light.
+        let glow = vec3(0.0, 1.5, hall::Z_FAR - 50.0);
         let mut particles = vec![
             Particle::new(glow, 4.0, Rgb::hex(0xffd29a) * (3.0 * warm)),
-            Particle::new(glow, 40.0, Rgb::hex(WARM) * (0.45 * warm)),
+            Particle::new(
+                vec3(0.0, -4.0, hall::Z_FAR - 50.0),
+                22.0,
+                Rgb::hex(WARM) * (0.4 * warm),
+            ),
         ];
         particles.extend((-4..=4).map(|i| {
             let side = 1.0 - (i as f32 / 5.0).abs();
             Particle::new(
-                vec3(i as f32 * 22.0, 0.0, hall::Z_FAR - 50.0),
-                36.0,
+                vec3(i as f32 * 22.0, -6.0, hall::Z_FAR - 50.0),
+                26.0,
                 Rgb::hex(0xff8a2a) * (0.1 * side * warm),
             )
         }));

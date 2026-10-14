@@ -116,16 +116,21 @@ impl FactorySet {
         // The inspection lamp lights the board from the far side, so the pads and the
         // traces glint toward the eye. It goes off in the dive.
         let on = smoothstep(WHIP + 0.2, WHIP + 0.8, t) * (1.0 - smoothstep(8.2, 9.0, t));
-        // It stands high on the side, so that the board and the chip do not mirror it into
-        // the eye.
-        let lamp = jig + vec3(0.3, 0.6, 0.45);
-        // The sky of the hall fades first, then the studio of shot 4 comes in its place.
-        if let Environment::Map { intensity, .. } = &mut scene.environment {
-            *intensity = SKY * (1.0 + 0.8 * on) * (1.0 - smoothstep(8.6, 8.95, t));
-        }
+        // It stands high on the side, so that the board, the chip and the slanted pins do
+        // not mirror it into the eye.
+        let lamp = jig + vec3(0.6, 0.65, 0.25);
+        // The macro view has the light of shot 4: a dark studio with one large soft light
+        // above. The sky of the hall has a sun, and the mirror pins of the chip reflect it
+        // as a white bar. The studio comes in the blur of the swing and fades in the dive,
+        // and the studio of shot 4 takes its place.
+        let studio = smoothstep(WHIP + 0.2, KEY, t) * (1.0 - smoothstep(8.6, 8.95, t));
         let city = smoothstep(8.95, 9.3, t);
+        if studio > 0.0 || city > 0.0 {
+            scene.environment = chip_light(0.7 * studio + city);
+        } else if let Environment::Map { intensity, .. } = &mut scene.environment {
+            *intensity = SKY;
+        }
         if t > 8.95 {
-            scene.environment = chip_light(city);
             scene.add(Node::light(Light::hemisphere(
                 0x0a1424,
                 0x2a4470,
@@ -148,7 +153,7 @@ impl FactorySet {
         let lamp_node = &mut scene[self.lamp];
         lamp_node.position = lamp;
         lamp_node.object =
-            Object::Light(Light::spot(0xe8f2ff, 2.0 * on, 0.5, 0.7).pointing(jig - lamp));
+            Object::Light(Light::spot(0xe8f2ff, 1.6 * on, 0.5, 0.7).pointing(jig - lamp));
         // The work light lights the faces of the jaws that the camera sees. Their brushed
         // faces catch it in streaks that fade toward the edges of its cone.
         let flange = self.watcher.base * arm::flange(&q);
@@ -180,7 +185,7 @@ impl FactorySet {
             }
         } else {
             *sun = Object::Light(
-                Light::directional(0xe8f2ff, 2.2 * on, lamp - jig).with_shadow(Shadow {
+                Light::directional(0xe8f2ff, 1.3 * on, lamp - jig).with_shadow(Shadow {
                     map_size: 4096,
                     softness: 6.0,
                     bias: 4.0,
