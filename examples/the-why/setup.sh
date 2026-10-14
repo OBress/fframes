@@ -21,8 +21,8 @@ for tool in cargo python3 ffmpeg ffprobe curl bc; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 # the billboards need yt-dlp itself or uv to run it
-command -v yt-dlp >/dev/null 2>&1 || command -v uvx >/dev/null 2>&1 ||
-    command -v uv >/dev/null 2>&1 || missing="$missing yt-dlp-or-uv"
+yt-dlp --version >/dev/null 2>&1 || uvx -q yt-dlp --version >/dev/null 2>&1 ||
+    uv tool run -q yt-dlp --version >/dev/null 2>&1 || missing="$missing yt-dlp"
 if [ -n "$missing" ]; then
     echo "not found in PATH:$missing (macOS: brew install ffmpeg python yt-dlp; cargo from rustup.rs)" >&2
     exit 1

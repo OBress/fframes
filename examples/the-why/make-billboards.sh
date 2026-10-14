@@ -13,16 +13,14 @@ cd "$(dirname "$0")/dynamic_media/play"
 src=made_of_motion.mp4
 length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")
 mkdir -p cameos
-# yt-dlp from PATH, or through uv
-if command -v yt-dlp >/dev/null 2>&1; then
-    ytdlp="yt-dlp"
-elif command -v uvx >/dev/null 2>&1; then
-    ytdlp="uvx -q yt-dlp"
-elif command -v uv >/dev/null 2>&1; then
-    ytdlp="uv tool run -q yt-dlp"
-else
-    ytdlp=""
-fi
+# yt-dlp from PATH, or through uv; each one must run, so a broken uvx shim is skipped
+ytdlp=""
+for candidate in "yt-dlp" "uvx -q yt-dlp" "uv tool run -q yt-dlp"; do
+    if $candidate --version >/dev/null 2>&1; then
+        ytdlp="$candidate"
+        break
+    fi
+done
 # Homebrew's ffmpeg has libx264, some Linux builds only libopenh264
 if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264; then
     h264="-c:v libx264 -crf 16 -preset fast"
