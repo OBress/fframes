@@ -13,6 +13,12 @@ cd "$(dirname "$0")/dynamic_media/play"
 src=made_of_motion.mp4
 length=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$src")
 mkdir -p cameos
+# Homebrew's ffmpeg has libx264, some Linux builds only libopenh264
+if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264; then
+    h264="-c:v libx264 -crf 16 -preset fast"
+else
+    h264="-c:v libopenh264 -b:v 8M"
+fi
 
 # cut <video id> <start s> <out>: 10 s of the video, cropped to 4:3
 cut() {
@@ -20,7 +26,7 @@ cut() {
     uvx -q yt-dlp --no-progress -f "bv*[height<=720][ext=mp4]/bv*[height<=720]" \
         -o cameos/full.mp4 "https://www.youtube.com/watch?v=$1" >/dev/null
     ffmpeg -v error -y -ss "$2" -t 10.2 -i cameos/full.mp4 -an \
-        -vf "crop=ih*4/3:ih,scale=960:720" -c:v libopenh264 -b:v 8M "$3"
+        -vf "crop=ih*4/3:ih,scale=960:720" $h264 "$3"
     rm -f cameos/full.mp4
 }
 cut w7i4amO_zaE 2 primeagen.mp4
@@ -54,5 +60,5 @@ for k in $(seq 0 19); do
 done
 # shellcheck disable=SC2086
 ffmpeg -v error -y $inputs -filter_complex "${filters}${pads}xstack=inputs=20:layout=${layout%|}[v]" \
-    -map "[v]" -an -c:v libopenh264 -b:v 40M -pix_fmt yuv420p -t "$length" billboards.mp4
+    -map "[v]" -an $h264 -pix_fmt yuv420p -t "$length" billboards.mp4
 echo "made billboards.mp4"
