@@ -4,9 +4,10 @@
 //! lights up warm at the end.
 //!
 //! - 0.0: a close shot of the warm pilot line between the future towers. It crosses the
-//!   picture at its middle, against the dark blue sky of the east.
-//! - 0.12 to 2.2: the camera pulls back 1.2 km and swings to the hill of Battery Spencer
-//!   on the Marin side: the view down the bridge to the city.
+//!   picture at its middle, over the dark hills of the bay and under the stars of the
+//!   east. Beads of light run along it.
+//! - 0.0 to 2.2: the camera pulls back 1.2 km from the first frame on and swings to the
+//!   hill of Battery Spencer on the Marin side: the view down the bridge to the city.
 //! - 0.8 to 2.15: the towers rise lift by lift, the north tower from 1.3. A creeper
 //!   derrick on each leg swings the pieces up, a scaffold with work lamps climbs with it,
 //!   and hot rivets fall.
@@ -38,7 +39,7 @@ use super::golden_gate::{
     self, ANCHOR, CABLE_RADIUS, CABLE_Z, HALF_SPAN, Lift, Paints, SIDE_SPAN, TOWER_TOP,
     TRUSS_DEPTH, cable_at, road_y,
 };
-use super::{AMBER, COLD, COLD_BLUE, camera, ease, ease_in, ease_out, mix, sky, span};
+use super::{AMBER, COLD, COLD_BLUE, camera, ease, ease_in, ease_out, mix, sky, span, stars};
 use crate::assets::Assets;
 use machines::Work;
 
@@ -108,6 +109,10 @@ struct Ids {
     sutro_lights: NodeId,
     /// The sea, which mirrors the bridge.
     sea: NodeId,
+    /// The stars, which ride with the camera.
+    stars: NodeId,
+    /// Wisps of fog on the horizon of the opening frames.
+    wisps: NodeId,
 }
 
 /// A deck segment of the suspended spans or the approaches.
@@ -203,12 +208,46 @@ impl Bridge {
             air.offset = vec3(-60.0 * t, 0.0, -8.0 * t);
         }
         // The fog bank lies on the water during the pull back. The haze does not dim the
-        // mirror image of the bright pilot line enough, so the sea mirrors little until
-        // the camera is wide and the lamps of the bridge come.
+        // mirror image of the bright pilot line and its pulses enough, so the sea mirrors
+        // little until the camera is wide and the lamps of the bridge come.
         if let Some(m) = scene[self.ids.sea].material_mut() {
-            m.reflection = mix(0.06, 0.8, smoothstep(2.4, 3.1, t));
+            m.reflection = mix(0.03, 0.8, smoothstep(2.4, 3.1, t));
+        }
+        // the wisps on the fog bank fade while the camera pulls back, and the fog takes
+        // a little of the glow of the sky, so the bank and the sky do not meet in a hard
+        // edge in the close shot
+        let close = 1.0 - smoothstep(0.5, 1.3, t);
+        if let Object::Particles(p) = &mut scene[self.ids.wisps].object {
+            for item in &mut p.items {
+                item.opacity = close;
+            }
+        }
+        if let Some(air) = &mut scene.atmosphere {
+            air.ambient = Rgb::hex(0x3a5490).lerp(Rgb::hex(0x8a6478), 0.9 * close) * 0.28;
+            // thicker air in the close shot hides the far hills, so the sea fades into the
+            // glow of the sky instead of meeting it at the straight top of the hills
+            air.density *= mix(1.0, 3.5, close);
+            // the haze reaches the far water in the close shot, so the water fades into
+            // the sky instead of ending at the edge of the haze
+            air.distance = mix(9000.0, 30000.0, close);
+            air.steps = 36 + (28.0 * close) as u32;
+        }
+        scene[self.ids.stars].position = camera.position;
+        if let Object::Particles(p) = &mut scene[self.ids.stars].object {
+            let dt = crate::look::SHUTTER / self.shutter(t) as f32;
+            super::streak_stars(&mut p.items, |t| self.camera_at(t), t, dt);
         }
         (scene, camera)
+    }
+
+    /// The motion blur samples at `t`: more on the pull back from the line, and under the
+    /// glare of the car, which is wider than the gap between two samples.
+    pub fn shutter(&self, t: f32) -> usize {
+        match t {
+            t if t < 1.8 => 3,
+            t if t > 4.4 => 2,
+            _ => 1,
+        }
     }
 
     /// The finished bridge for shot 9, see [`super::Landmarks`].
@@ -386,13 +425,29 @@ impl Bridge {
         let pilot: Vec<Mat4> = (0..CABLE_STEPS)
             .map(|k| {
                 let (a, b) = step(k, -CABLE_Z);
-                span(a, b, (0.7 * work.pixel_at(a)).max(0.02))
+                span(a, b, (0.7 * work.pixel_at(a)).max(0.012))
             })
             .collect();
         if let Some(mesh) = scene[ids.pilot].mesh_mut() {
             mesh.instances = Some(Arc::new(Instances::new(pilot)));
         }
         scene[ids.pilot].visible = spun < 0.9;
+        // pulses of light run along the pilot line while the camera is near it: the warm
+        // light on its way, 2 m apart, each a dot wider than the line with a short streak
+        // that joins the motion blur samples
+        let near = 1.0 - smoothstep(0.5, 0.9, t);
+        if near > 0.0 {
+            for k in 0..1000u32 {
+                let x =
+                    (t * 5.0 + k as f32 * 2.0 + 0.9 * hash(k)).rem_euclid(2.0 * ANCHOR) - ANCHOR;
+                let p = cable_at(x, -CABLE_Z);
+                let size = 0.05_f32.max(2.0 * work.pixel_at(p));
+                work.glows.push(
+                    Particle::new(p, size, Rgb::hex(0xfff0d8) * (40.0 * near))
+                        .tail(cable_at(x + 0.08, -CABLE_Z) - p),
+                );
+            }
+        }
 
         // the spinning wheels: three on each cable, from anchorage to anchorage and back.
         // Each pulls a wire that glints behind it.
@@ -617,17 +672,20 @@ impl Bridge {
     }
 
     /// The camera at `t`. It starts 10 m from the pilot line on the ocean side with a long
-    /// lens, pulls back and swings up over Battery Spencer, drifts while the bridge grows,
-    /// and at the end turns to the headlights of the first car.
+    /// lens, at its height, so the line lies on the horizon: the fog of the bay under it,
+    /// the stars over it. It pulls back and swings up over Battery Spencer, drifts while the bridge
+    /// grows, and at the end turns to the headlights of the first car.
     fn camera_at(&self, t: f32) -> Camera {
         let line = from_bridge(cable_at(0.0, -CABLE_Z));
-        let start = from_bridge(cable_at(0.0, -CABLE_Z) + vec3(0.0, -2.0, -10.0));
+        let start = from_bridge(cable_at(0.0, -CABLE_Z) + vec3(0.0, 0.4, -10.0));
         let wide_target = from_bridge(vec3(260.0, 70.0, 0.0));
         let car = from_bridge(car_position(5.0));
 
-        // the pull back: the distance grows evenly in log space, and the direction turns
-        // from the west to the Marin hill
-        let pull = ease(progress(t, 0.12, 2.2));
+        // The pull back: the distance grows evenly in log space, and the direction turns
+        // from the west to the Marin hill. It moves from the first frame on, so the strait
+        // opens up under the line within the first second, and settles at the end.
+        let x = progress(t, 0.0, 2.2);
+        let pull = -1.3 * x * x * x + 1.6 * x * x + 0.7 * x;
         let turn = ease(progress(t, 0.35, 2.2));
         let d0 = start.distance(line);
         let d1 = self.battery.distance(wide_target);
@@ -682,6 +740,7 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
                 Rgb::hex(0x5a78b0) * 0.4,
                 Rgb::hex(0xff8a50) * 0.7,
                 west.z.atan2(west.x),
+                0.0,
             ),
             1.0,
         ))
@@ -873,6 +932,24 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
         west + Vec3::Y * 0.1,
     )));
     scene.add(Node::light(Light::hemisphere(0x5a78c0, 0x14161c, 1.6)));
+    // the stars of the east, faint in the blue hour. The frames move them with the camera.
+    // The haze over 4.5 km dims them to a tenth, so they are bright.
+    let sky_stars = scene.add(Node::particles(stars(Vec3::ZERO, 3.5), Blending::Additive));
+    // wisps on the top of the fog bank, 300 m to 1.8 km ahead of the first camera at the
+    // height of its horizon: soft, uneven, in the colors of the glow over them
+    let eye = cable_at(0.0, -CABLE_Z) + vec3(0.0, 0.4, -10.0);
+    let wisps = (0..90u32)
+        .map(|i| {
+            let d = 300.0 + 1500.0 * hash(i * 5 + 1).powf(1.5);
+            let x = (hash(i * 5 + 2) - 0.5) * 1.4 * d;
+            // the far water meets the sky about 0.7 degrees under the horizon
+            let y = eye.y - d * (0.012 + (hash(i * 5 + 3) - 0.5) * 0.018);
+            let size = d * (0.025 + 0.06 * hash(i * 5 + 4));
+            let tint = Rgb::hex(0xb08090).lerp(Rgb::hex(0x7080b0), hash(i * 5 + 5));
+            Particle::new(vec3(eye.x + x, y, eye.z + d), size, tint * 0.14)
+        })
+        .collect();
+    let wisps = scene.add_to(gate, Node::particles(wisps, Blending::Additive));
     // the fog: thick on the water, thin above the deck, in banks that drift in
     scene.atmosphere = Some(Atmosphere {
         density: 0.014,
@@ -910,6 +987,8 @@ fn build(assets: &Assets, bay: &Bay, shapes: &[Geometry], crown: usize) -> (Scen
         city_glow,
         sutro_lights,
         sea,
+        stars: sky_stars,
+        wisps,
     };
     (scene, ids)
 }

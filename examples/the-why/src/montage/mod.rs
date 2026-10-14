@@ -252,13 +252,7 @@ impl MontageSet {
         };
         let (part, x) = part_at(t);
         match part {
-            Part::Bridge => match x {
-                // the pull back from the cable
-                x if x < 1.8 => 3,
-                // the car on the bridge: its glare is wider than the gap between two samples
-                x if x > 4.4 => 2,
-                _ => 1,
-            },
+            Part::Bridge => self.bridge.shutter(x),
             Part::Wind => self.wind.shutter(x),
             Part::School => self.school.shutter(x),
             Part::Water => self.water.shutter(x),
@@ -443,8 +437,16 @@ fn span(a: Vec3, b: Vec3, thickness: f32) -> Mat4 {
 
 /// A sky panorama: `zenith` straight up, `horizon` at the horizon, and the warm `glow` of
 /// the sun below the horizon around the direction `azimuth` (radians, `atan2(z, x)`). Thin
-/// clouds near the horizon are dark against the sky and warm in the glow.
-fn sky(zenith: Rgb, horizon: Rgb, glow: Rgb, azimuth: f32) -> std::sync::Arc<EnvironmentMap> {
+/// clouds near the horizon are dark against the sky and warm in the glow. `high` is the
+/// cover of a field of altocumulus higher up, `0..1`: the sun below the horizon lights it
+/// from below, so it is warm toward the glow and dark elsewhere.
+fn sky(
+    zenith: Rgb,
+    horizon: Rgb,
+    glow: Rgb,
+    azimuth: f32,
+    high: f32,
+) -> std::sync::Arc<EnvironmentMap> {
     use std::f32::consts::{PI, TAU};
     let (width, height) = (2048, 1024);
     let ground = horizon.0 * 0.08;
@@ -470,7 +472,35 @@ fn sky(zenith: Rgb, horizon: Rgb, glow: Rgb, azimuth: f32) -> std::sync::Arc<Env
                 * math::smoothstep(0.02, 0.05, elevation)
                 * math::smoothstep(0.24, 0.07, elevation);
             let lit = glow.0 * (0.08 + 0.8 * band);
-            color.lerp(lit.max(zenith.0 * 0.6), cloud * 0.6)
+            color = color.lerp(lit.max(zenith.0 * 0.6), cloud * 0.6);
+            if high <= 0.0 {
+                return color;
+            }
+            // Altocumulus: cells of different sizes, in bands with clear sky between
+            // them. A large mask sets the bands, a warp takes the cells off the grid of
+            // the noise. The cloud is grey-lavender; only the undersides low over the
+            // horizon catch the warm light of the sun below it. The field fades into the
+            // haze at the horizon and thins toward the zenith.
+            let warp = vec2(
+                fbm(83, around * 7.0, elevation * 20.0, 3),
+                fbm(84, around * 7.0 + 5.0, elevation * 20.0, 3),
+            ) * 1.8;
+            let cells = fbm(81, around * 40.0 + warp.x, elevation * 120.0 + warp.y, 5);
+            let bands = fbm(82, around * 4.0, elevation * 14.0, 3)
+                + 0.3 * (elevation * 55.0 + 2.0 * fbm(85, around * 3.0, 0.0, 2)).sin();
+            let mask = math::smoothstep(-0.15, 0.4, bands);
+            let cover = math::smoothstep(0.05 + 0.3 * (1.0 - mask), 0.55, cells)
+                * mask
+                * math::smoothstep(0.1, 0.25, elevation)
+                * math::smoothstep(0.75, 0.35, elevation)
+                * high;
+            let wide = (-(away / 1.6).powi(2)).exp();
+            let lavender = zenith.0.lerp(horizon.0, 0.5) * 0.9 + Vec3::splat(0.03);
+            let low = math::smoothstep(0.5, 0.15, elevation);
+            let thin = 1.0 - math::smoothstep(0.3, 0.8, cells);
+            let warm = glow.0 * (0.06 + 0.22 * wide) * low * thin;
+            let lit = lavender * (0.7 + 0.3 * thin) + warm;
+            color.lerp(lit, cover * 0.7)
         })
         .collect();
     std::sync::Arc::new(EnvironmentMap::from_linear(width, height, data))

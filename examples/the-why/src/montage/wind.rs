@@ -659,6 +659,7 @@ fn build(assets: &Assets, houses: &[House]) -> (Scene, Ids, Vec<(Vec3, Vec3, f32
                 Rgb::hex(0x2a3a64) * 0.42,
                 Rgb::hex(0x8aa0d0) * 0.5,
                 moon.z.atan2(moon.x),
+                0.0,
             ),
             1.0,
         ))
@@ -1006,11 +1007,12 @@ fn build(assets: &Assets, houses: &[House]) -> (Scene, Ids, Vec<(Vec3, Vec3, f32
             }),
         },
     )));
-    scene.add(Node::light(Light::hemisphere(0x2a3a64, 0x0a0c10, 0.35)));
-    // the faint light of the open sky behind the camera: it shows the folds of the slope
+    scene.add(Node::light(Light::hemisphere(0x2a3a64, 0x0a0c10, 0.8)));
+    // the light of the open sky behind the camera: it shows the folds, the gullies and
+    // the groves of the slope, which the moon behind the ridge does not reach
     scene.add(Node::light(Light::directional(
         0x6a80b8,
-        0.25,
+        1.2,
         vec3(-0.6, 0.35, 0.7),
     )));
     scene.atmosphere = Some(Atmosphere {

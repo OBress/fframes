@@ -420,8 +420,9 @@ impl School {
         if t < 0.14 || (PRINT.0..PRINT.1 + 0.02).contains(&t) {
             5
         } else if (ROOF.0..ROOF.1).contains(&t) {
-            // the roof slabs drop 14 m in 0.11 s
-            4
+            // The roof slabs drop 14 m in 0.11 s, 2 m a frame. The slabs are 0.35 m thick:
+            // with fewer samples, each slab shows as a stack of separate copies.
+            7
         } else if t > 0.85 {
             3
         } else {
@@ -594,6 +595,7 @@ fn build(assets: &Assets) -> (Scene, Ids) {
                 Rgb::hex(0x2a3a64) * 0.4,
                 Rgb::hex(0x8aa0d0) * 0.35,
                 moon.z.atan2(moon.x),
+                0.0,
             ),
             1.0,
         ))

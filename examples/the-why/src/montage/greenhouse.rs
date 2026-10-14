@@ -71,8 +71,13 @@ const SOIL: (f32, f32) = (1.6, 2.2);
 /// The first glass panel is set.
 const GLASS: f32 = 2.0;
 /// The flight of a drone with its glass to the dome, and its flight away, in seconds.
-const CARRY: f32 = 0.8;
-const LEAVE: f32 = 0.7;
+const CARRY: f32 = 0.7;
+const LEAVE: f32 = 0.45;
+/// The drones come in through one gate, left of the dome and behind it, high over the
+/// dunes and out of the picture, and leave through another on the right: one stream of
+/// glass, not a swarm from all sides.
+const GATE: Vec3 = Vec3::new(-78.0, 40.0, -42.0);
+const EXIT: Vec3 = Vec3::new(42.0, 22.0, 16.0);
 /// The grow lights come on and the plants sprout.
 const BLOOM: f32 = 2.4;
 /// The glass glows green.
@@ -985,14 +990,22 @@ impl Greenhouse {
             }
             let center = p.place.transform_point3(vec3(1.0 / 3.0, 1.0 / 3.0, 0.0));
             let pair = i - i % 2;
+            // The path from the gate: a curve that arrives along the normal of the panel,
+            // from a point 10 m out from its place, and bulges up over the dome on its
+            // way. Each drone flies a little beside the others.
+            let gate = GATE - center;
             let side =
-                p.normal.cross(Vec3::Y).normalize_or(Vec3::X) * (6.0 * (hash(pair as u32) - 0.5));
-            let from = p.normal * 10.0 + Vec3::Y * (28.0 - center.y).max(10.0) + side;
+                gate.cross(Vec3::Y).normalize_or(Vec3::X) * (9.0 * (hash(pair as u32) - 0.5));
+            let from = gate + side;
+            let out = p.normal * 10.0 + Vec3::Y * 6.0;
             // slow at both ends: the drone starts while it is still small, and brakes at
             // the place of the panel
             let fly = |t: f32| {
                 let left = 1.0 - ease(progress(t, p.set - CARRY, p.set));
-                from * left + side * (0.6 * (PI * left).sin())
+                let s = 1.0 - left;
+                (1.0 - s) * (1.0 - s) * from
+                    + 2.0 * (1.0 - s) * s * out
+                    + Vec3::Y * (12.0 * (PI * s).sin())
             };
             let left = 1.0 - ease(g);
             let away = fly(t);
@@ -1018,7 +1031,7 @@ impl Greenhouse {
             if !p.drone || size < 0.01 {
                 continue;
             }
-            let up = p.normal.with_y(0.0) * 5.0 + Vec3::Y * 14.0;
+            let up = EXIT - center;
             let drone_at = |t: f32| {
                 let leave = progress(t, p.set, p.set + LEAVE);
                 center + fly(t) + p.normal * 0.5 + Vec3::Y * 0.9 + up * (leave * leave)
@@ -1028,7 +1041,7 @@ impl Greenhouse {
             // samples join into one line and do not show as rows of dots
             let streak = drone_at(t + SHUTTER * 1.2 / DRONE_SAMPLES as f32) - drone;
             let brake = Quat::from_axis_angle(
-                Vec3::Y.cross(from.with_y(0.0)).normalize_or(Vec3::X),
+                Vec3::Y.cross(out.with_y(0.0)).normalize_or(Vec3::X),
                 -2.0 * left * (1.0 - left),
             );
             let climb = Quat::from_axis_angle(
@@ -1303,6 +1316,7 @@ fn build(assets: &Assets, glow: f32) -> (Scene, Ids) {
                 Rgb::hex(0x7a7ea8) * 0.5,
                 Rgb::hex(0xff8a48) * 1.1,
                 glow,
+                1.0,
             ),
             1.0,
         ))

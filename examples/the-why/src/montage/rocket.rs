@@ -986,6 +986,7 @@ fn build(assets: &Assets) -> (Scene, Ids, Tower, Vec<Vec3>) {
                 Rgb::hex(0x9a8eb4) * 0.6,
                 Rgb::hex(0xffa050) * 2.0,
                 GLOW,
+                1.0,
             ),
             1.0,
         ))
@@ -1180,8 +1181,8 @@ fn build(assets: &Assets) -> (Scene, Ids, Tower, Vec<Vec3>) {
         falloff: 0.018,
         anisotropy: 0.55,
         ambient: Rgb::hex(0x6a6a98) * 0.12,
-        noise: 0.45,
-        noise_size: 40.0,
+        noise: 0.3,
+        noise_size: 70.0,
         offset: Vec3::ZERO,
         distance: 450.0,
         steps: 32,

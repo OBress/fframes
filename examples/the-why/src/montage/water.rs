@@ -448,6 +448,7 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
                 Rgb::hex(0x5a6890) * 0.55,
                 Rgb::hex(0xff9a60) * 3.0,
                 ahead.z.atan2(ahead.x),
+                0.0,
             ),
             1.0,
         ))
@@ -742,11 +743,10 @@ fn build(assets: &Assets, turn: Quat) -> (Scene, Ids) {
         Node::light(Light::point(AMBER, 1500.0, 70.0)).hidden(),
     );
     let glows = add(&mut scene, Node::particles(Vec::new(), Blending::Additive));
-
     // the light of the sky, and the dawn glow low ahead: it rims the crop
     add(
         &mut scene,
-        Node::light(Light::hemisphere(0x5a6a98, 0x1a1410, 1.0)),
+        Node::light(Light::hemisphere(0x5a6a98, 0x1a1410, 1.5)),
     );
     add(
         &mut scene,
