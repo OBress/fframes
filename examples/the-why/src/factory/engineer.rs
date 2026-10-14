@@ -386,7 +386,7 @@ impl FactorySet {
                     <path d={path} fill="none" stroke={color} stroke-width="4" />
                     <rect x={x - 18.0} y={y0} width="560" height="168" fill="#04080e" opacity="0.5" />
                     <text x={x} y={y0 + 40.0} font-family={HUD} font-weight="600" font-size="44" fill={color}>"HUMAN"</text>
-                    <text x={x} y={y0 + 96.0} font-family={HUD} font-size="34" fill={color} opacity="0.8">"ID 0451 · CONF 99.7%"</text>
+                    <text x={x} y={y0 + 96.0} font-family={HUD} font-size="34" fill={color} opacity="0.8">"ID 0451  CONF 99.7%"</text>
                     <text x={x} y={y0 + 146.0} font-family={HUD} font-weight="600" font-size="34" fill="#ffffff">{role}</text>
                 </g>
             );
@@ -404,7 +404,7 @@ impl FactorySet {
             let (path, x1, y0, y1) = brackets(bounds, 24.0 + 120.0 * (1.0 - place), 50.0);
             let seated = t > TOUCH;
             let state = if t > RELEASE + 0.1 {
-                "PLACED · OK"
+                "PLACED  OK"
             } else if seated {
                 "SEATED"
             } else {
@@ -418,7 +418,7 @@ impl FactorySet {
                 <g opacity={place}>
                     <path d={path} fill="none" stroke={color} stroke-width="3" />
                     <rect x={x - 18.0} y={y0} width="520" height="200" fill="#04080e" opacity="0.5" />
-                    <text x={x} y={y0 + 34.0} font-family={HUD} font-weight="600" font-size="38" fill={color}>"U17 · QFP-176"</text>
+                    <text x={x} y={y0 + 34.0} font-family={HUD} font-weight="600" font-size="38" fill={color}>"U17  QFP-176"</text>
                     <text x={x} y={y0 + 84.0} font-family={HUD} font-size="32" fill={color} opacity="0.85">{z}</text>
                     <text x={x} y={y0 + 128.0} font-family={HUD} font-size="32" fill={color} opacity="0.85">{theta}</text>
                     <text x={x} y={y0 + 178.0} font-family={HUD} font-weight="600" font-size="32" fill="#ffffff">{state}</text>
@@ -427,10 +427,42 @@ impl FactorySet {
             );
         }
 
+        // The scan line passes the rubber duck on the rail once after the last zoom step, and
+        // a small bracket tags it for 0.6 s. The scan line moves down the picture 0.9 times
+        // per second.
+        let duck = eggs::DUCK;
+        let corners = [
+            vec3(-0.05, 0.0, -0.05),
+            vec3(0.05, 0.0, 0.05),
+            vec3(-0.05, 0.1, 0.05),
+            vec3(0.05, 0.1, -0.05),
+        ]
+        .map(|c| duck + c);
+        let mut debugger = Svgr::empty();
+        if let (true, Some(bounds)) = ((2.8..WHIP).contains(&t), project(&corners)) {
+            let at = f32::midpoint(bounds.0.y, bounds.1.y) / h;
+            let pass = (2.9 * 0.9 - at).ceil() + at;
+            let since = t - pass / 0.9;
+            if (0.0..0.6).contains(&since) {
+                let show = smoothstep(0.0, 0.08, since) * (1.0 - smoothstep(0.5, 0.6, since));
+                let (path, _, y0, _) = brackets(bounds, 14.0, 18.0);
+                // the label stands above the bracket, so it does not hide the mug
+                let x = bounds.0.x - 14.0 + 24.0;
+                debugger = svgr!(
+                    <g opacity={show}>
+                        <path d={path} fill="none" stroke={color} stroke-width="3" />
+                        <rect x={x - 312.0} y={y0 - 104.0} width="324" height="92" fill="#04080e" opacity="0.5" />
+                        <text x={x} y={y0 - 66.0} font-family={HUD} font-weight="600" font-size="30" fill={color} text-anchor="end">"DEBUGGER"</text>
+                        <text x={x} y={y0 - 26.0} font-family={HUD} font-size="26" fill={color} opacity="0.8" text-anchor="end">"UNKNOWN MODEL"</text>
+                    </g>
+                );
+            }
+        }
+
         let status = if t < WHIP {
-            "TASK: PLACE U17 · PAUSED"
+            "TASK: PLACE U17  PAUSED"
         } else {
-            "TASK: PLACE U17 · RESUMED"
+            "TASK: PLACE U17  RESUMED"
         };
         let clock = format!("T+{:06.2}", 723.0 + t);
         let frame = format!(
@@ -448,15 +480,16 @@ impl FactorySet {
             {crate::look::iris(t, 0.4)}
             <g opacity={fade}>
                 <path d={frame} fill="none" stroke={color} stroke-width="3" opacity="0.7" />
-                <text x="120" y={top + 140.0} font-family={HUD} font-size="34" fill={color} opacity="0.85">"AX-07 · VISION"</text>
+                <text x="120" y={top + 140.0} font-family={HUD} font-size="34" fill={color} opacity="0.85">"AX-07  VISION"</text>
                 <text x="120" y={top + 190.0} font-family={HUD} font-size="30" fill={color} opacity="0.6">{clock}</text>
-                <text x={w - 120.0} y={top + 140.0} font-family={HUD} font-size="34" fill={color} opacity="0.85" text-anchor="end">"LINE 07 · STATION 62"</text>
+                <text x={w - 120.0} y={top + 140.0} font-family={HUD} font-size="34" fill={color} opacity="0.85" text-anchor="end">"LINE 07  STATION 62"</text>
                 <text x={w - 120.0} y={top + 190.0} font-family={HUD} font-size="30" fill={color} opacity="0.6" text-anchor="end">"THROUGHPUT 14 212 / H"</text>
                 <text x="120" y={top + h - 120.0} font-family={HUD} font-size="32" fill={color} opacity="0.85">{status}</text>
                 <circle cx={w * 0.5} cy={top + h * 0.5} r="18" fill="none" stroke={color} stroke-width="3" opacity="0.6" />
                 <rect x="0" y={scan} width={w} height="2" fill={color} opacity="0.12" />
                 {target}
                 {placement}
+                {debugger}
             </g>
             </g>
         )

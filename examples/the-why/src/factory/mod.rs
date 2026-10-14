@@ -4,6 +4,7 @@
 pub mod arm;
 mod board;
 mod crowd;
+mod eggs;
 mod engineer;
 mod hall;
 mod wave;
@@ -75,6 +76,8 @@ pub struct FactorySet {
     sun: NodeId,
     engineer: Figure,
     laptop: NodeId,
+    /// The rubber duck and the mug beside the laptop.
+    props: NodeId,
     /// The chip U17 that the watcher places.
     chip: NodeId,
     /// The inspection lamp over the jig.
@@ -276,25 +279,11 @@ impl FactorySet {
             hair: cloth(0x0a0909, 0.75),
         };
         let engineer = Figure::build(&mut scene, None, &style);
-        let laptop = scene.add(Node::group());
-        scene.add_to(
-            laptop,
-            Node::mesh(
-                Geometry::merge([
-                    Geometry::rounded_box(0.33, 0.011, 0.23, 0.004, 2).translate(0.0, 0.0055, 0.0),
-                    Geometry::rounded_box(0.33, 0.007, 0.23, 0.004, 2).translate(0.0, 0.0145, 0.0),
-                ]),
-                Material::metal(0x6a6d72, 0.45),
-            ),
-        );
-        // a sticker on the lid
-        scene.add_to(
-            laptop,
-            Node::mesh(
-                Geometry::rounded_box(0.05, 0.001, 0.05, 0.004, 1).translate(0.06, 0.0185, -0.04),
-                Material::standard(0x2c3440).roughness(0.7),
-            ),
-        );
+        // His old laptop stands closed on the rail, with stickers on the lid. A rubber duck
+        // and a mug of coffee stand beside it.
+        let serif = include_bytes!("../../media/InstrumentSerif-Italic.ttf");
+        let laptop = eggs::laptop(&mut scene, font, serif);
+        let props = eggs::build(&mut scene, font);
 
         // The jig of the watcher: a stand with the circuit board, and the tray of chips
         // beside it. The inspection lamp lights the board in shot 3.
@@ -376,6 +365,7 @@ impl FactorySet {
             sun,
             engineer,
             laptop,
+            props,
             chip,
             lamp,
             stars,
@@ -731,8 +721,10 @@ impl FactorySet {
     fn pose_engineer(&self, scene: &mut Scene, time: f32, down: f32) {
         let rail = vec3(0.0, 1.10, 0.43);
         let mut pose = Pose::at_rail(time, rail);
-        // The right hand lies on the laptop, 18 mm over the rail.
-        let on_laptop = Pose::at_rail(time, rail + vec3(0.0, 0.018, 0.0));
+        // The right hand holds the laptop by its top edge. The arm takes its joints from a
+        // pose with both hands higher, in which the body leans less. Thus its target is 10 cm
+        // over the edge.
+        let on_laptop = Pose::at_rail(time, rail + vec3(0.0, eggs::LAPTOP.y + 0.1, 0.0));
         for joint in [
             Joint::ClavicleR,
             Joint::ShoulderR,
@@ -750,9 +742,13 @@ impl FactorySet {
         let pose = pose.placed(ENGINEER, 0.0);
         self.engineer.apply(scene, &pose);
         let palm = self.engineer.palms(scene)[RIGHT];
+        // The laptop stands on its hinge on the front half of the rail and leans toward
+        // the hall, so that its top edge is in the hand.
+        let base = vec3(palm.x - 0.03, ENGINEER.y + 1.10, ENGINEER.z + 0.455);
+        let lean = ((palm.z - base.z) / eggs::LAPTOP.y).clamp(-0.4, 0.4).asin();
         let laptop = &mut scene[self.laptop];
-        laptop.position = vec3(palm.x - 0.03, ENGINEER.y + 1.10, ENGINEER.z + 0.43);
-        laptop.rotation = Quat::from_rotation_y(0.08);
+        laptop.position = base;
+        laptop.rotation = Quat::from_rotation_y(0.08) * Quat::from_rotation_x(lean);
     }
 
     /// The grip point of a hero arm in the world.

@@ -245,6 +245,7 @@ impl FactorySet {
         // nobody stands on the catwalk at night
         scene[self.engineer.root].visible = false;
         scene[self.laptop].visible = false;
+        scene[self.props].visible = false;
         self.add_line(&mut scene, t);
         // Close to the floor, the line rakes the concrete in front of the camera with warm
         // light. Without it the lower half of the last frames is black.
