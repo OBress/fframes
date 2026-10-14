@@ -31,7 +31,7 @@ const GLOW_STEP: f32 = 0.0065;
 /// The radius of a glow sprite in radians.
 const GLOW_RADIUS: f32 = 0.014;
 /// The light of a glow sprite in the brightest part of the band.
-const GLOW_LIGHT: f32 = 0.007;
+const GLOW_LIGHT: f32 = 0.0095;
 /// The attempts to place a faint star of the band. The light of the band decides if it
 /// stays.
 const GRAINS: u32 = 300_000;

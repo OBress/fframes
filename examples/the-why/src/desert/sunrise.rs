@@ -4,7 +4,7 @@
 //! canyon to a village, a greenhouse dome, the contrail of the rocket. Birds cross the
 //! light. For the quote the camera rises slowly behind him and shows the land below.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::Arc;
 
 use fframes_3d::math::{hash, noise1, smoothstep};
@@ -194,7 +194,81 @@ pub struct Landmarks {
     /// The contrail of the rocket: soft puffs that the wind moves.
     pub contrail: NodeId,
     /// The birds that cross the light.
-    pub birds: NodeId,
+    pub birds: Vec<Bird>,
+}
+
+/// The nodes of one bird: the root that flies, and the two wings that beat.
+pub struct Bird {
+    root: NodeId,
+    /// The right wing, then the left wing.
+    wings: [NodeId; 2],
+}
+
+/// The number of birds in the flock.
+const BIRDS_COUNT: u32 = 7;
+
+/// A wing in the space of the bird, flat, from the shoulder at the origin to the tip at
+/// `side * 0.21` m along X. The bird flies along +Z. The front edge is straight, the
+/// back edge has the curve of the primaries.
+fn wing(side: f32) -> Geometry {
+    let outline = [
+        vec2(0.0, 0.04),
+        vec2(0.09, 0.045),
+        vec2(0.16, 0.035),
+        vec2(0.21, 0.005),
+        vec2(0.19, -0.03),
+        vec2(0.14, -0.045),
+        vec2(0.07, -0.055),
+        vec2(0.0, -0.045),
+    ];
+    let center = vec3(0.07 * side, 0.0, -0.005);
+    let mut triangles = Vec::new();
+    for pair in outline.windows(2) {
+        let a = vec3(pair[0].x * side, 0.0, pair[0].y);
+        let b = vec3(pair[1].x * side, 0.0, pair[1].y);
+        // counterclockwise seen from above on both sides
+        if side > 0.0 {
+            triangles.extend([center, b, a]);
+        } else {
+            triangles.extend([center, a, b]);
+        }
+    }
+    Geometry::from_triangles(&triangles)
+}
+
+/// Adds the birds to `scene`: a body with a head and a fanned tail, and two wings on
+/// hinges at the shoulders. They are dark against the sun.
+fn birds(scene: &mut Scene) -> Vec<Bird> {
+    let feathers = Material::standard(0x1c140f).roughness(0.85).double_sided();
+    let body = Arc::new(Geometry::merge([
+        Geometry::capsule(0.018, 0.17, 4, 10).rotate_x(FRAC_PI_2),
+        Geometry::sphere(0.02, 10, 8).translate(0.0, 0.012, 0.125),
+        Geometry::cone(0.008, 0.035, 6)
+            .rotate_x(FRAC_PI_2)
+            .translate(0.0, 0.01, 0.16),
+        Geometry::plane(0.08, 0.09)
+            .rotate_x(-FRAC_PI_2)
+            .translate(0.0, 0.0, -0.13),
+    ]));
+    let wings = [Arc::new(wing(1.0)), Arc::new(wing(-1.0))];
+    (0..BIRDS_COUNT)
+        .map(|_| {
+            let root = scene.add(Node::group().hidden());
+            scene.add_to(
+                root,
+                Node::mesh(body.clone(), feathers.clone()).shadows(false, false),
+            );
+            let wings = wings.each_ref().map(|wing| {
+                scene.add_to(
+                    root,
+                    Node::mesh(wing.clone(), feathers.clone())
+                        .at(0.0, 0.012, 0.0)
+                        .shadows(false, false),
+                )
+            });
+            Bird { root, wings }
+        })
+        .collect()
 }
 
 /// The points of the path of the rocket from the launch pad, 61 of them. It goes up
@@ -334,15 +408,19 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
             }
         }
     }
+    // The sun stands behind the village, so the camera sees its shadow sides, lit by
+    // the sky.
     scene.add(
         Node::mesh(
             Geometry::merge(houses),
-            Material::standard(0xffffff).roughness(0.85),
+            Material::standard(0x9a9080)
+                .roughness(0.9)
+                .env_intensity(0.4),
         )
         .shadows(false, false),
     );
     let windows = scene.add(
-        Node::mesh(Geometry::merge(windows), Material::glow(AMBER, 6.0)).shadows(false, false),
+        Node::mesh(Geometry::merge(windows), Material::glow(AMBER, 3.5)).shadows(false, false),
     );
 
     // The greenhouse: a geodesic dome of glass that glows green from the plants inside.
@@ -387,7 +465,7 @@ pub(super) fn landmarks(scene: &mut Scene, terrain: &Terrain) -> Landmarks {
         dome_light,
         windows,
         contrail: scene.add(Node::particles(Vec::new(), Blending::Normal)),
-        birds: scene.add(Node::particles(Vec::new(), Blending::Normal).named("birds")),
+        birds: birds(scene),
     }
 }
 
@@ -441,9 +519,7 @@ impl DesertSet {
         if let Object::Particles(contrail) = &mut scene[self.landmarks.contrail].object {
             contrail.items = self.contrail(t, camera.position);
         }
-        if let Object::Particles(birds) = &mut scene[self.landmarks.birds].object {
-            birds.items = birds_at(t, feet);
-        }
+        fly_birds(&mut scene, &self.landmarks.birds, t, feet);
         // The village lights go out as the day comes.
         if let Some(material) = scene[self.landmarks.windows].material_mut() {
             material.emissive_intensity *= 1.0 - 0.85 * smoothstep(2.0, 9.5, t);
@@ -548,20 +624,19 @@ fn dust_in_sun(eye: Vec3, t: f32) -> Vec<Particle> {
 /// the sound of the birds, and leave it at about 7.7 s.
 pub const BIRDS: f32 = 1.0;
 
-/// The birds at `t`: a loose flock of seven that crosses the light from right to left over
-/// the plain, from [`BIRDS`] on. Each bird is a dark stroke for the body and two for the wings,
-/// which beat and glide. `feet` is the place of the engineer.
-fn birds_at(t: f32, feet: Vec3) -> Vec<Particle> {
+/// Flies the birds at `t`: a loose flock that crosses the light from right to left over
+/// the plain, from [`BIRDS`] on. Each bird banks into its turns, beats its wings and
+/// glides for a moment with the wings up. `feet` is the place of the engineer.
+fn fly_birds(scene: &mut Scene, birds: &[Bird], t: f32, feet: Vec3) {
     let (s_dir, right) = (sunward(), right());
     // They fly to the left and a little toward the camera, so the wings show.
     let along = (-right * 0.85 - s_dir * 0.5).normalize();
     let across = along.cross(Vec3::Y);
-    let dark = Rgb::hex(0x1a120e);
-    let mut items = Vec::new();
-    for b in 0..7u32 {
+    for (b, bird) in (0..).zip(birds) {
         let h = |n: u32| hash(b * 13 + n * 7919 + 11);
         let flight = t - BIRDS - 0.5 * h(1);
         if !(0.0..8.0).contains(&flight) {
+            scene[bird.root].visible = false;
             continue;
         }
         // They fly 55 to 75 m beyond him, 4 to 10 m above the plateau: through the glow
@@ -571,20 +646,34 @@ fn birds_at(t: f32, feet: Vec3) -> Vec<Particle> {
             + right * (45.0 + 10.0 * h(3))
             + Vec3::Y * (4.0 + 6.0 * h(4));
         let speed = 11.0 + 3.0 * h(5);
-        let body = start
-            + along * (speed * flight)
-            + Vec3::Y * (1.5 * noise1(b + 20, flight * 0.4))
-            + across * (3.0 * noise1(b + 40, flight * 0.3));
-        // Beats, then a short glide with the wings up.
+        let body = |flight: f32| {
+            start
+                + along * (speed * flight)
+                + Vec3::Y * (1.5 * noise1(b + 20, flight * 0.4))
+                + across * (3.0 * noise1(b + 40, flight * 0.3))
+        };
+        let position = body(flight);
+        let heading = (body(flight + 0.05) - position).normalize_or(along);
+        // The bird looks along its heading and banks into the turn: it rolls toward the
+        // side it drifts to.
+        let side = heading.cross(Vec3::Y).normalize();
+        let up = side.cross(heading);
+        let bank = -0.6 * (body(flight + 0.3) - body(flight - 0.3)).dot(across) / 6.0;
+        let turn =
+            Quat::from_mat3(&Mat3::from_cols(side, up, heading)) * Quat::from_rotation_z(bank);
+        let root = &mut scene[bird.root];
+        root.visible = true;
+        root.position = position;
+        root.rotation = turn;
+        // gulls: a span of about 0.9 m
+        root.scale = Vec3::splat(1.8 + 0.4 * h(7));
+        // Beats, then a short glide with the wings up. The upstroke goes higher than the
+        // downstroke goes low.
         let beat = (TAU * 3.2 * flight + 6.0 * h(6)).sin();
         let glide = smoothstep(0.3, 0.7, noise1(b + 60, flight * 0.7));
-        let angle = 0.75 * beat * (1.0 - glide) + 0.25 * glide;
-        let span = 0.38 + 0.08 * h(7);
-        for side in [1.0f32, -1.0] {
-            let tip = body + across * (side * span * angle.cos()) + Vec3::Y * (span * angle.sin());
-            items.push(Particle::new(body, 0.05, dark).tail(tip - body));
+        let angle = (0.55 * beat + 0.15) * (1.0 - glide) + 0.25 * glide;
+        for (wing, sign) in bird.wings.into_iter().zip([1.0, -1.0]) {
+            scene[wing].rotation = Quat::from_rotation_z(sign * angle);
         }
-        items.push(Particle::new(body + along * 0.12, 0.07, dark).tail(-along * 0.3));
     }
-    items
 }

@@ -1037,10 +1037,10 @@ impl CitySet {
         // The street lights come on while the traces fade.
         let lamps = smoothstep(1.0, 2.6, t);
         if let Some(mat) = scene[self.lamp_light].material_mut() {
-            mat.color = Rgb::hex(0x9fc0ff) * (0.3 * lamps);
+            mat.color = Rgb::hex(0x9fc0ff) * (0.5 * lamps);
         }
         if let Some(mat) = scene[self.storefronts].material_mut() {
-            mat.color = Rgb::WHITE * (1.6 * lamps);
+            mat.color = Rgb::WHITE * (2.2 * lamps);
         }
         if let Some(mat) = scene[self.markings].material_mut() {
             mat.color = Rgb::hex(0x8a92a2) * (0.3 * smoothstep(1.6, 3.0, t));
@@ -1174,6 +1174,15 @@ impl CitySet {
                 ..before
             },
         );
+        // The eye adapts to the dark while the city leaves the picture: the stars come
+        // out in the tilt. At the cut they are as bright as in shot 5, which has 2.2 times
+        // the exposure.
+        let adapt = 1.0 + 1.2 * smoothstep(10.8, 12.7, t);
+        if let Object::Particles(p) = &mut scene[self.stars].object {
+            for item in &mut p.items {
+                item.color = item.color * adapt;
+            }
+        }
 
         // The far city: its light, the glow of the sky over it and the haze that hides its
         // end. None of it on the chip.

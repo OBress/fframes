@@ -227,6 +227,18 @@ pub fn carpet(city: &Manhattan, land: &LandMap) -> Arc<Texture> {
             splat(&mut lamps, p, 1.0);
         }
     }
+    // From the flight the lamps of a street are one line and a block of windows one glow:
+    // a soft blur over 3 texels (30 m) joins the dots. The windows get it twice.
+    blur(&mut lamps, n);
+    blur(&mut windows, n);
+    blur(&mut windows, n);
+    // The blur spreads a lamp over about 7 texels: the lines keep their brightness.
+    for v in &mut lamps {
+        *v *= 3.0;
+    }
+    for v in &mut windows {
+        *v *= 2.0;
+    }
     let lamp = Rgb::hex(0xffd7a0).0;
     let window = Rgb::hex(0xdfe4f0).0;
     // Fog adds its color to an additive surface, so the carpet has no fog. It fades with
@@ -241,6 +253,38 @@ pub fn carpet(city: &Manhattan, land: &LandMap) -> Arc<Texture> {
         })
         .collect();
     Arc::new(Texture::from_rgba8(n as u32, n as u32, &rgba, true))
+}
+
+/// Blurs the square `layer` of `n` texels on a side with the binomial kernel 1 4 6 4 1,
+/// along the rows and then along the columns. The sum of the light stays the same.
+fn blur(layer: &mut [f32], n: usize) {
+    const KERNEL: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
+    let source = layer.to_vec();
+    for y in 0..n {
+        for x in 0..n {
+            layer[y * n + x] = KERNEL
+                .iter()
+                .enumerate()
+                .map(|(k, w)| {
+                    let sx = (x + k).wrapping_sub(2);
+                    if sx < n { w * source[y * n + sx] } else { 0.0 }
+                })
+                .sum();
+        }
+    }
+    let source = layer.to_vec();
+    for y in 0..n {
+        for x in 0..n {
+            layer[y * n + x] = KERNEL
+                .iter()
+                .enumerate()
+                .map(|(k, w)| {
+                    let sy = (y + k).wrapping_sub(2);
+                    if sy < n { w * source[sy * n + x] } else { 0.0 }
+                })
+                .sum();
+        }
+    }
 }
 
 /// The ground under the light carpet: the land of the boroughs and of New Jersey, with UVs

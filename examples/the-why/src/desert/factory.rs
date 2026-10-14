@@ -114,7 +114,7 @@ pub fn factory(scene: &mut Scene, assets: &Assets, front: Vec3, facing: Vec3) ->
         .collect();
     scene.add_to(
         root,
-        Node::mesh(Geometry::merge(doors), Material::glow(COLD, 3.5)).shadows(false, false),
+        Node::mesh(Geometry::merge(doors), Material::glow(COLD, 1.4)).shadows(false, false),
     );
 
     // Five stacks behind the hall and tanks on the left side.
@@ -192,36 +192,41 @@ pub fn factory(scene: &mut Scene, assets: &Assets, front: Vec3, facing: Vec3) ->
         let x = -half + 40.0 + (FACTORY_LENGTH - 80.0) * (i as f32 + 0.5 * hash(i * 5 + 2)) / 14.0;
         let z = -depth * (0.25 + 0.5 * hash(i * 5 + 3));
         let height = 220.0 + 180.0 * hash(i * 5 + 4);
-        // a cone that widens upward, with rings along its height for the fade
-        let profile: Vec<Vec2> = (0..=12)
-            .map(|k| {
-                let u = k as f32 / 12.0;
-                vec2(5.0 + 13.0 * u, height * u)
-            })
-            .collect();
-        let mut beam = Geometry::lathe(&profile, 12).translate(x, WALL + TOOTH_HEIGHT, z);
-        let bottom = WALL + TOOTH_HEIGHT;
+        // A card that faces the plateau: a beam that widens upward and fades along its
+        // height. Across it the light falls off like a bell, so the edges are soft.
         let strength = 0.5 + 0.5 * hash(i * 5 + 5);
-        beam.colors = beam
-            .positions
-            .iter()
-            .map(|p| {
-                let u = ((p.y - bottom) / height).clamp(0.0, 1.0);
-                vec4(
-                    1.0,
-                    1.0,
-                    1.0,
-                    strength * (1.0 - u).powi(2) * smoothstep(0.0, 0.05, u),
-                )
-            })
-            .collect();
+        let (columns, rows) = (12u32, 12u32);
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        for j in 0..=rows {
+            let u = j as f32 / rows as f32;
+            let half = 6.0 + 16.0 * u;
+            for k in 0..=columns {
+                let v = k as f32 / columns as f32 * 2.0 - 1.0;
+                positions.push(vec3(x + v * half, WALL + TOOTH_HEIGHT + height * u, z));
+                let across = (-(v * v) * 4.0).exp() - (-4.0f32).exp();
+                let along = (1.0 - u).powi(2) * smoothstep(0.0, 0.05, u);
+                colors.push(vec4(1.0, 1.0, 1.0, strength * across * along));
+            }
+        }
+        let mut indices = Vec::new();
+        for j in 0..rows {
+            for k in 0..columns {
+                let a = j * (columns + 1) + k;
+                let (b, c, d) = (a + 1, a + columns + 1, a + columns + 2);
+                indices.extend([a, b, d, a, d, c]);
+            }
+        }
+        let normals = vec![Vec3::Z; positions.len()];
+        let mut beam = Geometry::new(positions, normals, Vec::new(), indices);
+        beam.colors = colors;
         beams.push(beam);
     }
     scene.add_to(
         root,
         Node::mesh(
             Geometry::merge(beams),
-            Material::glow(COLD, 0.22).double_sided(),
+            Material::glow(COLD, 0.32).double_sided(),
         )
         .shadows(false, false),
     );

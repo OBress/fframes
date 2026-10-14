@@ -681,8 +681,9 @@ impl Ground {
     pub fn add_to(&self, scene: &mut Scene) {
         scene.add(Node::mesh(self.sand.0.clone(), self.sand.1.clone()).shadows(false, true));
         scene.add(Node::mesh(self.playa.0.clone(), self.playa.1.clone()).shadows(false, true));
-        // The red of the rock stays cold at night: the moon takes the color of a stone.
-        self.add_scatter(scene, Rgb::hex(0x8ea0c4));
+        // The red of the rock stays cold at night: the moon takes the color of a stone. The
+        // mesas on the horizon are dark shapes against the sky.
+        self.add_scatter(scene, Rgb::hex(0x8ea0c4), Rgb::hex(0x5a6684));
     }
 
     /// Adds the ground of the sunrise to `scene`. The sand has wind ripples and no pan of
@@ -697,12 +698,12 @@ impl Ground {
             Node::mesh(canyon.clone(), rock.clone().color(rock.color * tint * 4.0))
                 .shadows(false, true),
         );
-        self.add_scatter(scene, Rgb::WHITE);
+        self.add_scatter(scene, Rgb::WHITE, Rgb::WHITE);
     }
 
     /// Adds the rocks, the shrubs and the mesas. `tint` multiplies the color of the rocks
-    /// and the shrubs.
-    fn add_scatter(&self, scene: &mut Scene, tint: Rgb) {
+    /// and the shrubs, `far` the color of the mesas.
+    fn add_scatter(&self, scene: &mut Scene, tint: Rgb, far: Rgb) {
         for (geometry, material, instances) in &self.scatter {
             scene.add(Node::instanced(
                 geometry.clone(),
@@ -710,7 +711,10 @@ impl Ground {
                 instances.clone(),
             ));
         }
-        scene.add(Node::mesh(self.mesas.0.clone(), self.mesas.1.clone()).shadows(false, true));
+        let (mesas, rock) = &self.mesas;
+        scene.add(
+            Node::mesh(mesas.clone(), rock.clone().color(rock.color * far)).shadows(false, true),
+        );
     }
 }
 

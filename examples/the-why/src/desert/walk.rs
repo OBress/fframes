@@ -48,6 +48,12 @@ pub(super) fn light_night(scene: &mut Scene) -> NodeId {
         distance: 3200.0,
         steps: 32,
     });
+    // The air between the plateau and the horizon: the mesas and the far land fade into
+    // the sky, and the factory loses some of its contrast at 2.5 km.
+    scene.fog = Some(Fog::Exp2 {
+        color: Rgb::hex(0x1c2c4c) * 0.9,
+        density: 1.0 / 6500.0,
+    });
     // The moon is low behind the factory, to the left. It gives the rocks and the figure a
     // cold rim and long shadows toward the camera.
     let moon = (ahead() * 0.5 - right() * 1.0 + Vec3::Y * 0.5).normalize();
@@ -240,16 +246,14 @@ impl DesertSet {
         self.night_figure.apply(&mut scene, &pose);
         let camera = walk_camera(t, pose.position);
         scene[self.stars].position = camera.position;
-        // At the cut the sky is as dark as at the end of shot 4, which has a lower exposure.
-        // It brightens as the eye adapts. In the tilt each sample of the motion blur draws
-        // the stars as streaks, so they do not break into dots.
-        let adapt = 0.45 + 0.55 * smoothstep(0.3, 2.8, t);
+        // At the cut the stars are as bright as at the end of shot 4: that shot has 2.2 times
+        // less exposure and brightens its stars by 2.2 in the tilt. In the tilt each sample
+        // of the motion blur draws the stars as streaks, so they do not break into dots.
         let samples = self.shutter_walk(t);
         let next = walk_camera(t + look::SHUTTER / samples as f32, pose.position);
         let turn = orientation(&camera) * orientation(&next).inverse();
         if let Object::Particles(sky) = &mut scene[self.stars].object {
             for p in &mut sky.items {
-                p.color = p.color * adapt;
                 if samples > 1 {
                     p.tail = turn * p.position - p.position;
                 }
