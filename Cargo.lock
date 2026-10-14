@@ -209,7 +209,6 @@ dependencies = [
  "fframes",
  "fframes-3d",
  "fframes_skia_renderer",
- "image",
 ]
 
 [[package]]
@@ -246,7 +245,6 @@ dependencies = [
  "fframes",
  "fframes-3d",
  "fframes_skia_renderer",
- "image",
 ]
 
 [[package]]
@@ -2848,7 +2846,6 @@ dependencies = [
  "fframes",
  "fframes-3d",
  "fframes_skia_renderer",
- "image",
 ]
 
 [[package]]

@@ -19,7 +19,6 @@ cargo run --release -p arm-example --bin arm-soundtrack             # writes dyn
 cargo run --release -p arm-example --bin arm -- render              # 3D and Skia on the GPU -> out.mp4
 cargo run --release -p arm-example --bin arm -- --cpu render        # everything on the CPU
 cargo run --release -p arm-example --bin arm -- --readback render   # the 3D read back to the CPU, to compare
-cargo test --release -p arm-example                                 # kinematics, the letter lands in reach, GPU frames match the CPU, the shared texture matches its readback
 ```
 
 The 3D renders on the GPU with the `gpu` feature of `fframes-3d` (`Renderer::gpu()`). It uses

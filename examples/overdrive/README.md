@@ -24,7 +24,6 @@ cargo run --release -p overdrive-example --bin overdrive-soundtrack  # writes dy
 cargo run --release -p overdrive-example --bin overdrive -- render    # Skia on the GPU -> out.mp4
 cargo run --release -p overdrive-example --bin overdrive -- --cpu render
 cargo run --release -p overdrive-example --bin overdrive -- strip -n 20
-cargo test --release -p overdrive-example --test look -- --ignored     # car/robot poses as PNGs
 ```
 
 A full render takes about two minutes on a 28 thread machine. Fast shots render three sub
