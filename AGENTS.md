@@ -527,7 +527,7 @@ fframes::svgr!(<image href={layer.href()} x="0" y="0" width="1920" height="1080"
 PBR with clearcoat, a studio or HDR panorama environment, soft sun shadows, planar
 reflections, transparency, additive glows, particles, fog, depth of field, motion blur, bloom
 and ACES. It returns an image for `<image href>`. glTF and STL models load too. See
-`examples/arm` (a lab robot spells "fframes"), `examples/overdrive` (a car becomes a robot)
+`examples/arm` (a lab robot spells "fframes"), `examples/assembly` (a robot assembles itself)
 and the three.js table in `fframes-3d/src/lib.rs`.
 
 Two renderers draw the same picture:
@@ -587,7 +587,7 @@ svgr!(<image href={image.href()} x="0" y="0" width="1920" height="1080" />)
   (`Light::sun`) casts shadows. Set `.shadows(false, ..)` on floors and far scenery to keep
   the shadow map tight. `fframes-3d/tests/gpu.rs` compares both renderers.
 - Pose skeletons with `rotation` on group nodes. To keep feet on the floor, measure the lowest
-  contact point after posing (see `Robot::ground_offset` in `examples/overdrive`).
+  contact point after posing.
 
 ### 7e. Your own wgpu passes (`fframes::wgpu_layer`)
 

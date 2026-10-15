@@ -49,7 +49,6 @@ members = [
     # "fframes-lyon-renderer",
     "examples/signal-lab",
     "examples/fframes-intro",
-    "examples/overdrive",
     "examples/assembly",
     "examples/arm",
     "examples/made-of-motion",
