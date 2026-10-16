@@ -1,0 +1,175 @@
+"""Prepare regional atlas drawings as numeric paths, with no runtime GIS work."""
+
+import hashlib
+import json
+import math
+import runpy
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+simplify = runpy.run_path(str(ROOT / "scripts/prepare_map.py"))["simplify"]
+LAND = ROOT / "art/source/ne_110m_land.geojson"
+COUNTRIES = ROOT / "art/source/ne_110m_admin_0_countries.geojson"
+
+# Longitude, latitude, horizontal field of view and drawing height. The latitude scale preserves
+# local proportions at the centre of each flat, equirectangular regional view.
+VIEWS = [
+    (116, -1, 58, 280),
+    (-111, 29, 45, 300),
+    (-57, -16, 85, 270),
+    (-75, 2, 65, 380),
+    (77, 19, 60, 360),
+    (-90, 27, 60, 250),
+    (20, 3, 113, 400),
+    (166, -20, 50, 300),
+    (23, -21, 75, 330),
+    (-60, -17, 100, 380),
+    (-83, 14, 60, 260),
+    (169, -41, 37, 400),
+    (137, -4, 54, 380),
+    (23, -21, 75, 330),
+    (21, 39, 43, 330),
+    (116, 0, 58, 360),
+    (-74, 19, 65, 280),
+    (105, 35, 100, 380),
+]
+
+
+def rings(data):
+    for feature in data["features"]:
+        geometry = feature["geometry"]
+        polygons = [geometry["coordinates"]] if geometry["type"] == "Polygon" else geometry["coordinates"]
+        for polygon in polygons:
+            for ring in polygon:
+                yield ring
+
+
+def project(lon, lat, view):
+    centre_lon, centre_lat, span, height = view
+    delta = (lon - centre_lon + 180) % 360 - 180
+    lat_span = span * math.cos(math.radians(centre_lat)) * height / 600
+    return 300 + delta * 600 / span, height / 2 - (lat - centre_lat) * height / lat_span
+
+
+def projected_ring(ring, view):
+    result = [project(*ring[0], view)]
+    # Keep each polygon continuous when the Fiji view crosses the date line.
+    world_width = 360 * 600 / view[2]
+    for lon, lat in ring[1:]:
+        x, y = project(lon, lat, view)
+        while x - result[-1][0] > world_width / 2:
+            x -= world_width
+        while result[-1][0] - x > world_width / 2:
+            x += world_width
+        result.append((x, y))
+    return simplify(result, 0.6)
+
+
+def clip_polygon(points, height):
+    for axis, edge, sign in [(0, 0, 1), (0, 600, -1), (1, 0, 1), (1, height, -1)]:
+        output = []
+        if not points:
+            break
+        previous = points[-1]
+        previous_inside = (previous[axis] - edge) * sign >= 0
+        for current in points:
+            inside = (current[axis] - edge) * sign >= 0
+            if inside != previous_inside:
+                t = (edge - previous[axis]) / (current[axis] - previous[axis])
+                output.append(tuple(a + (b - a) * t for a, b in zip(previous, current)))
+            if inside:
+                output.append(current)
+            previous, previous_inside = current, inside
+        points = output
+    return points if len(points) >= 3 else []
+
+
+def clip_segment(a, b, height):
+    low, high = 0, 1
+    for axis, extent in [(0, 600), (1, height)]:
+        delta = b[axis] - a[axis]
+        if abs(delta) < 1e-8:
+            if not 0 <= a[axis] <= extent:
+                return None
+        else:
+            first, last = sorted((-a[axis] / delta, (extent - a[axis]) / delta))
+            low, high = max(low, first), min(high, last)
+            if low > high:
+                return None
+    return [tuple(x + (y - x) * t for x, y in zip(a, b)) for t in (low, high)]
+
+
+def shorelines(points, height):
+    result = []
+    for a, b in zip(points, points[1:]):
+        clipped = clip_segment(a, b, height)
+        if clipped is None:
+            continue
+        if result and result[-1][-1] == clipped[0]:
+            result[-1].append(clipped[1])
+        else:
+            result.append(clipped)
+    return result
+
+
+def geometry(source_rings, view, closed):
+    result = []
+    world_width = 360 * 600 / view[2]
+    for ring in source_rings:
+        points = projected_ring(ring, view)
+        for shift in (-world_width, 0, world_width):
+            shifted = [(x + shift, y) for x, y in points]
+            if closed:
+                polygon = clip_polygon(shifted, view[3])
+                if polygon:
+                    result.append(polygon)
+            else:
+                result.extend(shorelines(shifted, view[3]))
+    return result
+
+
+def write_path(lines, name, contours, closed):
+    lines.append(f"        {name}: Path {{ closed: {str(closed).lower()}, contours: &[")
+    for contour in contours:
+        lines.append("            &[" + ", ".join(f"({x:.3f}, {y:.3f})" for x, y in contour) + "],")
+    lines.append("        ] },")
+
+
+def main():
+    land_rings = list(rings(json.loads(LAND.read_text())))
+    country_rings = list(rings(json.loads(COUNTRIES.read_text())))
+    habitats = json.loads((ROOT / "art/source/habitats.json").read_text())["locations"]
+    lines = [
+        "//! Regional Natural Earth drawings, generated by `prepare_regional_maps.py`.",
+        "//! Local equirectangular views, 600 units wide. Markers are representative habitats.",
+        "use crate::map::{Path, RegionalGeometry};", "",
+        "pub(crate) const REGIONS: [RegionalGeometry; 18] = [",
+    ]
+    for view, habitat in zip(VIEWS, habitats):
+        lines.append("    RegionalGeometry {")
+        write_path(lines, "land", geometry(land_rings, view, True), True)
+        write_path(lines, "coast", geometry(land_rings, view, False), False)
+        write_path(lines, "borders", geometry(country_rings, view, False), False)
+        pin = project(habitat["longitude"], habitat["latitude"], view)
+        lines.append(f"        pin: ({pin[0]:.3f}, {pin[1]:.3f}),")
+        lines.append(f"        height: {view[3]}.,")
+        lines.append("    },")
+    lines.extend(["];", ""])
+    (ROOT / "src/regional_map_data.rs").write_text("\n".join(lines))
+    manifest = {
+        "sources": [
+            {"url": f"https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/{p.name}",
+             "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+            for p in (LAND, COUNTRIES)
+        ],
+        "projection": "Regional equirectangular views, longitude scaled by cosine of centre latitude",
+        "geometry": "Numeric Path structs, precomputed clipping, no path strings or raster maps",
+        "views": [dict(zip(("longitude", "latitude", "longitude_span", "height"), view)) for view in VIEWS],
+        "marker_note": "Representative illustrated habitats, not complete ranges or exact sightings",
+    }
+    (ROOT / "art/source/regional-map-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Prepared {len(VIEWS)} regional atlas drawings")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,125 @@
+{
+  "sources": [
+    {
+      "url": "https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_land.geojson",
+      "sha256": "9e0729ee253ca7d7a5c4ae9395fb1902264c5377c52e224d13dd85010e2835d9"
+    },
+    {
+      "url": "https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_admin_0_countries.geojson",
+      "sha256": "6866c877d39cba9c357620878839b336d569f8c662d3cfab4cb1dbe2d39c977f"
+    }
+  ],
+  "projection": "Regional equirectangular views, longitude scaled by cosine of centre latitude",
+  "geometry": "Numeric Path structs, precomputed clipping, no path strings or raster maps",
+  "views": [
+    {
+      "longitude": 116,
+      "latitude": -1,
+      "longitude_span": 58,
+      "height": 280
+    },
+    {
+      "longitude": -111,
+      "latitude": 29,
+      "longitude_span": 45,
+      "height": 300
+    },
+    {
+      "longitude": -57,
+      "latitude": -16,
+      "longitude_span": 85,
+      "height": 270
+    },
+    {
+      "longitude": -75,
+      "latitude": 2,
+      "longitude_span": 65,
+      "height": 380
+    },
+    {
+      "longitude": 77,
+      "latitude": 19,
+      "longitude_span": 60,
+      "height": 360
+    },
+    {
+      "longitude": -90,
+      "latitude": 27,
+      "longitude_span": 60,
+      "height": 250
+    },
+    {
+      "longitude": 20,
+      "latitude": 3,
+      "longitude_span": 113,
+      "height": 400
+    },
+    {
+      "longitude": 166,
+      "latitude": -20,
+      "longitude_span": 50,
+      "height": 300
+    },
+    {
+      "longitude": 23,
+      "latitude": -21,
+      "longitude_span": 75,
+      "height": 330
+    },
+    {
+      "longitude": -60,
+      "latitude": -17,
+      "longitude_span": 100,
+      "height": 380
+    },
+    {
+      "longitude": -83,
+      "latitude": 14,
+      "longitude_span": 60,
+      "height": 260
+    },
+    {
+      "longitude": 169,
+      "latitude": -41,
+      "longitude_span": 37,
+      "height": 400
+    },
+    {
+      "longitude": 137,
+      "latitude": -4,
+      "longitude_span": 54,
+      "height": 380
+    },
+    {
+      "longitude": 23,
+      "latitude": -21,
+      "longitude_span": 75,
+      "height": 330
+    },
+    {
+      "longitude": 21,
+      "latitude": 39,
+      "longitude_span": 43,
+      "height": 330
+    },
+    {
+      "longitude": 116,
+      "latitude": 0,
+      "longitude_span": 58,
+      "height": 360
+    },
+    {
+      "longitude": -74,
+      "latitude": 19,
+      "longitude_span": 65,
+      "height": 280
+    },
+    {
+      "longitude": 105,
+      "latitude": 35,
+      "longitude_span": 100,
+      "height": 380
+    }
+  ],
+  "marker_note": "Representative illustrated habitats, not complete ranges or exact sightings"
+}

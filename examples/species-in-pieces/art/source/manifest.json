@@ -1,0 +1,8 @@
+{
+  "reference_commit": "d81b692dc3aca4b3e4e7f5e9f8d9635094faea05",
+  "fframes_3d_commit": "73e5e9404f09fb6ba047697f2ca2bea2e42380d7",
+  "land_source": "https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_land.geojson",
+  "land_sha256": "9e0729ee253ca7d7a5c4ae9395fb1902264c5377c52e224d13dd85010e2835d9",
+  "geography_note": "Habitat markers locate representative illustrated habitats, not complete species ranges or individual animals.",
+  "font_note": "Original BlocExtCond glyphs. Font family metadata normalized for native font discovery."
+}

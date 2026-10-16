@@ -1,0 +1,10 @@
+{
+  "source": "https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_land.geojson",
+  "sha256": "9e0729ee253ca7d7a5c4ae9395fb1902264c5377c52e224d13dd85010e2835d9",
+  "projection": "Natural Earth polynomial, 360 SVG units wide, latitude 84..-60",
+  "projection_reference": "https://github.com/OSGeo/PROJ/blob/master/src/projections/natearth.cpp",
+  "geometry": "Numeric Path structs, no SVG path strings or raster map assets",
+  "contours": 120,
+  "vertices": 1163,
+  "marker_note": "Representative illustrated habitat, not a complete species range"
+}

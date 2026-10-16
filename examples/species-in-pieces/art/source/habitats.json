@@ -1,0 +1,131 @@
+{
+  "note": "Representative illustrated habitat locations. Pins do not claim complete ranges or precise sightings. Coordinates selected approximately within the sourced habitat region.",
+  "locations": [
+    {
+      "species": "Helmeted hornbill",
+      "region": "Borneo",
+      "latitude": 1.5,
+      "longitude": 114,
+      "source": "https://portals.iucn.org/library/sites/library/files/documents/2018-039.pdf"
+    },
+    {
+      "species": "Vaquita",
+      "region": "Upper Gulf of California",
+      "latitude": 30.8,
+      "longitude": -114.4,
+      "source": "https://www.fisheries.noaa.gov/species/vaquita"
+    },
+    {
+      "species": "Golden lion tamarin",
+      "region": "Atlantic Forest, Rio de Janeiro",
+      "latitude": -22.5,
+      "longitude": -42.5,
+      "source": "https://www.savetheliontamarin.org/status/"
+    },
+    {
+      "species": "Golden poison frog",
+      "region": "Pacific Colombia",
+      "latitude": 2.7,
+      "longitude": -77.7,
+      "source": "https://citizen-conservation.org/wp-content/uploads/2024/10/CC-Breeding-Guidelines_Phyllobates-terribilis_07-2024.pdf"
+    },
+    {
+      "species": "Forest owlet",
+      "region": "Central India",
+      "latitude": 21.4,
+      "longitude": 77,
+      "source": "https://indianbirds.in/pdfs/IB_16_2_Kulkarni_Mehta_ForestOwletHabitat.pdf"
+    },
+    {
+      "species": "Kemp’s ridley turtle",
+      "region": "Gulf of Mexico",
+      "latitude": 24,
+      "longitude": -96,
+      "source": "https://www.fisheries.noaa.gov/species/kemps-ridley-turtle"
+    },
+    {
+      "species": "Scimitar oryx",
+      "region": "Chad",
+      "latitude": 15.8,
+      "longitude": 18.5,
+      "source": "https://saharaconservation.org/critical-conservation-landscapes/ouadi-rime-ouadi-achim-faunal-reserve/"
+    },
+    {
+      "species": "Fiji crested iguana",
+      "region": "Fiji",
+      "latitude": -16.8,
+      "longitude": 177.3,
+      "source": "https://www.iguanafoundation.org/what-we-support/fiji-iguanas/fiji-crested-iguana/"
+    },
+    {
+      "species": "Knysna seahorse",
+      "region": "Knysna estuary",
+      "latitude": -34.04,
+      "longitude": 23.04,
+      "source": "https://www.sanparks.org/news/sanparks-restocks-educational-display-tank-showcasing-endangered-knysna-seahorses"
+    },
+    {
+      "species": "Brazilian three-banded armadillo",
+      "region": "Caatinga",
+      "latitude": -9,
+      "longitude": -40,
+      "source": "https://xenarthrans.org/species/armadillos-2/brazilian-three-banded-armadillo/"
+    },
+    {
+      "species": "Pygmy three-toed sloth",
+      "region": "Escudo de Veraguas",
+      "latitude": 9.1,
+      "longitude": -81.56,
+      "source": "https://www.slothconservation.org/blog/the-pygmy-sloths-of-panama"
+    },
+    {
+      "species": "Kākāpō",
+      "region": "Whenua Hou, New Zealand",
+      "latitude": -46.77,
+      "longitude": 167.65,
+      "source": "https://www.doc.govt.nz/nature/native-animals/birds/birds-a-z/kakapo/habitat-and-islands/"
+    },
+    {
+      "species": "Long-beaked echidna",
+      "region": "New Guinea",
+      "latitude": -6,
+      "longitude": 144,
+      "source": "https://animaldiversity.org/accounts/Zaglossus_bartoni/"
+    },
+    {
+      "species": "African penguin",
+      "region": "South African Cape",
+      "latitude": -34.3,
+      "longitude": 18.45,
+      "source": "https://www.birdlife.org.za/red-data-book/red-list/african-penguin/"
+    },
+    {
+      "species": "Greek red damsel",
+      "region": "Corfu",
+      "latitude": 39.6,
+      "longitude": 19.8,
+      "source": "https://nc.iucnredlist.org/redlist/content/attachment_files/ERL_Pulse_Dragonflies_and_Damselflies_2024.pdf"
+    },
+    {
+      "species": "Sun bear",
+      "region": "Borneo",
+      "latitude": 4.8,
+      "longitude": 117.6,
+      "source": "https://www.bearbiology.org/the-eight-bear-species/helarctos-malayanus-sun-bear/"
+    },
+    {
+      "species": "Rainbow parrotfish",
+      "region": "Caribbean reef",
+      "latitude": 18.2,
+      "longitude": -65.3,
+      "source": "https://media.fisheries.noaa.gov/dam-migration/carib_fmp_st_thomasst_john.pdf"
+    },
+    {
+      "species": "Wild Bactrian camel",
+      "region": "Mongolian Gobi",
+      "latitude": 43.4,
+      "longitude": 96,
+      "source": "https://www.wildcamels.com/camelus-ferus/"
+    }
+  ]
+}

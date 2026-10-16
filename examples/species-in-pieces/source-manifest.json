@@ -1,0 +1,56 @@
+{
+  "commit": "d81b692dc3aca4b3e4e7f5e9f8d9635094faea05",
+  "sources": {
+    "css/main.css": {
+      "url": "https://raw.githubusercontent.com/bryanjamesinteractive/in-pieces/d81b692dc3aca4b3e4e7f5e9f8d9635094faea05/css/main.css",
+      "sha256": "42e9fe4d618166330d44daf97e08009c9309deae49389b511e5ea27bba0416ec"
+    },
+    "js/main.js": {
+      "url": "https://raw.githubusercontent.com/bryanjamesinteractive/in-pieces/d81b692dc3aca4b3e4e7f5e9f8d9635094faea05/js/main.js",
+      "sha256": "92df987defa6b63f4b96aa6fc160762952b4b9f4e5ba871e9a1d95db06739a9b"
+    },
+    "js/vars.js": {
+      "url": "https://raw.githubusercontent.com/bryanjamesinteractive/in-pieces/d81b692dc3aca4b3e4e7f5e9f8d9635094faea05/js/vars.js",
+      "sha256": "5b4e85ac2de662c8bcc40a29cbce10319104eac837b47c020077fe0c6af86f8d"
+    }
+  },
+  "order": [
+    "crow",
+    "vaquita",
+    "tamarin",
+    "frog",
+    "owl",
+    "turtle",
+    "oryx",
+    "iguana",
+    "seahorse",
+    "armadillo",
+    "sloth",
+    "kakapo",
+    "echidna",
+    "penguin",
+    "damselfly",
+    "bear",
+    "parrotfish",
+    "camel"
+  ],
+  "species": 18,
+  "persistent_pieces": 30,
+  "peripheral_pieces": 3,
+  "shapes": 767,
+  "timings": 206,
+  "cells": 1379,
+  "states": [
+    "",
+    "animal-animations-on",
+    "animal-animations-on state-two",
+    "animal-animations-on state-three",
+    "animal-animations-on state-four",
+    "animal-animations-on two-state-two",
+    "animal-animations-on state-two two-state-two",
+    "animal-animations-on state-three two-state-two",
+    "animal-animations-on state-four two-state-two"
+  ],
+  "seconds_per_species": 10,
+  "total_seconds": 180
+}
