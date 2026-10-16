@@ -140,7 +140,9 @@ impl<TBackend: SkiaBackend> FrameRenderer for SkiaFrameRenderer<'_, TBackend> {
         // the flush and the readback submit to the queue of the context
         let _queue = lock_queue(queue_lock.as_ref());
         if let Some(gpu_context) = gpu_context.as_mut() {
-            gpu_context.flush_submit_and_sync_cpu();
+            gpu_context.flush_submit_and_sync_cpu().map_err(|err| {
+                FFramesRendererError::Skia(format!("can not flush the frame: {err}"))
+            })?;
         }
 
         // Always read back as RGBA regardless of the surface's native (often BGRA) order.

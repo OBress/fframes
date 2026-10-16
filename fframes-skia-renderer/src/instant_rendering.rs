@@ -156,7 +156,10 @@ impl<TBackend: SkiaBackend> SkiaFFramesRenderer<'_, TBackend> {
             native_ctx.surface.canvas(),
             &mut native_ctx.render_cache,
         );
-        native_ctx.gpu_context.flush_and_submit();
+        native_ctx
+            .gpu_context
+            .flush_and_submit()
+            .map_err(|err| FFramesRendererError::Skia(format!("can not flush the frame: {err}")))?;
 
         Ok(frame_index < fframes_ctx.runtime.timeline.duration_in_frames - 1)
     }

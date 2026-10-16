@@ -24,6 +24,7 @@ mod planes;
 pub(crate) mod videotoolbox;
 #[cfg(feature = "vulkan-video")]
 pub(crate) mod vulkan_frames;
+mod yuv420;
 
 /// How the frames Skia renders are handed to the video encoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,6 +38,10 @@ pub enum SkiaFrameExport {
     GpuConversion,
     /// Read RGBA back and convert it on the CPU.
     CpuConversion,
+    /// Convert to yuv420p with Skia's own conversion and readback
+    /// (`asyncRescaleAndReadPixelsYUV420`) instead of the plane shader, never hardware
+    /// frames. Other pixel formats take the way of [`Self::GpuConversion`].
+    SkiaConversion,
 }
 
 /// The way frames of a render take, see [`SkiaEncoderFrameRenderer::path`].
@@ -195,10 +200,36 @@ enum Target {
         surface: Surface,
         exporter: planes::PlaneExporter,
     },
+    Yuv420 {
+        surface: Surface,
+        exporter: yuv420::Yuv420Exporter,
+    },
     Rgba {
         surface: Surface,
         info: ImageInfo,
     },
+}
+
+/// The GPU conversion of `format`, or the surface back when there is none. The plane
+/// shader converts every format it knows; Skia's own yuv420p conversion only when asked
+/// for, it is slower on the GPUs it was measured on (see `examples/frame_export.rs`).
+fn gpu_conversion(
+    gpu: &mut gpu::DirectContext,
+    mode: SkiaFrameExport,
+    format: fframes::ffmpeg_sys_fframes::AVPixelFormat,
+    surface: Surface,
+    width: i32,
+    height: i32,
+) -> Result<Target, Surface> {
+    if mode == SkiaFrameExport::SkiaConversion
+        && let Some(Ok(exporter)) = yuv420::Yuv420Exporter::new(format, width, height)
+    {
+        return Ok(Target::Yuv420 { surface, exporter });
+    }
+    match planes::PlaneExporter::new(gpu, format, width, height) {
+        Some(Ok(exporter)) => Ok(Target::Planes { surface, exporter }),
+        _ => Err(surface),
+    }
 }
 
 /// A frame as it leaves the GPU thread.
@@ -255,17 +286,15 @@ impl<'b> SkiaEncoderFrameRenderer<'b> {
                 queue_lock,
                 reader,
             } = crate::context_with_size(backend, width, height)?;
-            let exporter = match gpu.as_mut() {
+            let target = match gpu.as_mut() {
                 Some(gpu) if mode != SkiaFrameExport::CpuConversion => {
-                    planes::PlaneExporter::new(gpu, input.pixel_format, width, height)
-                        .and_then(Result::ok)
+                    gpu_conversion(gpu, mode, input.pixel_format, surface, width, height)
                 }
-                _ => None,
+                _ => Err(surface),
             };
-
-            let target = match exporter {
-                Some(exporter) => Target::Planes { surface, exporter },
-                None => Target::Rgba {
+            let target = match target {
+                Ok(target) => target,
+                Err(surface) => Target::Rgba {
                     surface,
                     // Always read back as RGBA regardless of the surface's native (often
                     // BGRA) order.
@@ -301,7 +330,7 @@ impl<'b> SkiaEncoderFrameRenderer<'b> {
     pub fn path(&self) -> FrameExportPath {
         match self.target {
             Some(Target::Hardware(_)) => FrameExportPath::HardwareFrames,
-            Some(Target::Planes { .. }) => FrameExportPath::GpuConversion,
+            Some(Target::Planes { .. } | Target::Yuv420 { .. }) => FrameExportPath::GpuConversion,
             Some(Target::Rgba { .. }) | None => FrameExportPath::CpuConversion,
         }
     }
@@ -345,6 +374,16 @@ impl<'b> SkiaEncoderFrameRenderer<'b> {
                 let (gpu, queue) = (self.gpu.as_mut(), &mut self.queue);
                 exporter
                     .read_back(|planes, info, pixels| queue.read(gpu, planes, info, pixels))
+                    .map(Rendered::Frame)
+            }
+            Target::Yuv420 { surface, exporter } => {
+                draw(surface);
+                let gpu = self
+                    .gpu
+                    .as_mut()
+                    .expect("Skia converts to yuv420p on a GPU context");
+                exporter
+                    .read(gpu, surface, self.queue.lock.as_ref())
                     .map(Rendered::Frame)
             }
             Target::Rgba { surface, info } => {

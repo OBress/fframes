@@ -625,7 +625,9 @@ Global flags: `--json` (one JSON document on stdout, JSON progress events on std
      `fframes_skia_renderer = { features = ["vulkan-video"] }` (the driver needs Vulkan Video
      encode). Only when the requested `pixel_format` is `yuv420p` (the default) or `nv12`;
   2. conversion on the GPU for `yuv420p`, `nv12`, `nv21`, `yuva420p`, `yuv422p` and `yuv444p`: only
-     the converted planes are read back;
+     the converted planes are read back. `SkiaFrameExport::SkiaConversion` converts `yuv420p`
+     with Skia's own `asyncRescaleAndReadPixelsYUV420` instead of the plane shader; measure
+     it with the example below first, it was slower on the Intel GPU it was written on;
   3. RGBA readback and conversion on the CPU for every other pixel format
      (`SkiaFrameExport::CpuConversion` forces it). The CPU backend always converts this way.
 

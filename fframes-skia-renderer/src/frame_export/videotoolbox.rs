@@ -308,7 +308,8 @@ impl VideoToolboxFrameTarget {
     /// executed first, the texture of the frame can not be released before that.
     fn abandon_frame(&mut self, gpu: &mut DirectContext) {
         if self.current.is_some() {
-            gpu.flush_submit_and_sync_cpu();
+            // nothing to do about a failed flush while giving the frame up
+            let _ = gpu.flush_submit_and_sync_cpu();
             self.current = None;
         }
     }
@@ -380,7 +381,8 @@ impl HardwareFrameTarget for VideoToolboxFrameTarget {
 
         // The encoder reads the pixel buffer as soon as it gets the frame, the GPU has to
         // be done with it by then.
-        gpu.flush_submit_and_sync_cpu();
+        gpu.flush_submit_and_sync_cpu()
+            .map_err(|err| skia_error(format!("can not flush the frame: {err}")))?;
 
         drop(surface);
         drop(texture);

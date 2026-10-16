@@ -332,13 +332,30 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex 1.3.0",
+ "syn 2.0.100",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.73.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "787ef8ef523575546b106a58213d6e6b06198a05c2f757258c68a74273670cfa"
+dependencies = [
+ "bitflags 2.13.2",
+ "cexpr",
+ "clang-sys",
  "log",
  "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
  "rustc-hash",
- "shlex 1.3.0",
+ "shlex 2.0.1",
  "syn 2.0.100",
 ]
 
@@ -1094,7 +1111,7 @@ version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfc8123240ea935f4d766323979843650afd6d00b475c561d3bb8a59a2e6e31f"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "cc",
  "libc",
  "num_cpus",
@@ -3409,11 +3426,10 @@ checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "skia-bindings"
-version = "0.153.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb325787c91b3f6c34a7c6f2b8a2297b20292d733ca53a08c233e5028aec49af"
+version = "0.155.0"
+source = "git+https://github.com/rust-skia/rust-skia?rev=91be1b03#91be1b03d70b8afe9a8389133209f68f1aa8f781"
 dependencies = [
- "bindgen",
+ "bindgen 0.73.2",
  "cc",
  "flate2",
  "heck",
@@ -3426,9 +3442,8 @@ dependencies = [
 
 [[package]]
 name = "skia-safe"
-version = "0.153.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c61cb643dac43067f3eb76c866635a74377ac0abca0ff2590674e1e295514c3d"
+version = "0.155.0"
+source = "git+https://github.com/rust-skia/rust-skia?rev=91be1b03#91be1b03d70b8afe9a8389133209f68f1aa8f781"
 dependencies = [
  "base64 0.23.1",
  "bitflags 2.13.2",
@@ -3441,8 +3456,7 @@ dependencies = [
 [[package]]
 name = "skia-svg-macros"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fec38aa7a389d249e1ce357b050ae5bdb302fd9943661fa650f39cf6ea51be97"
+source = "git+https://github.com/rust-skia/rust-skia?rev=91be1b03#91be1b03d70b8afe9a8389133209f68f1aa8f781"
 dependencies = [
  "proc-macro2",
  "quote",

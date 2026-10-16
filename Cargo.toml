@@ -94,6 +94,8 @@ enum_glob_use = "allow"
 float_cmp = "allow"
 
 [workspace.dependencies]
+# until the release that follows 0.153.3: Surface::async_rescale_and_read_pixels_yuv420
+skia-safe = { git = "https://github.com/rust-skia/rust-skia", rev = "91be1b03" }
 # If you are working locally on renderer, just clone https://github.com/dmtrKovalenko/svgr
 # into the parent directory of fframes (as a sibling) and uncomment the following lines:
 # svgr = { path = "../svgr/crates/svgr" }

@@ -157,7 +157,9 @@ impl Presenter {
         // Video frame images point into the tree's pixel buffers: wait for the GPU so the
         // tree can be dropped as soon as the next frame replaces it.
         if let Some(context) = self.gpu_context.as_mut() {
-            context.flush_submit_and_sync_cpu();
+            context
+                .flush_submit_and_sync_cpu()
+                .map_err(|err| PlayerError::Skia(format!("can not flush the frame: {err}")))?;
         }
 
         let mut buffer = self.window_surface.buffer_mut()?;

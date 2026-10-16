@@ -497,7 +497,9 @@ impl Bench<'_> {
                     t_gpu_draw += t.elapsed().as_secs_f64();
                     let t_sync = Instant::now();
                     if let Some(direct) = direct.as_mut() {
-                        direct.flush_submit_and_sync_cpu();
+                        direct
+                            .flush_submit_and_sync_cpu()
+                            .expect("flushing the GPU frame failed");
                     }
                     t_gpu_sync += t_sync.elapsed().as_secs_f64();
                     let info = surface.image_info();

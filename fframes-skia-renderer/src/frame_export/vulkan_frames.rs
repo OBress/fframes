@@ -562,7 +562,8 @@ impl HardwareFrameTarget for VulkanFrameTarget {
                 &mut plane.surface,
                 &gpu::FlushInfo::default(),
                 Some(&copy_source),
-            );
+            )
+            .map_err(|err| skia_error(&format!("can not flush the planes: {err}")))?;
         }
         if !self.queue_lock.locked(|| gpu.submit(gpu::SyncCpu::No)) {
             return Err(skia_error("can not submit the frame to the GPU"));

@@ -1,5 +1,6 @@
 //! What it costs to get a frame from Skia to the video encoder, for every `SkiaFrameExport`
-//! mode: hardware frames, conversion on the GPU, conversion on the CPU.
+//! mode: hardware frames, conversion on the GPU (the plane shader, or Skia's own yuv420p
+//! conversion), conversion on the CPU.
 //!
 //! Renders 1080p frames of the low-poly-art owl example and reports two numbers per mode.
 //! `stage` is one GPU context drawing pre-generated frame trees and turning them into
@@ -33,9 +34,10 @@ use fframes_skia_renderer::{
 };
 use low_poly_art_example::{LowPolyMedia, LowPolyVideo, owl};
 
-const MODES: [SkiaFrameExport; 3] = [
+const MODES: [SkiaFrameExport; 4] = [
     SkiaFrameExport::CpuConversion,
     SkiaFrameExport::GpuConversion,
+    SkiaFrameExport::SkiaConversion,
     SkiaFrameExport::Auto,
 ];
 

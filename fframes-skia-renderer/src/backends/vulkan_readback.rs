@@ -232,7 +232,8 @@ impl SurfaceReader for VulkanSurfaceReader {
                 gpu::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                 vk::QUEUE_FAMILY_IGNORED,
             )),
-        );
+        )
+        .map_err(|err| FFramesRendererError::Skia(format!("can not flush the frame: {err}")))?;
 
         unsafe {
             let device = &self.device;
