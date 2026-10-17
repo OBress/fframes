@@ -126,6 +126,13 @@ impl Drop for SwsScaler {
 
 const PIX_FMT_SIZE: usize = size_of::<i32>();
 
+/// Bytes `sws_scale` may write past the end of an RGBA image whose rows are `width * 4` bytes
+/// apart. The x86 YUV to RGB converter of `FFmpeg` (`yuv2rgb_fn` in
+/// `libswscale/x86/yuv_2_rgb.asm`) stores whole blocks of 16 pixels (64 bytes), at least one
+/// per row, so it can write up to 60 bytes past the last row. Frames allocated by `FFmpeg`
+/// have padding there.
+const SWS_DST_PADDING: usize = 64;
+
 impl SwsScaler {
     unsafe fn init_sws_context(
         video_stream_info: &VideoStreamInfo,
@@ -287,7 +294,7 @@ impl SwsScaler {
         &mut self,
         options: Option<FrameConvertOptions>,
         source_frame: *mut AVFrame,
-        rgba_dst: &mut [u8],
+        rgba_dst: &mut Vec<u8>,
     ) -> Result<()> {
         let source_pix_fmt: AVPixelFormat = std::mem::transmute((*source_frame).format);
         // Decoded frame metadata takes precedence over the stream defaults and
@@ -308,6 +315,13 @@ impl SwsScaler {
         {
             self.reinit_sws_context(source_pix_fmt, source_color, options)?;
         }
+
+        // A reused buffer may still have the length of another output size. This
+        // reallocates only when the output grows and does nothing when the size is
+        // unchanged. `sws_scale` can write past the image, see `SWS_DST_PADDING`.
+        let capacity = self.frame_data_len + SWS_DST_PADDING;
+        rgba_dst.reserve(capacity.saturating_sub(rgba_dst.len()));
+        rgba_dst.resize(self.frame_data_len, 0);
 
         let ret = sws_scale(
             self.sws_ctx,
@@ -428,14 +442,6 @@ unsafe impl Send for FFmpegFrameBuf {}
 unsafe impl Sync for FFmpegFrameBuf {}
 
 impl FFmpegFrameBuf {
-    fn alloc_data_vec(ctx: &SwsScaler) -> Vec<u8> {
-        let frame_data_len = ctx.frame_data_len;
-        let mut data_vec = Vec::with_capacity(frame_data_len * PIX_FMT_SIZE);
-        data_vec.reserve(frame_data_len);
-        data_vec.resize(frame_data_len, 0);
-        data_vec
-    }
-
     unsafe fn new(
         resource_name: String,
         video_stream_info: VideoStreamInfo,
@@ -462,7 +468,6 @@ impl FFmpegFrameBuf {
     unsafe fn write_new_frame(&self) -> Option<&'static mut ScaledFrameImage> {
         unsafe {
             let queue = self.data_buf.get().as_mut()?;
-            let scaler = self.sws_scaler.get().as_ref()?;
             let latest_pts = (*self.latest_av_frame).pts;
 
             // fast path for the cpu renderer which will always have capacity 1
@@ -474,19 +479,15 @@ impl FFmpegFrameBuf {
                 return Some(image);
             }
 
+            // `SwsScaler::convert` sizes the buffer once it knows the requested output size
             if queue.len() == queue.capacity() {
                 let mut last_buffer = queue.pop_front()?;
-
-                if last_buffer.data.len() != scaler.frame_data_len {
-                    last_buffer.data.set_len(scaler.frame_data_len);
-                }
-
                 last_buffer.pts = latest_pts;
                 queue.push_back(last_buffer);
             } else {
                 queue.push_back(ScaledFrameImage {
                     pts: latest_pts,
-                    data: Self::alloc_data_vec(scaler),
+                    data: Vec::new(),
                 });
             }
 
