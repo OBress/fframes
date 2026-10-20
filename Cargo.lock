@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "arm-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_native_player",
@@ -246,7 +246,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-announce-editor-bridge-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "audio-announce-example",
  "fframes-editor-controller",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "audio-announce-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -306,7 +306,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "beta-editor-bridge"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "beta-example",
  "fframes-editor-controller",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "beta-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_native_player",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-fframes"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "dialoguer",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "conference-splash-screen-bridge-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "conference-splash-screen-example",
  "fframes-editor-controller",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "conference-splash-screen-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -1075,7 +1075,7 @@ checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
 
 [[package]]
 name = "e2e-tests"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "lazy_static",
@@ -1084,7 +1084,7 @@ dependencies = [
 
 [[package]]
 name = "editor-bridge"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "marketing-example",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "fframes"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "approx",
  "clap",
@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "fframes-editor-controller"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "console_error_panic_hook",
  "fframes",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "fframes-intro"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_native_player",
@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "fframes-media"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "fframes-media-dir-macro"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "fframes_native_player"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "core-graphics-types 0.2.0",
  "cpal",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "fframes_skia_renderer"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "ash",
  "core-foundation 0.10.0",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "fframes_test_utils"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "futures",
@@ -1318,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "fframes_three_d"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
@@ -1660,7 +1660,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello-word-bridge-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "hello-world-example",
@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "hello-world-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "lottie-launch"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_skia_renderer",
@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "low-poly-art-bridge"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "low-poly-art-example",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "low-poly-art-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_skia_renderer",
@@ -2094,7 +2094,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "made-of-motion"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_native_player",
@@ -2113,7 +2113,7 @@ dependencies = [
 
 [[package]]
 name = "marketing-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_skia_renderer",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "motion-graphics-editor-bridge-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "motion-graphics-example",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "motion-graphics-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "neon-triangle-bridge-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "neon-triangle-example",
@@ -2302,7 +2302,7 @@ dependencies = [
 
 [[package]]
 name = "neon-triangle-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -2934,7 +2934,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pixel-bridge-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "pixel-example",
@@ -2943,7 +2943,7 @@ dependencies = [
 
 [[package]]
 name = "pixel-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -3016,7 +3016,7 @@ dependencies = [
 
 [[package]]
 name = "podcast-editor-bridge"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes-editor-controller",
@@ -3026,7 +3026,7 @@ dependencies = [
 
 [[package]]
 name = "podcast-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_skia_renderer",
@@ -3385,7 +3385,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "render-bench"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "audio-announce-example",
  "beta-example",
@@ -3652,7 +3652,7 @@ dependencies = [
 
 [[package]]
 name = "shader-mode"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_native_player",
@@ -3661,7 +3661,7 @@ dependencies = [
 
 [[package]]
 name = "shaders-bridge-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "once_cell",
@@ -3671,7 +3671,7 @@ dependencies = [
 
 [[package]]
 name = "shaders-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -3700,7 +3700,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal-lab"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_native_player",
@@ -3917,7 +3917,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "svg-in-3d-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_skia_renderer",
@@ -3942,7 +3942,7 @@ dependencies = [
 
 [[package]]
 name = "svgr-macro"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "lazy_static",
  "proc-macro-crate",
@@ -4032,7 +4032,7 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "teej-podcast-example-bridge"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "teej_podcast_example",
@@ -4041,7 +4041,7 @@ dependencies = [
 
 [[package]]
 name = "teej_podcast_example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "fframes",
@@ -4112,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "tiktok-editor-bridge"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes-editor-controller",
  "tiktok-example",
@@ -4121,7 +4121,7 @@ dependencies = [
 
 [[package]]
 name = "tiktok-example"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
  "fframes_skia_renderer",
@@ -4131,7 +4131,7 @@ dependencies = [
 
 [[package]]
 name = "tiktok-media"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "fframes",
 ]
@@ -4499,7 +4499,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vs-remotion-bench"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "ash",
  "fframes",
@@ -4721,7 +4721,7 @@ dependencies = [
 
 [[package]]
 name = "webvtt-parser"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "nom",
  "nom_locate",
