@@ -32,3 +32,11 @@ profiles in their workspace-root `Cargo.toml`.
 Times accept frames (`120`), seconds (`3.2s`), `m:ss`, percentages (`50%`), scenes (`DataScene`,
 `#1`) and offsets inside scenes (`DataScene@1.5s`, `@50%`, `@end`). Add `--json` to any
 command for machine-readable output.
+
+## Experimental Blaze builds
+
+[Blaze](https://github.com/indexable-inc/blaze) can be evaluated as an optional build tool.
+Follow the [fframes Blaze guide](https://github.com/dmtrKovalenko/fframes/blob/main/skills/fframes-video/references/blaze.md)
+for isolated build output, LLVM settings and the current compatibility limits. The tested
+Blaze builds do not yet establish a speedup for fframes; use the Cargo release commands above
+for normal editing and final renders.

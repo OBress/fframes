@@ -130,6 +130,10 @@ affect optimization, so measure both rebuild time and rendering time before tuni
 The first build warms the cache. Keep the profile, features and target directory consistent
 across edits; do not run `cargo clean` between checks.
 
+If the user asks to try **Blaze**, read [references/blaze.md](references/blaze.md) for the
+experimental build workflow and current compatibility limits. Keep ordinary Cargo release
+builds as the default until Blaze produces correct frames and improves the full edit loop.
+
 **Use the Skia GPU backend (the default).** `cargo fframes new` picks Skia on Metal (macOS) or
 Vulkan (Linux, Windows). It renders about 10x faster than the CPU backend and gives you the
 real-time `preview` window. On macOS and Linux the first build downloads prebuilt Skia and ffmpeg
