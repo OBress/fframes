@@ -1,6 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
-use glam::{Vec2, Vec4};
+use glam::{Mat2, Vec2, Vec4};
 
 use crate::Rgb;
 use crate::color::{linear_to_srgb, srgb_to_linear};
@@ -20,9 +20,12 @@ pub struct Texture {
     /// True for color data. The texture keeps it as sRGB and converts it to linear when it
     /// samples it. False for linear data such as metalness and roughness.
     pub srgb: bool,
-    /// UV scale applied before sampling: `uv * repeat + offset`.
+    /// UV scale applied before sampling, first of the UV transform.
     pub repeat: Vec2,
-    /// UV offset applied before sampling, after `repeat`.
+    /// UV rotation in radians, applied after `repeat` and before `offset`. It turns the
+    /// image counterclockwise, as glTF `KHR_texture_transform` does. Default 0.
+    pub rotation: f32,
+    /// UV offset applied before sampling, last of the UV transform.
     pub offset: Vec2,
 }
 
@@ -199,6 +202,7 @@ impl Texture {
             _image: None,
             srgb,
             repeat: Vec2::ONE,
+            rotation: 0.0,
             offset: Vec2::ZERO,
         }
     }
@@ -234,6 +238,27 @@ impl Texture {
         self
     }
 
+    /// Moves the texture by `u`, `v` after the repeat and the rotation.
+    pub fn offset(mut self, u: f32, v: f32) -> Self {
+        self.offset = Vec2::new(u, v);
+        self
+    }
+
+    /// Turns the texture by `radians` after the repeat, see [`Texture::rotation`].
+    pub fn rotate(mut self, radians: f32) -> Self {
+        self.rotation = radians;
+        self
+    }
+
+    /// The linear part of the UV transform: `repeat`, then `rotation`. `offset` follows.
+    pub(crate) fn uv_matrix(&self) -> Mat2 {
+        let (sin, cos) = self.rotation.sin_cos();
+        Mat2::from_cols(
+            Vec2::new(cos, -sin) * self.repeat.x,
+            Vec2::new(sin, cos) * self.repeat.y,
+        )
+    }
+
     /// Bilinear sample of the full-size image. Returns linear RGBA with straight alpha.
     pub fn sample(&self, uv: Vec2) -> Vec4 {
         self.sample_lod(uv, 0.0)
@@ -242,7 +267,7 @@ impl Texture {
     /// Trilinear sample at a mipmap level. Level 0 is the full size, each next level has
     /// half the size. Returns linear RGBA with straight alpha.
     pub(crate) fn sample_lod(&self, uv: Vec2, lod: f32) -> Vec4 {
-        let uv = uv * self.repeat + self.offset;
+        let uv = self.uv_matrix() * uv + self.offset;
         let levels = self.cpu_levels();
         let max = (levels.len() - 1) as f32;
         let lod = if lod.is_finite() {
@@ -260,13 +285,14 @@ impl Texture {
     }
 
     /// Anisotropic sample like the GPU sampler (`anisotropy_clamp` 8). `dx` and `dy` are the
-    /// UV changes to the next pixel right and down, measured before `repeat`. Up to 8
+    /// UV changes to the next pixel right and down, measured before the UV transform. Up to 8
     /// trilinear samples along the long axis of the pixel footprint, at the mipmap level of
     /// its short axis, so that a surface seen at a low angle stays as sharp as on the GPU.
     pub(crate) fn sample_grad(&self, uv: Vec2, dx: Vec2, dy: Vec2) -> Vec4 {
         const MAX_ANISOTROPY: f32 = 8.0;
-        let texels = Vec2::new(self.width as f32, self.height as f32) * self.repeat;
-        let (x, y) = ((dx * texels).length(), (dy * texels).length());
+        let texels = Vec2::new(self.width as f32, self.height as f32);
+        let m = self.uv_matrix();
+        let (x, y) = ((m * dx * texels).length(), (m * dy * texels).length());
         let (major, minor, axis) = if x >= y { (x, y, dx) } else { (y, x, dy) };
         let count = (major / minor.max(1e-6)).ceil().clamp(1.0, MAX_ANISOTROPY);
         let lod = (major / count).max(1e-6).log2();

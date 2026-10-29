@@ -325,12 +325,13 @@ fn shade_tri(frame: &Frame, t: &ScreenTri, at: Vec2) -> Vec4 {
     let (dpdu, dpdv) = if draw.has_uv
         && let Some(normal_map) = &draw.material.normal_map
     {
-        // the directions on the normal map, which a negative repeat mirrors
+        // the directions on the normal map, which a negative repeat mirrors and a rotation turns
+        let uv_matrix = normal_map.uv_matrix();
         uv_directions(
             s.pos[i1] - s.pos[i0],
             s.pos[i2] - s.pos[i0],
-            (s.uv[i1] - s.uv[i0]) * normal_map.repeat,
-            (s.uv[i2] - s.uv[i0]) * normal_map.repeat,
+            uv_matrix * (s.uv[i1] - s.uv[i0]),
+            uv_matrix * (s.uv[i2] - s.uv[i0]),
         )
     } else {
         (Vec3::ZERO, Vec3::ZERO)

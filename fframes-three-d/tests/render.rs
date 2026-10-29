@@ -271,3 +271,26 @@ fn orthographic_cameras_cull_and_order_like_perspective_ones() {
         );
     }
 }
+
+/// The UV transform turns the image counterclockwise after the repeat, as glTF
+/// `KHR_texture_transform` does.
+#[test]
+fn textures_rotate_like_khr_texture_transform() {
+    // red, green on the top row, blue, white below
+    let quads = Texture::from_rgba8(
+        2,
+        2,
+        &[
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ],
+        false,
+    );
+    let at = |t: &Texture, u: f32, v: f32| t.sample(vec2(u, v)).truncate();
+    assert_eq!(at(&quads, 0.25, 0.25), vec3(1.0, 0.0, 0.0));
+    // A quarter turn takes (u, v) to (v, -u): the top left quarter reads the bottom left.
+    let turned = quads.clone().rotate(std::f32::consts::FRAC_PI_2);
+    assert!((at(&turned, 0.25, 0.25) - vec3(0.0, 0.0, 1.0)).length() < 1e-4);
+    // repeat, then rotation, then offset
+    let moved = quads.repeat(0.5, 0.5).offset(0.5, 0.0);
+    assert!((at(&moved, 0.5, 0.5) - vec3(0.0, 1.0, 0.0)).length() < 1e-4);
+}

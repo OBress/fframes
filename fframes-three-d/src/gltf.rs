@@ -2,11 +2,11 @@
 //!
 //! The loader reads `.glb` files and `.gltf` files with embedded buffers. It reads meshes,
 //! PBR materials and textures, node hierarchies, skins, morph targets, animations and
-//! punctual lights.
+//! punctual lights, and `KHR_texture_transform` (offset, rotation and scale).
 //!
 //! Not supported: cameras, the texture coordinates of sets other than 0, sampler wrap modes
-//! (textures repeat), `KHR_texture_transform` and the other material extensions. A
-//! `MASK` material blends instead of cutting at `alphaCutoff`.
+//! (textures repeat) and the other material extensions. A `MASK` material blends instead of
+//! cutting at `alphaCutoff`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -431,21 +431,48 @@ impl<'g> Loader<'_, 'g> {
         geometry
     }
 
-    /// The texture of a glTF image in a color space. Each pair decodes once.
-    fn texture(&mut self, texture: &gltf::Texture, srgb: bool) -> Option<Arc<Texture>> {
+    /// The texture of a glTF image in a color space. Each pair decodes once; a texture
+    /// with a `KHR_texture_transform` shares the image with the others.
+    fn texture(
+        &mut self,
+        texture: &gltf::Texture,
+        srgb: bool,
+        transform: Option<UvTransform>,
+    ) -> Option<Arc<Texture>> {
         let index = texture.source().index();
-        if let Some(texture) = self.textures.get(&(index, srgb)) {
-            return Some(Arc::clone(texture));
-        }
-        let image = self.images.get(index)?.as_ref()?;
-        let texture = Arc::new(Texture::from_rgba8(
-            image.width(),
-            image.height(),
-            image.as_raw(),
-            srgb,
-        ));
-        self.textures.insert((index, srgb), Arc::clone(&texture));
-        Some(texture)
+        let shared = if let Some(texture) = self.textures.get(&(index, srgb)) {
+            Arc::clone(texture)
+        } else {
+            let image = self.images.get(index)?.as_ref()?;
+            let texture = Arc::new(Texture::from_rgba8(
+                image.width(),
+                image.height(),
+                image.as_raw(),
+                srgb,
+            ));
+            self.textures.insert((index, srgb), Arc::clone(&texture));
+            texture
+        };
+        Some(match transform {
+            Some(t) => Arc::new(
+                (*shared)
+                    .clone()
+                    .repeat(t.scale.x, t.scale.y)
+                    .rotate(t.rotation)
+                    .offset(t.offset.x, t.offset.y),
+            ),
+            None => shared,
+        })
+    }
+
+    /// The texture of a base color, emissive or metal-rough texture reference.
+    fn info_texture(&mut self, info: &gltf::texture::Info, srgb: bool) -> Option<Arc<Texture>> {
+        let transform = info.texture_transform().map(|t| UvTransform {
+            offset: Vec2::from(t.offset()),
+            rotation: t.rotation(),
+            scale: Vec2::from(t.scale()),
+        });
+        self.texture(&info.texture(), srgb, transform)
     }
 
     fn material(&mut self, material: &gltf::Material) -> Material {
@@ -483,22 +510,60 @@ impl<'g> Loader<'_, 'g> {
             depth_write: alpha_mode == AlphaMode::Mask,
             map: pbr
                 .base_color_texture()
-                .and_then(|info| self.texture(&info.texture(), true)),
+                .and_then(|info| self.info_texture(&info, true)),
             metal_rough_map: pbr
                 .metallic_roughness_texture()
-                .and_then(|info| self.texture(&info.texture(), false)),
+                .and_then(|info| self.info_texture(&info, false)),
             emissive_map: material
                 .emissive_texture()
-                .and_then(|info| self.texture(&info.texture(), true)),
+                .and_then(|info| self.info_texture(&info, true)),
             normal_scale: normal
                 .as_ref()
                 .map_or(1.0, gltf::material::NormalTexture::scale),
-            normal_map: normal.and_then(|info| self.texture(&info.texture(), false)),
-            ao_map: material
-                .occlusion_texture()
-                .and_then(|info| self.texture(&info.texture(), false)),
+            normal_map: normal.and_then(|info| {
+                let transform = UvTransform::from_json(info.extension_value(TEXTURE_TRANSFORM));
+                self.texture(&info.texture(), false, transform)
+            }),
+            ao_map: material.occlusion_texture().and_then(|info| {
+                let transform = UvTransform::from_json(info.extension_value(TEXTURE_TRANSFORM));
+                self.texture(&info.texture(), false, transform)
+            }),
             ..Default::default()
         }
+    }
+}
+
+const TEXTURE_TRANSFORM: &str = "KHR_texture_transform";
+
+/// A `KHR_texture_transform` of a texture reference.
+#[derive(Clone, Copy)]
+struct UvTransform {
+    offset: Vec2,
+    rotation: f32,
+    scale: Vec2,
+}
+
+impl UvTransform {
+    /// The transform of a normal or occlusion texture reference, which the `gltf` crate
+    /// leaves as JSON.
+    fn from_json(json: Option<&gltf::json::Value>) -> Option<Self> {
+        let json = json?;
+        let pair = |key: &str, default: f32| {
+            let v = json.get(key).and_then(gltf::json::Value::as_array);
+            let at = |i: usize| {
+                v.and_then(|v| v.get(i)?.as_f64())
+                    .map_or(default, |x| x as f32)
+            };
+            Vec2::new(at(0), at(1))
+        };
+        Some(Self {
+            offset: pair("offset", 0.0),
+            rotation: json
+                .get("rotation")
+                .and_then(gltf::json::Value::as_f64)
+                .map_or(0.0, |x| x as f32),
+            scale: pair("scale", 1.0),
+        })
     }
 }
 

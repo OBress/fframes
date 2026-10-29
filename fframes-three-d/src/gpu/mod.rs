@@ -154,8 +154,11 @@ struct DrawUniform {
     flags: [f32; 4],
     maps: [f32; 4],
     attrs: [f32; 4],
-    /// The repeat and offset of each map: color, emissive, metal-rough, normal, occlusion.
+    /// The UV matrix of each map (columns), see [`Texture::uv_matrix`]: color, emissive,
+    /// metal-rough, normal, occlusion.
     uv_transforms: [[f32; 4]; 5],
+    /// The UV offsets of the maps, two to a slot.
+    uv_offsets: [[f32; 4]; 3],
     detail: [f32; 4],
 }
 
@@ -2350,18 +2353,24 @@ fn vertices_of(g: &Geometry, deformed: Option<(&[Vec3], &[Vec3])>) -> Vec<Vertex
 
 fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
     let m = &mesh.material;
-    let uv_transforms = [
+    let maps = [
         &m.map,
         &m.emissive_map,
         &m.metal_rough_map,
         &m.normal_map,
         &m.ao_map,
-    ]
-    .map(|t| {
-        t.as_ref().map_or([1.0, 1.0, 0.0, 0.0], |t| {
-            [t.repeat.x, t.repeat.y, t.offset.x, t.offset.y]
-        })
+    ];
+    let uv_transforms = maps.map(|t| {
+        t.as_ref()
+            .map_or([1.0, 0.0, 0.0, 1.0], |t| t.uv_matrix().to_cols_array())
     });
+    let mut uv_offsets = [[0.0; 4]; 3];
+    for (i, t) in maps.iter().enumerate() {
+        if let Some(t) = t {
+            uv_offsets[i / 2][i % 2 * 2] = t.offset.x;
+            uv_offsets[i / 2][i % 2 * 2 + 1] = t.offset.y;
+        }
+    }
     DrawUniform {
         model: model.to_cols_array(),
         normal_matrix: normal_matrix.to_cols_array(),
@@ -2395,6 +2404,7 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
             0.0,
         ],
         uv_transforms,
+        uv_offsets,
         detail: [
             f32::from(m.normal_map.is_some()),
             m.normal_scale,

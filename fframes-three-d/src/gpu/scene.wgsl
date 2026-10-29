@@ -80,8 +80,10 @@ struct Draw {
     maps: vec4f,
     // has uv, has color, reflection, 0
     attrs: vec4f,
-    // the uv repeat and offset of each map: color, emissive, metal rough, normal, occlusion
+    // the uv matrix (columns) of each map: color, emissive, metal rough, normal, occlusion
     uv_transforms: array<vec4f, 5>,
+    // the uv offsets of the maps, two to a slot
+    uv_offsets: array<vec4f, 3>,
     // has normal map, normal scale, has ao map, 0
     detail: vec4f,
 }
@@ -277,10 +279,12 @@ fn shadow_visibility(index: i32, position: vec3f, normal: vec3f, n_dot_l: f32) -
 
 // The geometry pass.
 
-// `uv` with the repeat and the offset of map `index` (see `Draw.uv_transforms`).
+// `uv` with the transform of map `index` (see `Draw.uv_transforms`).
 fn map_uv(uv: vec2f, index: i32) -> vec2f {
     let t = draw.uv_transforms[index];
-    return uv * t.xy + t.zw;
+    let o = draw.uv_offsets[index / 2];
+    let offset = select(o.xy, o.zw, index % 2 == 1);
+    return mat2x2f(t.xy, t.zw) * uv + offset;
 }
 
 struct VertexIn {
