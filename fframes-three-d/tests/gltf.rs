@@ -158,3 +158,60 @@ fn a_node_cycle_loads() {
         model.add_to(&mut scene, None);
     }
 }
+
+/// A `.gltf` that requires `KHR_texture_transform`, with a `MASK` material (Poly Haven
+/// models are like this).
+fn masked_gltf() -> Vec<u8> {
+    let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let buffer = base64::engine::general_purpose::STANDARD.encode(&positions);
+    // a 1x1 PNG
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let transform =
+        r#"{ "KHR_texture_transform": { "offset": [0.5, 0], "rotation": 1.0, "scale": [2, 3] } }"#;
+    format!(
+        r#"{{
+        "asset": {{ "version": "2.0" }},
+        "extensionsUsed": ["KHR_texture_transform"],
+        "extensionsRequired": ["KHR_texture_transform"],
+        "buffers": [{{ "byteLength": 36, "uri": "data:application/octet-stream;base64,{buffer}" }}],
+        "bufferViews": [{{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }}],
+        "accessors": [{{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] }}],
+        "images": [{{ "uri": "data:image/png;base64,{png}" }}],
+        "textures": [{{ "source": 0 }}],
+        "materials": [{{
+            "alphaMode": "MASK",
+            "alphaCutoff": 0.4,
+            "pbrMetallicRoughness": {{
+                "baseColorFactor": [1, 1, 1, 0.8],
+                "baseColorTexture": {{ "index": 0, "extensions": {transform} }}
+            }},
+            "normalTexture": {{ "index": 0, "extensions": {transform} }}
+        }}],
+        "meshes": [{{ "primitives": [{{ "attributes": {{ "POSITION": 0 }}, "material": 0 }}] }}],
+        "nodes": [{{ "name": "Wire", "mesh": 0 }}]
+    }}"#
+    )
+    .into_bytes()
+}
+
+#[test]
+fn loads_texture_transforms_and_mask_materials() {
+    let model = Model::from_gltf(&masked_gltf()).unwrap();
+    let mut scene = Scene::new();
+    let instance = model.add_to(&mut scene, None);
+    let wire = instance.find(&scene, "Wire").unwrap();
+    let material = &scene[wire].as_mesh().unwrap().material;
+    for map in [&material.map, &material.normal_map] {
+        let map = map.as_ref().unwrap();
+        assert_eq!(map.repeat, vec2(2.0, 3.0));
+        assert_eq!(map.rotation, 1.0);
+        assert_eq!(map.offset, vec2(0.5, 0.0));
+    }
+    // MASK cuts at alphaCutoff over the alpha of the base color, and does not blend
+    assert!((material.alpha_test - 0.5).abs() < 1e-6);
+    assert!(!material.transparent);
+    assert_eq!(material.opacity, 1.0);
+}

@@ -84,7 +84,7 @@ struct Draw {
     uv_transforms: array<vec4f, 5>,
     // the uv offsets of the maps, two to a slot
     uv_offsets: array<vec4f, 3>,
-    // has normal map, normal scale, has ao map, 0
+    // has normal map, normal scale, has ao map, alpha test cutoff (0 none)
     detail: vec4f,
 }
 
@@ -400,6 +400,9 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     if (draw.attrs.x > 0.5 && draw.maps.x > 0.5) {
         base *= texel.rgb;
         alpha *= texel.a;
+    }
+    if (alpha < draw.detail.w) {
+        discard;
     }
     var emissive = draw.emissive.rgb;
     if (draw.attrs.x > 0.5 && draw.maps.y > 0.5) {

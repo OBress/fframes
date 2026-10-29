@@ -93,6 +93,11 @@ pub struct Material {
     pub transparent: bool,
     /// Blended surfaces write depth only when this is set. Default `false`.
     pub depth_write: bool,
+    /// Cuts the surface out where its alpha (of `opacity`, `map` and the vertex colors) is
+    /// below this, three.js `alphaTest` and the `alphaCutoff` of a glTF `MASK` material.
+    /// What stays is opaque, unless the material blends. Default 0, no cutout. A cut out
+    /// surface casts no shadow.
+    pub alpha_test: f32,
     /// The base color texture, three.js `map`. It multiplies `color`.
     pub map: Option<Arc<Texture>>,
     /// The emissive texture, three.js `emissiveMap`. It multiplies `emissive`.
@@ -130,6 +135,7 @@ impl Default for Material {
             blending: Blending::Normal,
             transparent: false,
             depth_write: false,
+            alpha_test: 0.0,
             map: None,
             emissive_map: None,
             metal_rough_map: None,
@@ -245,6 +251,12 @@ impl Material {
         self
     }
 
+    /// Cuts the surface out where its alpha is below `cutoff`, see [`Material::alpha_test`].
+    pub fn alpha_test(mut self, cutoff: f32) -> Self {
+        self.alpha_test = cutoff;
+        self
+    }
+
     /// Makes the surface add its light to the color behind it, see [`Blending::Additive`].
     pub fn additive(mut self) -> Self {
         self.blending = Blending::Additive;
@@ -314,5 +326,10 @@ impl Material {
     /// Whether the renderer draws the surface in the blended pass.
     pub(crate) fn is_blended(&self) -> bool {
         self.transparent || self.opacity < 1.0 || self.blending == Blending::Additive
+    }
+
+    /// Whether the surface casts a shadow. Blended and cut out surfaces do not.
+    pub(crate) fn casts_shadow(&self) -> bool {
+        !self.is_blended() && self.alpha_test <= 0.0 && self.shading != Shading::ShadowCatcher
     }
 }

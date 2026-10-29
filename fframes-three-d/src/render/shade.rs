@@ -113,6 +113,10 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
         base *= texel.truncate();
         alpha *= texel.w;
     }
+    // a cut out point of a blended surface; the visibility pass removes those of opaque ones
+    if alpha < m.alpha_test {
+        return Vec4::ZERO;
+    }
 
     let mut emissive = m.emissive.0 * m.emissive_intensity;
     if draw.has_uv

@@ -272,6 +272,31 @@ fn orthographic_cameras_cull_and_order_like_perspective_ones() {
     }
 }
 
+/// A cut out surface (`alpha_test`) leaves the pixels where its texture is clear empty and
+/// covers the others fully. Both renderers.
+#[test]
+fn cut_out_surfaces_hide_where_the_texture_is_clear() {
+    // left half clear, right half 60% opaque
+    let half = Texture::from_rgba8(2, 1, &[255, 255, 255, 0, 255, 255, 255, 153], true);
+    let mut scene = Scene::new();
+    scene.add(Node::mesh(
+        Geometry::plane(4.0, 4.0),
+        Material::unlit(0x808080).map(half).alpha_test(0.5),
+    ));
+    let camera = Camera::orthographic(4.0).at(0.0, 0.0, 3.0);
+    let renderer = Renderer::new(64, 64);
+    for renderer in [renderer.clone(), renderer.cpu()] {
+        let pixels = renderer.render_pixels(&scene, &camera);
+        let gpu = renderer.uses_gpu();
+        assert_eq!(pixels.get(16, 32)[3], 0, "gpu: {gpu}, the clear half shows");
+        assert_eq!(
+            pixels.get(48, 32)[3],
+            255,
+            "gpu: {gpu}, the kept half blends"
+        );
+    }
+}
+
 /// The UV transform turns the image counterclockwise after the repeat, as glTF
 /// `KHR_texture_transform` does.
 #[test]

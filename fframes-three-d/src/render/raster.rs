@@ -150,6 +150,7 @@ fn render_tile(
     // Visibility: the nearest opaque triangle of each sample.
     for &ti in opaque {
         let t = &frame.opaque[ti as usize];
+        let cutout = frame.draws[t.draw as usize].material.alpha_test > 0.0;
         let r = t.bounds.intersect(tile);
         // the steps of the barycentrics and the depth key from the pixel center to the samples
         let mut dl = [Vec3::ZERO; 4];
@@ -168,6 +169,10 @@ fn render_tile(
                 let l = t.bary(cx, cy);
                 let z = t.key(cx, cy);
                 let base = first_sample(x, y);
+                // As on the GPU, the cutout is tested once per pixel, at its center.
+                if cutout && !kept(frame, t, Vec2::new(cx, cy)) {
+                    continue;
+                }
                 for s in 0..ns {
                     if inside(l + dl[s]) {
                         let zs = z + dz[s];
@@ -296,6 +301,30 @@ fn blend(dst: Vec4, src: Vec4, additive: bool) -> Vec4 {
     } else {
         src + dst * (1.0 - src.w)
     }
+}
+
+/// Whether the cutout of an opaque triangle (see `Material::alpha_test`) keeps the screen
+/// point `at`. The alpha is the one that `shade` computes.
+fn kept(frame: &Frame, t: &ScreenTri, at: Vec2) -> bool {
+    let draw = &frame.draws[t.draw as usize];
+    let m = draw.material;
+    let s = frame.streams;
+    let b = t.perspective_bary(at.x, at.y);
+    let [i0, i1, i2] = t.v.map(|v| v as usize);
+    let mut alpha = m.opacity;
+    if draw.has_color {
+        alpha *= (s.col[i0] * b.x + s.col[i1] * b.y + s.col[i2] * b.z).w;
+    }
+    if draw.has_uv
+        && let Some(map) = &m.map
+    {
+        let uv_at = |b: Vec3| s.uv[i0] * b.x + s.uv[i1] * b.y + s.uv[i2] * b.z;
+        let uv = uv_at(b);
+        let dx = uv_at(t.perspective_bary(at.x + 1.0, at.y)) - uv;
+        let dy = uv_at(t.perspective_bary(at.x, at.y + 1.0)) - uv;
+        alpha *= map.sample_grad(uv, dx, dy).w;
+    }
+    alpha >= m.alpha_test
 }
 
 /// Shades the triangle `t` at the screen point `at`.

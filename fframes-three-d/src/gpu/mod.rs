@@ -1558,9 +1558,7 @@ impl Gpu {
                         first_instance,
                         instance_count,
                         batched: false,
-                        cast_shadow: mesh.cast_shadow
-                            && !material.is_blended()
-                            && material.shading != Shading::ShadowCatcher,
+                        cast_shadow: mesh.cast_shadow && material.casts_shadow(),
                         mirrored: mesh.skin.is_none() && world.determinant() < 0.0,
                         depth: -view.transform_point3(bounds.center()).z,
                         bounds,
@@ -2409,7 +2407,7 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
             f32::from(m.normal_map.is_some()),
             m.normal_scale,
             f32::from(m.ao_map.is_some()),
-            0.0,
+            m.alpha_test,
         ],
     }
 }

@@ -5,8 +5,7 @@
 //! punctual lights, and `KHR_texture_transform` (offset, rotation and scale).
 //!
 //! Not supported: cameras, the texture coordinates of sets other than 0, sampler wrap modes
-//! (textures repeat) and the other material extensions. A `MASK` material blends instead of
-//! cutting at `alphaCutoff`.
+//! (textures repeat) and the other material extensions.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -483,6 +482,13 @@ impl<'g> Loader<'_, 'g> {
         let [er, eg, eb] = material.emissive_factor();
         let alpha_mode = material.alpha_mode();
         let normal = material.normal_texture();
+        // MASK compares the base color alpha times the texture alpha with the cutoff
+        let alpha_test = if alpha_mode == AlphaMode::Mask {
+            let cutoff = material.alpha_cutoff().unwrap_or(0.5);
+            if a > 0.0 { cutoff / a } else { f32::INFINITY }
+        } else {
+            0.0
+        };
         Material {
             shading: if material.unlit() {
                 Shading::Unlit
@@ -490,11 +496,11 @@ impl<'g> Loader<'_, 'g> {
                 Shading::Standard
             },
             color: Rgb::linear(r, g, b),
-            // an OPAQUE material ignores alpha
-            opacity: if alpha_mode == AlphaMode::Opaque {
-                1.0
-            } else {
+            // OPAQUE ignores alpha; MASK tests it, see `alpha_test`
+            opacity: if alpha_mode == AlphaMode::Blend {
                 a
+            } else {
+                1.0
             },
             metalness: pbr.metallic_factor(),
             roughness: pbr.roughness_factor(),
@@ -505,9 +511,8 @@ impl<'g> Loader<'_, 'g> {
             } else {
                 Side::Front
             },
-            transparent: alpha_mode != AlphaMode::Opaque,
-            // the cut out parts of a MASK material hide what is behind them
-            depth_write: alpha_mode == AlphaMode::Mask,
+            transparent: alpha_mode == AlphaMode::Blend,
+            alpha_test,
             map: pbr
                 .base_color_texture()
                 .and_then(|info| self.info_texture(&info, true)),

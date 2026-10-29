@@ -6,7 +6,6 @@ use rayon::prelude::*;
 
 use super::prepare::{World, WorldTri};
 use crate::Shadow;
-use crate::material::Shading;
 use crate::math::Aabb;
 
 /// The view of the light on the box that receives shadows.
@@ -82,9 +81,7 @@ impl ShadowMap {
     pub(crate) fn build(direction: Vec3, settings: &Shadow, world: &World) -> Option<Self> {
         let casts = |tri: &&WorldTri| {
             let draw = &world.draws[tri.draw as usize];
-            draw.cast_shadow
-                && !draw.material.is_blended()
-                && draw.material.shading != Shading::ShadowCatcher
+            draw.cast_shadow && draw.material.casts_shadow()
         };
         let casters = || world.tris.iter().filter(casts);
         let bounds = settings.bounds.unwrap_or_else(|| {
