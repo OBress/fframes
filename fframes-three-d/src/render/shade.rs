@@ -142,7 +142,7 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
     }
 
     let mut rgb = match m.shading {
-        Shading::Unlit => base + emissive,
+        Shading::Unlit => base + emissive + m.rim_light(n_dot_v),
         Shading::Normals => n * 0.5 + 0.5,
         Shading::ShadowCatcher => {
             let mut lit = 1.0;
@@ -151,7 +151,7 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
             }
             return Vec4::new(0.0, 0.0, 0.0, (1.0 - lit) * m.opacity);
         }
-        Shading::Standard => standard(ctx, draw, s, base, n, face, v, n_dot_v) + emissive,
+        Shading::Standard => standard(ctx, draw, s, base, n, face, v, n_dot_v) + emissive + m.rim_light(n_dot_v),
     };
 
     if m.fog

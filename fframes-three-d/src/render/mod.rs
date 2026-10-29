@@ -416,7 +416,7 @@ fn render_view(
 ) -> (Vec<Vec4>, Vec<f32>) {
     let reflection = viewport.mirrored;
     let (opaque, blended_tris) = prepare::setup_triangles(world, viewport, |d| {
-        !reflection || d.material.reflection <= 0.0
+        !d.material.shadow_only && (!reflection || d.material.reflection <= 0.0)
     });
     let sprites = if reflection {
         Vec::new()

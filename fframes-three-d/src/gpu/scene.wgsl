@@ -89,6 +89,16 @@ struct Draw {
     uv_offsets: array<vec4f, 3>,
     // has normal map, normal scale, has ao map, alpha test cutoff (0 none)
     detail: vec4f,
+    // rim color, rim power
+    rim: vec4f,
+}
+
+// The rim (fresnel) glow (`Material::rim_light`).
+fn rim_light(n_dot_v: f32) -> vec3f {
+    if (all(draw.rim.rgb == vec3f(0.0))) {
+        return vec3f(0.0);
+    }
+    return draw.rim.rgb * pow(1.0 - clamp(n_dot_v, 0.0, 1.0), draw.rim.w);
 }
 
 // The pipeline constants of a material (`Variant` in `mod.rs`). A material compiles only the
@@ -480,7 +490,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     out.key = vec4f(1.0 / max(in.view_w, 1e-4), 0.0, 0.0, 1.0);
     var rgb = vec3f(0.0);
     if (SHADING == 1u) {
-        rgb = base + emissive;
+        rgb = base + emissive + rim_light(n_dot_v);
     } else if (SHADING == 3u) {
         rgb = n * 0.5 + 0.5;
     } else if (SHADING == 2u) {
@@ -491,7 +501,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         out.color = vec4f(0.0, 0.0, 0.0, (1.0 - shadow) * draw.color.a);
         return out;
     } else {
-        rgb = standard(in.rel, in.clip.xy, base, n, face, v, n_dot_v, metal_rough, occlusion, shadows, normal_variation) + emissive;
+        rgb = standard(in.rel, in.clip.xy, base, n, face, v, n_dot_v, metal_rough, occlusion, shadows, normal_variation) + emissive + rim_light(n_dot_v);
     }
 
     if (FOG && draw.flags.z > 0.5 && frame.fog.w > 0.5) {

@@ -172,6 +172,8 @@ struct DrawUniform {
     /// The UV offsets of the maps, two to a slot.
     uv_offsets: [[f32; 4]; 3],
     detail: [f32; 4],
+    /// The rim color and its power.
+    rim: [f32; 4],
 }
 
 /// `Post` in `post.wgsl`.
@@ -2072,7 +2074,7 @@ impl Gpu {
         for &slot in order {
             let item = &items[slot];
             let m = item.material;
-            if reflection_pass && m.reflection > 0.0 {
+            if m.shadow_only || (reflection_pass && m.reflection > 0.0) {
                 continue;
             }
             let blend = if !m.is_blended() {
@@ -2458,6 +2460,7 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
             f32::from(m.ao_map.is_some()),
             m.alpha_test,
         ],
+        rim: m.rim.0.extend(m.rim_power.max(0.01)).to_array(),
     }
 }
 
@@ -2558,6 +2561,7 @@ fn batch(items: &mut Vec<DrawItem>, streamed: &mut Vec<Vertex>) -> Vec<u32> {
         if item.vertices.is_none()
             || item.first_instance != 0
             || item.material.is_blended()
+            || item.material.shadow_only
             || item.index_count > BATCH_MAX_INDICES
         {
             continue;

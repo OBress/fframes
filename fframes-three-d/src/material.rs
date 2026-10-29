@@ -117,6 +117,14 @@ pub struct Material {
     pub ao_map: Option<Arc<Texture>>,
     /// Whether the scene fog applies. Default `true`.
     pub fog: bool,
+    /// A rim (fresnel) glow: light added where the surface turns away from the camera, for
+    /// ghosts and backlit figures. Default black, no rim. See [`Material::rim`].
+    pub rim: Rgb,
+    /// How tight the rim is: the glow is `rim * (1 - n·v)^rim_power`. Default 3.
+    pub rim_power: f32,
+    /// Casts its shadow but is not drawn, for a figure seen only by its shadow. Default
+    /// `false`. See [`Material::shadow_only`].
+    pub shadow_only: bool,
 }
 
 impl Default for Material {
@@ -146,6 +154,9 @@ impl Default for Material {
             normal_scale: 1.0,
             ao_map: None,
             fog: true,
+            rim: Rgb::BLACK,
+            rim_power: 3.0,
+            shadow_only: false,
         }
     }
 }
@@ -321,6 +332,29 @@ impl Material {
     }
 
     /// Turns off the scene fog for this surface.
+    /// Adds a rim (fresnel) glow, see [`Material::rim`]: `color` is its strength at the
+    /// silhouette (HDR, can exceed 1), `power` how tight it hugs the edge (2 soft, 6 thin).
+    pub fn rim(mut self, color: impl Into<Rgb>, power: f32) -> Self {
+        self.rim = color.into();
+        self.rim_power = power;
+        self
+    }
+
+    /// Casts the shadow of the mesh without drawing it: a shadow on the wall with nobody in
+    /// frame. It needs a light with a shadow (see [`Light::with_shadow`](crate::Light::with_shadow)).
+    pub fn shadow_only(mut self) -> Self {
+        self.shadow_only = true;
+        self
+    }
+
+    /// The rim glow for a surface at `n_dot_v` (the cosine between the normal and the view).
+    pub(crate) fn rim_light(&self, n_dot_v: f32) -> glam::Vec3 {
+        if self.rim.0 == glam::Vec3::ZERO {
+            return glam::Vec3::ZERO;
+        }
+        self.rim.0 * (1.0 - n_dot_v.clamp(0.0, 1.0)).powf(self.rim_power.max(0.01))
+    }
+
     pub fn no_fog(mut self) -> Self {
         self.fog = false;
         self
