@@ -1,20 +1,40 @@
-//! Shadow maps of directional lights. Each is an orthographic depth map around the shadow
-//! casters, read with a smooth percentage closer filter.
+//! Shadow maps. A directional light's map is an orthographic depth map around the shadow
+//! casters; a spot light's (and each face of a point light's cube) is a perspective map from
+//! the light that holds the distance to the light divided by the map's range, so that it
+//! compares the same way on the CPU and the GPU. Both are read with a smooth percentage
+//! closer filter.
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use rayon::prelude::*;
 
-use super::prepare::{World, WorldTri};
-use crate::Shadow;
+use super::prepare::{ShadowCaster, ShadowView, World, WorldTri};
 use crate::math::Aabb;
+
+/// The near plane of a perspective shadow map, in meters.
+pub(crate) const SHADOW_NEAR: f32 = 0.05;
 
 /// The view of the light on the box that receives shadows.
 pub(crate) struct ShadowFit {
     pub view_proj: Mat4,
-    /// The world size of one texel.
+    /// The world size of one texel; for a perspective map, at a distance of 1 m.
     pub texel_world: f32,
-    /// The depth units in a world distance of one texel.
+    /// The depth units in a world distance of one texel (orthographic maps).
     pub depth_per_texel: f32,
+    /// A perspective map: the light's position and the map's range.
+    pub perspective: Option<(Vec3, f32)>,
+}
+
+/// A perspective map from `position` along `direction`.
+pub(crate) fn fit_perspective(position: Vec3, direction: Vec3, up: Vec3, fov: f32, far: f32, size: usize) -> ShadowFit {
+    let far = far.max(SHADOW_NEAR * 2.0);
+    let view = Mat4::look_to_rh(position, direction, up);
+    let projection = Mat4::perspective_rh(fov, 1.0, SHADOW_NEAR, far);
+    ShadowFit {
+        view_proj: projection * view,
+        texel_world: 2.0 * (fov * 0.5).tan() / size as f32,
+        depth_per_texel: 0.0,
+        perspective: Some((position, far)),
+    }
 }
 
 /// An orthographic light camera around `bounds` that looks along `direction`. The map has
@@ -52,7 +72,26 @@ pub(crate) fn fit(direction: Vec3, bounds: &Aabb, size: usize) -> ShadowFit {
         view_proj: projection * view,
         texel_world,
         depth_per_texel: texel_world / (far - near).max(1e-6),
+        perspective: None,
     }
+}
+
+/// The part of a triangle in front of the near plane (clip space `z >= 0`), as a fan, with
+/// the world positions along. A perspective map clips; an orthographic one does not.
+fn clip_near(clip: [Vec4; 3], world: [Vec3; 3]) -> Vec<(Vec4, Vec3)> {
+    let mut out = Vec::with_capacity(4);
+    for i in 0..3 {
+        let (a, b) = ((clip[i], world[i]), (clip[(i + 1) % 3], world[(i + 1) % 3]));
+        let (da, db) = (a.0.z, b.0.z);
+        if da >= 0.0 {
+            out.push(a);
+        }
+        if (da >= 0.0) != (db >= 0.0) {
+            let t = da / (da - db);
+            out.push((a.0.lerp(b.0, t), a.1.lerp(b.1, t)));
+        }
+    }
+    out
 }
 
 /// Rounds `v` up to a multiple of 1/64 of the power of two below it.
@@ -61,10 +100,11 @@ fn quantize_up(v: f32) -> f32 {
     (v / step).ceil() * step
 }
 
-/// The shadow of a directional light.
+/// One shadow map.
 pub(crate) struct ShadowMap {
     size: usize,
-    /// The nearest caster depth of each texel, row major.
+    /// The nearest caster depth of each texel, row major: the orthographic depth, or the
+    /// distance to the light over the range.
     depth: Vec<f32>,
     fit: ShadowFit,
     softness: f32,
@@ -76,52 +116,81 @@ pub(crate) struct ShadowMap {
 const BAND: usize = 16;
 
 impl ShadowMap {
-    /// Rasterizes the shadow casters of `world` as the light along `direction` sees them.
-    /// `None` when nothing casts a shadow.
-    pub(crate) fn build(direction: Vec3, settings: &Shadow, world: &World) -> Option<Self> {
+    /// Rasterizes the shadow casters of `world` into the map `caster` describes. `None`
+    /// when nothing casts a shadow.
+    pub(crate) fn build(caster: &ShadowCaster, world: &World) -> Option<Self> {
+        let settings = &caster.settings;
         let casts = |tri: &&WorldTri| {
             let draw = &world.draws[tri.draw as usize];
             draw.cast_shadow && draw.material.casts_shadow()
         };
         let casters = || world.tris.iter().filter(casts);
-        let bounds = settings.bounds.unwrap_or_else(|| {
-            Aabb::from_points(
-                casters().flat_map(|tri| tri.v.map(|v| world.streams.pos[v as usize])),
-            )
-        });
-        if bounds.is_empty() {
-            return None;
-        }
-
         let size = settings.map_size.clamp(64, 8192) as usize;
-        let fit = fit(direction, &bounds, size);
+        let fit = match caster.view {
+            ShadowView::Ortho { direction } => {
+                let bounds = settings.bounds.unwrap_or_else(|| {
+                    Aabb::from_points(
+                        casters().flat_map(|tri| tri.v.map(|v| world.streams.pos[v as usize])),
+                    )
+                });
+                if bounds.is_empty() {
+                    return None;
+                }
+                fit(direction, &bounds, size)
+            }
+            ShadowView::Perspective { position, direction, up, fov, far } => {
+                fit_perspective(position, direction, up, fov, far, size)
+            }
+        };
 
-        // the casters in map space
+        // The casters in map space. `z` is the depth over w and `w` is 1 / w, both linear
+        // across the triangle on the map, so the depth comes out perspective correct.
         struct MapTri {
             x: [f32; 3],
             y: [f32; 3],
             z: [f32; 3],
+            w: [f32; 3],
             y0: usize,
             y1: usize,
         }
         let s = size as f32;
-        let map_tris: Vec<MapTri> = casters()
-            .filter_map(|tri| {
-                let p = tri
-                    .v
-                    .map(|v| fit.view_proj.project_point3(world.streams.pos[v as usize]));
-                let x = p.map(|p| (p.x * 0.5 + 0.5) * s);
-                let y = p.map(|p| (0.5 - p.y * 0.5) * s);
+        let to_map = |pts: [(Vec4, Vec3); 3]| -> Option<MapTri> {
+            let ndc = pts.map(|(c, _)| c.truncate() / c.w);
+            let x = ndc.map(|p| (p.x * 0.5 + 0.5) * s);
+            let y = ndc.map(|p| (0.5 - p.y * 0.5) * s);
+            let (z, w) = match fit.perspective {
+                // The distance to the light over the range.
+                Some((light, far)) => {
+                    let w = pts.map(|(c, _)| 1.0 / c.w);
+                    let z = [0, 1, 2].map(|i| (pts[i].1 - light).length() / far * w[i]);
+                    (z, w)
+                }
                 // A caster beyond the near plane, between the light and the box, still
                 // throws its shadow: its depth clamps to the near plane in each texel, as
                 // on the GPU. A caster beyond the far plane is behind every receiver.
-                let z = p.map(|p| p.z);
-                let y0 = y[0].min(y[1]).min(y[2]).floor().max(0.0) as usize;
-                let y1 = (y[0].max(y[1]).max(y[2]).ceil().max(0.0) as usize).min(size);
-                let x0 = x[0].min(x[1]).min(x[2]);
-                let x1 = x[0].max(x[1]).max(x[2]);
-                let in_depth = z.iter().any(|&z| z <= 1.0);
-                (y0 < y1 && x1 >= 0.0 && x0 < s && in_depth).then_some(MapTri { x, y, z, y0, y1 })
+                None => (ndc.map(|p| p.z), [1.0; 3]),
+            };
+            let y0 = y[0].min(y[1]).min(y[2]).floor().max(0.0) as usize;
+            let y1 = (y[0].max(y[1]).max(y[2]).ceil().max(0.0) as usize).min(size);
+            let x0 = x[0].min(x[1]).min(x[2]);
+            let x1 = x[0].max(x[1]).max(x[2]);
+            let in_depth = (0..3).any(|i| z[i] / w[i] <= 1.0);
+            (y0 < y1 && x1 >= 0.0 && x0 < s && in_depth).then_some(MapTri { x, y, z, w, y0, y1 })
+        };
+        let map_tris: Vec<MapTri> = casters()
+            .flat_map(|tri| {
+                let world_pos = tri.v.map(|v| world.streams.pos[v as usize]);
+                let clip = world_pos.map(|p| fit.view_proj * p.extend(1.0));
+                let mut out = Vec::new();
+                if fit.perspective.is_some() {
+                    let poly = clip_near(clip, world_pos);
+                    for i in 1..poly.len().saturating_sub(1) {
+                        out.extend(to_map([poly[0], poly[i], poly[i + 1]]));
+                    }
+                } else {
+                    out.extend(to_map([0, 1, 2].map(|i| (clip[i], world_pos[i]))));
+                }
+                out
             })
             .collect();
 
@@ -182,7 +251,8 @@ impl ShadowMap {
                             let l1 = edge(1, px, py);
                             let l2 = 1.0 - l0 - l1;
                             if l0 >= 0.0 && l1 >= 0.0 && l2 >= 0.0 {
-                                let z = (l0 * t.z[0] + l1 * t.z[1] + l2 * t.z[2]).max(0.0);
+                                let w = l0 * t.w[0] + l1 * t.w[1] + l2 * t.w[2];
+                                let z = ((l0 * t.z[0] + l1 * t.z[1] + l2 * t.z[2]) / w).max(0.0);
                                 if z < *d {
                                     *d = z;
                                 }
@@ -206,8 +276,10 @@ impl ShadowMap {
     /// point moves out along `normal` against shadow acne. It moves farther where the
     /// light grazes the surface (a small `n_dot_l`).
     pub(crate) fn visibility(&self, position: Vec3, normal: Vec3, n_dot_l: f32) -> f32 {
-        let offset = normal * self.fit.texel_world * (1.0 + 2.0 * (1.0 - n_dot_l.clamp(0.0, 1.0)));
-        let Some((u, v, z)) = self.project(position + offset) else {
+        // A perspective map's texels grow with the distance from the light.
+        let texel = self.fit.texel_world * self.fit.perspective.map_or(1.0, |(light, _)| (position - light).length());
+        let offset = normal * texel * (1.0 + 2.0 * (1.0 - n_dot_l.clamp(0.0, 1.0)));
+        let Some((u, v, z)) = self.project(position + offset, texel) else {
             return 1.0;
         };
         let r = self.softness;
@@ -235,18 +307,22 @@ impl ShadowMap {
         1.0 - self.strength * (1.0 - lit)
     }
 
-    /// The texel position and the biased depth of `position` in the map. `None` outside
-    /// the map.
-    fn project(&self, position: Vec3) -> Option<(f32, f32, f32)> {
-        let p = self.fit.view_proj.project_point3(position);
+    /// The texel position and the biased depth of `position` in the map; `texel` is the
+    /// world size of a texel there. `None` outside the map.
+    fn project(&self, position: Vec3, texel: f32) -> Option<(f32, f32, f32)> {
+        let clip = self.fit.view_proj * position.extend(1.0);
+        if clip.w <= 0.0 {
+            return None;
+        }
+        let p = clip.truncate() / clip.w;
         let s = self.size as f32;
         let u = (p.x * 0.5 + 0.5) * s - 0.5;
         let v = (0.5 - p.y * 0.5) * s - 0.5;
-        ((0.0..s).contains(&u) && (0.0..s).contains(&v) && p.z <= 1.0).then_some((
-            u,
-            v,
-            p.z - self.bias * self.fit.depth_per_texel,
-        ))
+        let z = match self.fit.perspective {
+            Some((light, far)) => ((position - light).length() - self.bias * texel) / far,
+            None => p.z - self.bias * self.fit.depth_per_texel,
+        };
+        ((0.0..s).contains(&u) && (0.0..s).contains(&v) && p.z <= 1.0).then_some((u, v, z))
     }
 
     /// The bilinear depth comparison at the texel position `u`, `v`: 1 when `z` is lit.

@@ -10,7 +10,8 @@ struct Light {
     position: vec4f,
     // xyz, decay
     direction: vec4f,
-    // cos outer, cos inner, shadow map index (-1 for none), 0
+    // cos outer, cos inner, first shadow map (-1 for none; a point light has six), shadow
+    // slot (-1 for none)
     params: vec4f,
 }
 
@@ -27,6 +28,8 @@ struct Shadow {
     params: vec4f,
     // bias (texels), map size, 0, 0
     params2: vec4f,
+    // a perspective map: the light's position and the map's range (w 0 for orthographic)
+    light: vec4f,
 }
 
 struct Frame {
@@ -60,9 +63,9 @@ struct Frame {
     counts: vec4f,
     // the plane of the reflector: xyz normal, w offset
     clip_plane: vec4f,
-    lights: array<Light, 16>,
+    lights: array<Light, 32>,
     softboxes: array<SoftBox, 8>,
-    shadows: array<Shadow, 2>,
+    shadows: array<Shadow, 8>,
 }
 
 struct Draw {
@@ -257,15 +260,27 @@ fn env_brdf(roughness: f32, n_dot_v: f32) -> vec2f {
 fn shadow_visibility(index: i32, position: vec3f, normal: vec3f, n_dot_l: f32) -> f32 {
     let s = &frame.shadows[index];
     let params = s.params;
-    let offset = normal * params.x * (1.0 + 2.0 * (1.0 - clamp(n_dot_l, 0.0, 1.0)));
+    let light = s.light;
+    // A perspective map's texels grow with the distance from the light.
+    var texel_world = params.x;
+    if (light.w > 0.0) {
+        texel_world *= length(position - light.xyz);
+    }
+    let offset = normal * texel_world * (1.0 + 2.0 * (1.0 - clamp(n_dot_l, 0.0, 1.0)));
     let clip = s.view_proj * vec4f(position + offset, 1.0);
+    if (clip.w <= 0.0) {
+        return 1.0;
+    }
     let p = clip.xyz / clip.w;
     let uv = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
     if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 || p.z > 1.0) {
         return 1.0;
     }
     let params2 = s.params2;
-    let z = p.z - params2.x * params.y;
+    var z = p.z - params2.x * params.y;
+    if (light.w > 0.0) {
+        z = (length(position + offset - light.xyz) - params2.x * texel_world) / light.w;
+    }
     let texel = 1.0 / params2.y;
     let r = params.z;
     var lit = 0.0;
@@ -442,7 +457,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     }
     // The shadow maps come next. Each map needs sixteen samples and many registers. Few
     // other values are live at this point.
-    var shadows = vec2f(1.0);
+    var shadows = vec4f(1.0);
     if (SHADING == 0u && draw.maps.w > 0.5) {
         shadows = shadow_factors(world, face);
     }
@@ -471,11 +486,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     } else if (SHADING == 2u) {
         var shadow = 1.0;
         for (var i = 0; i < light_count(); i++) {
-            let light = &frame.lights[i];
-            let index = light.params.z;
-            if (i32(light.color.w) == 0 && index >= 0.0) {
-                shadow *= shadow_visibility(i32(index), world, face, dot(face, -light.direction.xyz));
-            }
+            shadow *= light_visibility(i, world, face);
         }
         out.color = vec4f(0.0, 0.0, 0.0, (1.0 - shadow) * draw.color.a);
         return out;
@@ -522,18 +533,49 @@ fn bend(n: vec3f, dpdu: vec3f, dpdv: vec3f, texel: vec4f, scale: f32) -> vec3f {
     return normalize_or(t * (m.x * scale) - b * (m.y * scale) + n * m.z, n);
 }
 
-// The visibility of a point in each of the two shadow maps, see `shadow_visibility`.
-fn shadow_factors(position: vec3f, face: vec3f) -> vec2f {
-    var shadows = vec2f(1.0);
-    for (var i = 0; i < light_count(); i++) {
-        let light = &frame.lights[i];
-        let index = i32(light.params.z);
-        if (i32(light.color.w) != 0 || index < 0 || index > 1) {
-            continue;
+// The cube face a direction from a point light falls on (`cube_face` in `prepare.rs`).
+fn cube_face(d: vec3f) -> i32 {
+    let a = abs(d);
+    if (a.x >= a.y && a.x >= a.z) {
+        return select(1, 0, d.x >= 0.0);
+    } else if (a.y >= a.z) {
+        return select(3, 2, d.y >= 0.0);
+    }
+    return select(5, 4, d.z >= 0.0);
+}
+
+// How much of light `i` reaches `position` past its shadow casters, 1 without a shadow
+// (`light_visibility` in `shade.rs`).
+fn light_visibility(i: i32, position: vec3f, face: vec3f) -> f32 {
+    let light = &frame.lights[i];
+    let map = i32(light.params.z);
+    if (map < 0) {
+        return 1.0;
+    }
+    let kind = i32(light.color.w);
+    var l = -light.direction.xyz;
+    var index = map;
+    if (kind != 0) {
+        let d = position - light.position.xyz;
+        l = -normalize_or(d, vec3f(0.0, -1.0, 0.0));
+        if (kind == 1) {
+            index = map + cube_face(d);
         }
-        let fl = dot(face, -light.direction.xyz);
-        if (fl > 0.0) {
-            shadows[index] = shadow_visibility(index, position, face, fl);
+    }
+    let fl = dot(face, l);
+    if (fl <= 0.0) {
+        return 1.0;
+    }
+    return shadow_visibility(index, position, face, fl);
+}
+
+// The visibility of a point for each light with a shadow, by its shadow slot.
+fn shadow_factors(position: vec3f, face: vec3f) -> vec4f {
+    var shadows = vec4f(1.0);
+    for (var i = 0; i < light_count(); i++) {
+        let slot = i32(frame.lights[i].params.w);
+        if (slot >= 0 && slot < 4) {
+            shadows[slot] = light_visibility(i, position, face);
         }
     }
     return shadows;
@@ -542,7 +584,7 @@ fn shadow_factors(position: vec3f, face: vec3f) -> vec2f {
 // The light of a standard (PBR) surface at `rel`, the position relative to the camera.
 // `metal_rough` scales the metalness and the roughness. `shadows` comes from
 // `shadow_factors`. `normal_variation` tells how much the normal turns across the pixel.
-fn standard(rel: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: vec3f, n_dot_v: f32, metal_rough: vec2f, occlusion: f32, shadows: vec2f, normal_variation: f32) -> vec3f {
+fn standard(rel: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: vec3f, n_dot_v: f32, metal_rough: vec2f, occlusion: f32, shadows: vec4f, normal_variation: f32) -> vec3f {
     var metalness = draw.pbr.x * metal_rough.x;
     var roughness = draw.pbr.y * metal_rough.y;
     roughness = clamp(roughness, 0.045, 1.0);
@@ -611,12 +653,12 @@ fn standard(rel: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: ve
         let kind = i32(color.w);
         var l = vec3f(0.0);
         var radiance = color.rgb;
+        let slot = i32(light.params.w);
+        if (slot >= 0 && slot < 4) {
+            radiance *= shadows[slot];
+        }
         if (kind == 0) {
             l = -light.direction.xyz;
-            let index = i32(light.params.z);
-            if (index >= 0 && index <= 1) {
-                radiance *= shadows[index];
-            }
         } else {
             let lp = light.position;
             let ld = light.direction;

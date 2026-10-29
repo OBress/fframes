@@ -38,6 +38,22 @@ impl ShadeContext<'_> {
         self.shadows.get(index?)?.as_ref()
     }
 
+    /// How much of `light` reaches `position` past its shadow casters: 1 without a shadow.
+    /// `l` points to the light; `face` is the geometric normal.
+    pub(crate) fn light_visibility(&self, light: &LightKind, position: Vec3, face: Vec3, l: Vec3) -> f32 {
+        let Some(shadow) = light.shadow() else { return 1.0 };
+        let n_dot_l = face.dot(l);
+        if n_dot_l <= 0.0 {
+            return 1.0;
+        }
+        // A point light's map is the cube face its direction falls on.
+        let map = match light {
+            LightKind::Point { position: p, .. } => shadow.map + super::prepare::cube_face(position - *p),
+            _ => shadow.map,
+        };
+        self.shadow(Some(map)).map_or(1.0, |m| m.visibility(position, face, n_dot_l))
+    }
+
     /// The light that arrives from `dir`, blurred for `roughness`.
     pub(crate) fn env_radiance(&self, dir: Vec3, roughness: f32) -> Vec3 {
         match (self.environment, self.baked) {
@@ -131,11 +147,7 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
         Shading::ShadowCatcher => {
             let mut lit = 1.0;
             for light in &ctx.lights.direct {
-                if let LightKind::Directional { direction, shadow } = &light.kind
-                    && let Some(map) = ctx.shadow(*shadow)
-                {
-                    lit *= map.visibility(s.position, face, face.dot(-*direction));
-                }
+                lit *= ctx.light_visibility(&light.kind, s.position, face, to_light(&light.kind, s.position));
             }
             return Vec4::new(0.0, 0.0, 0.0, (1.0 - lit) * m.opacity);
         }
@@ -228,22 +240,12 @@ fn standard(
     let mut direct = Vec3::ZERO;
     for light in &ctx.lights.direct {
         let (l, radiance) = match &light.kind {
-            LightKind::Directional { direction, shadow } => {
-                let l = -*direction;
-                let mut radiance = light.color;
-                let n_dot_l = face.dot(l);
-                if draw.receive_shadow
-                    && n_dot_l > 0.0
-                    && let Some(map) = ctx.shadow(*shadow)
-                {
-                    radiance *= map.visibility(s.position, face, n_dot_l);
-                }
-                (l, radiance)
-            }
+            LightKind::Directional { direction, .. } => (-*direction, light.color),
             LightKind::Point {
                 position,
                 distance,
                 decay,
+                ..
             } => {
                 let d = *position - s.position;
                 let dist = d.length();
@@ -259,6 +261,7 @@ fn standard(
                 decay,
                 cos_outer,
                 cos_inner,
+                ..
             } => {
                 let d = *position - s.position;
                 let dist = d.length();
@@ -266,6 +269,11 @@ fn standard(
                 let cone = smoothstep(*cos_outer, *cos_inner, (-l).dot(*direction));
                 (l, light.color * attenuation(dist, *distance, *decay) * cone)
             }
+        };
+        let radiance = if draw.receive_shadow && radiance.max_element() > 0.0 {
+            radiance * ctx.light_visibility(&light.kind, s.position, face, l)
+        } else {
+            radiance
         };
         let n_dot_l = n.dot(l);
         if n_dot_l <= 0.0 || radiance.max_element() <= 0.0 {
@@ -373,4 +381,12 @@ fn env_brdf(roughness: f32, n_dot_v: f32) -> (f32, f32) {
     let r = c0 * roughness + c1;
     let a004 = (r.x * r.x).min((-9.28 * n_dot_v).exp2()) * r.x + r.y;
     (a004 * -1.04 + r.z, a004 * 1.04 + r.w)
+}
+
+/// The unit direction from `position` to a light.
+pub(crate) fn to_light(light: &LightKind, position: Vec3) -> Vec3 {
+    match light {
+        LightKind::Directional { direction, .. } => -*direction,
+        LightKind::Point { position: p, .. } | LightKind::Spot { position: p, .. } => (*p - position).normalize_or(Vec3::Y),
+    }
 }

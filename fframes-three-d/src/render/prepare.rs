@@ -44,19 +44,28 @@ pub(crate) struct WorldTri {
     pub draw: u32,
 }
 
+/// Where the shadow of a light is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ShadowRef {
+    /// The light's place among the lights with shadows, `0..MAX_SHADOW_LIGHTS`.
+    pub slot: usize,
+    /// Its (first) map in [`Lights::shadow_casters`]; a point light has six from here.
+    pub map: usize,
+}
+
 /// The type and the world space placement of a direct light.
 pub(crate) enum LightKind {
     Directional {
         /// The direction in which the light travels.
         direction: Vec3,
-        /// The index of the light in [`Lights::shadow_casters`].
-        shadow: Option<usize>,
+        shadow: Option<ShadowRef>,
     },
     Point {
         position: Vec3,
         /// The distance at which the light stops, 0 for no limit.
         distance: f32,
         decay: f32,
+        shadow: Option<ShadowRef>,
     },
     Spot {
         position: Vec3,
@@ -67,7 +76,103 @@ pub(crate) enum LightKind {
         cos_outer: f32,
         /// The cosine of the angle at which the soft edge of the cone starts.
         cos_inner: f32,
+        shadow: Option<ShadowRef>,
     },
+}
+
+impl LightKind {
+    pub(crate) fn shadow(&self) -> Option<ShadowRef> {
+        match self {
+            LightKind::Directional { shadow, .. } | LightKind::Point { shadow, .. } | LightKind::Spot { shadow, .. } => {
+                *shadow
+            }
+        }
+    }
+}
+
+/// How a shadow map looks at the scene.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ShadowView {
+    /// A directional light: an orthographic map along `direction`.
+    Ortho { direction: Vec3 },
+    /// A spot light, or one face of a point light's cube: a perspective map from `position`
+    /// along `direction` with the vertical field of view `fov` (radians), reaching to `far`.
+    Perspective { position: Vec3, direction: Vec3, up: Vec3, fov: f32, far: f32 },
+}
+
+/// One shadow map to render.
+#[derive(Clone, Debug)]
+pub(crate) struct ShadowCaster {
+    pub view: ShadowView,
+    pub settings: crate::Shadow,
+}
+
+/// The six faces of a point light's cube: the direction and the up vector of each. The face
+/// of a direction is [`cube_face`].
+pub(crate) const CUBE_FACES: [(Vec3, Vec3); 6] = [
+    (Vec3::X, Vec3::NEG_Y),
+    (Vec3::NEG_X, Vec3::NEG_Y),
+    (Vec3::Y, Vec3::Z),
+    (Vec3::NEG_Y, Vec3::NEG_Z),
+    (Vec3::Z, Vec3::NEG_Y),
+    (Vec3::NEG_Z, Vec3::NEG_Y),
+];
+
+/// The cube face that a direction from a point light falls on, see [`CUBE_FACES`].
+pub(crate) fn cube_face(d: Vec3) -> usize {
+    let a = d.abs();
+    if a.x >= a.y && a.x >= a.z {
+        if d.x >= 0.0 { 0 } else { 1 }
+    } else if a.y >= a.z {
+        if d.y >= 0.0 { 2 } else { 3 }
+    } else if d.z >= 0.0 {
+        4
+    } else {
+        5
+    }
+}
+
+/// The field of view of a cube face: a little over 90 degrees, so that the soft filter near
+/// a face's edge stays inside the map.
+pub(crate) fn cube_fov(map_size: u32) -> f32 {
+    2.0 * (1.0 + 8.0 / map_size.max(64) as f32).atan()
+}
+
+/// Warns once per process.
+fn warn_once(flag: &std::sync::atomic::AtomicBool, message: impl FnOnce() -> String) {
+    if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("fframes_three_d: {}", message());
+    }
+}
+
+/// Caps the lights of a frame at [`crate::light::MAX_LIGHTS`].
+pub(crate) fn finish_lights(lights: &mut Lights) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if lights.direct.len() > crate::light::MAX_LIGHTS {
+        let n = lights.direct.len();
+        warn_once(&WARNED, || format!("{n} point, spot and directional lights; only the first {} light the scene", crate::light::MAX_LIGHTS));
+        lights.direct.truncate(crate::light::MAX_LIGHTS);
+    }
+}
+
+/// Takes the shadow maps of a light if the limits allow, see [`crate::Shadow`].
+fn take_shadow(lights: &mut Lights, views: &[ShadowView], settings: &crate::Shadow) -> Option<ShadowRef> {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let slot = lights.shadow_lights;
+    if slot >= crate::light::MAX_SHADOW_LIGHTS || lights.shadow_casters.len() + views.len() > crate::light::MAX_SHADOW_MAPS {
+        warn_once(&WARNED, || {
+            format!(
+                "more shadows than fit ({} lights, {} maps): a light lights without its shadow",
+                crate::light::MAX_SHADOW_LIGHTS,
+                crate::light::MAX_SHADOW_MAPS
+            )
+        });
+        return None;
+    }
+    let map = lights.shadow_casters.len();
+    lights.shadow_casters.extend(views.iter().map(|&view| ShadowCaster { view, settings: settings.clone() }));
+    lights.shadow_lights += 1;
+    Some(ShadowRef { slot, map })
 }
 
 /// A direct light.
@@ -85,8 +190,10 @@ pub(crate) struct Lights {
     pub ambient: Vec3,
     /// The sums of the sky and the ground colors of the hemisphere lights.
     pub hemisphere: Option<(Vec3, Vec3)>,
-    /// The direction and the shadow settings of each directional light with a shadow.
-    pub shadow_casters: Vec<(Vec3, crate::Shadow)>,
+    /// The shadow maps, in the order of the lights.
+    pub shadow_casters: Vec<ShadowCaster>,
+    /// The number of lights with shadows.
+    pub shadow_lights: usize,
 }
 
 /// The visible meshes and particles of a frame in world space.
@@ -140,6 +247,7 @@ pub(crate) fn build_world(scene: &Scene) -> (World<'_>, Lights) {
             }
         }
     }
+    finish_lights(&mut lights);
     (world, lights)
 }
 
@@ -159,34 +267,54 @@ pub(crate) fn push_light(lights: &mut Lights, light: &Light, m: &Mat4) {
         }
         Light::Directional(l) => {
             let direction = rotate(l.direction);
-            let shadow = l.shadow.as_ref().map(|shadow| {
-                lights.shadow_casters.push((direction, shadow.clone()));
-                lights.shadow_casters.len() - 1
-            });
+            let shadow = l
+                .shadow
+                .as_ref()
+                .and_then(|s| take_shadow(lights, &[ShadowView::Ortho { direction }], s));
             lights.direct.push(LightInfo {
                 color: l.color.0 * l.intensity,
                 kind: LightKind::Directional { direction, shadow },
             });
         }
-        Light::Point(l) => lights.direct.push(LightInfo {
-            color: l.color.0 * l.intensity,
-            kind: LightKind::Point {
-                position,
-                distance: l.distance,
-                decay: l.decay,
-            },
-        }),
-        Light::Spot(l) => lights.direct.push(LightInfo {
-            color: l.color.0 * l.intensity,
-            kind: LightKind::Spot {
-                position,
-                direction: rotate(l.direction),
-                distance: l.distance,
-                decay: l.decay,
-                cos_outer: l.angle.cos(),
-                cos_inner: (l.angle * (1.0 - l.penumbra)).cos(),
-            },
-        }),
+        Light::Point(l) => {
+            let far = if l.distance > 0.0 { l.distance } else { crate::light::SHADOW_RANGE };
+            let shadow = l.shadow.as_ref().and_then(|s| {
+                let fov = cube_fov(s.map_size);
+                let views = CUBE_FACES.map(|(direction, up)| ShadowView::Perspective { position, direction, up, fov, far });
+                take_shadow(lights, &views, s)
+            });
+            lights.direct.push(LightInfo {
+                color: l.color.0 * l.intensity,
+                kind: LightKind::Point {
+                    position,
+                    distance: l.distance,
+                    decay: l.decay,
+                    shadow,
+                },
+            });
+        }
+        Light::Spot(l) => {
+            let direction = rotate(l.direction);
+            let far = if l.distance > 0.0 { l.distance } else { crate::light::SHADOW_RANGE };
+            let shadow = l.shadow.as_ref().and_then(|s| {
+                // The cone and a margin for the soft filter, at most 160 degrees.
+                let fov = (l.angle * 2.0 * 1.05 + 0.02).min(160f32.to_radians());
+                let up = if direction.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+                take_shadow(lights, &[ShadowView::Perspective { position, direction, up, fov, far }], s)
+            });
+            lights.direct.push(LightInfo {
+                color: l.color.0 * l.intensity,
+                kind: LightKind::Spot {
+                    position,
+                    direction,
+                    distance: l.distance,
+                    decay: l.decay,
+                    cos_outer: l.angle.cos(),
+                    cos_inner: (l.angle * (1.0 - l.penumbra)).cos(),
+                    shadow,
+                },
+            });
+        }
     }
 }
 

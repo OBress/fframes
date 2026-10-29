@@ -31,7 +31,8 @@ use wgpu::util::DeviceExt;
 
 use crate::material::Shading;
 use crate::render::prepare::{self, LightInfo, LightKind, Lights};
-use crate::render::shadow::fit;
+use crate::render::prepare::ShadowView;
+use crate::render::shadow::{fit, fit_perspective};
 use crate::render::{Pixels, Renderer, ToneMapping};
 use crate::scene::{Background, Fog, Object};
 use crate::{Blending, Camera, Environment, Geometry, Material, Mesh, Scene, Side, Texture};
@@ -42,9 +43,9 @@ const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const KEY: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const OUTPUT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const MAX_LIGHTS: usize = 16;
+const MAX_LIGHTS: usize = crate::light::MAX_LIGHTS;
 const MAX_SOFTBOXES: usize = 8;
-const MAX_SHADOWS: usize = 2;
+const MAX_SHADOWS: usize = crate::light::MAX_SHADOW_MAPS;
 /// The alignment of uniform buffer offsets that all devices support.
 const UNIFORM_ALIGNMENT: u64 = 256;
 /// The distance between two draw uniforms in the draw buffer.
@@ -112,6 +113,17 @@ struct GpuShadow {
     view_proj: [f32; 16],
     params: [f32; 4],
     params2: [f32; 4],
+    /// A perspective map: the light's position and the map's range; 0 range for an
+    /// orthographic map.
+    light: [f32; 4],
+}
+
+/// `ShadowPass` in `shadow.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ShadowPassUniform {
+    view_proj: [f32; 16],
+    light: [f32; 4],
 }
 
 /// `Frame` in `scene.wgsl`.
@@ -721,7 +733,7 @@ impl Gpu {
         );
         let shadow_layout = bind_group_layout(
             "shadow pass",
-            &[uniform(0, false, wgpu::ShaderStages::VERTEX)],
+            &[uniform(0, false, wgpu::ShaderStages::VERTEX_FRAGMENT)],
         );
         let shadow_draw_layout = bind_group_layout(
             "shadow draw",
@@ -1352,19 +1364,22 @@ impl Gpu {
     /// contexts are in use. The shadow maps get exactly `shadow_size` texels, as on the CPU:
     /// a context that kept larger maps from an earlier shot would shade the frame with
     /// another texel size and normal offset than a fresh one. `None` keeps the maps.
-    fn take_context(&self, width: u32, height: u32, shadow_size: Option<u32>) -> FrameContext {
+    fn take_context(&self, width: u32, height: u32, shadow_size: Option<u32>, layers: u32) -> FrameContext {
         let mut pool = lock(&self.contexts);
         loop {
             let fits = |c: &FrameContext| c.width == width && c.height == height;
+            let enough = |c: &FrameContext| c.shadow_layers.len() as u32 >= layers;
             // A context with maps of this size first, so that shots do not reallocate them.
             let found = (pool.free.iter())
-                .position(|c| fits(c) && shadow_size.is_none_or(|s| c.shadow_size == s))
+                .position(|c| fits(c) && enough(c) && shadow_size.is_none_or(|s| c.shadow_size == s))
                 .or_else(|| pool.free.iter().position(fits));
             if let Some(i) = found {
                 let mut context = pool.free.swap_remove(i);
                 drop(pool);
-                if let Some(size) = shadow_size.filter(|&s| s != context.shadow_size) {
-                    context.resize_shadows(&self.device, size);
+                let size = shadow_size.unwrap_or(context.shadow_size);
+                if size != context.shadow_size || !enough(&context) {
+                    let layers = layers.max(context.shadow_layers.len() as u32);
+                    context.resize_shadows(&self.device, size, layers);
                 }
                 return context;
             }
@@ -1382,7 +1397,7 @@ impl Gpu {
                 .unwrap_or_else(PoisonError::into_inner);
         }
         drop(pool);
-        FrameContext::new(&self.device, width, height, shadow_size.unwrap_or(1024))
+        FrameContext::new(&self.device, width, height, shadow_size.unwrap_or(1024), layers)
     }
 
     /// Puts a frame context back into the pool.
@@ -1458,18 +1473,32 @@ impl Gpu {
 
     /// Renders the moments into a frame context from the pool and averages them.
     fn render_moments(&self, renderer: &Renderer, moments: &[(&Scene, &Camera)]) -> FrameContext {
+        // The size of the maps, and how many a moment can use: one per directional or spot
+        // light, six per point light, up to the limit.
+        fn shadow_lights(scene: &Scene) -> impl Iterator<Item = (&crate::Light, &crate::Shadow)> {
+            scene.nodes().filter_map(|(_, n)| match &n.object {
+                Object::Light(l) => l.shadow().map(|s| (l, s)),
+                _ => None,
+            })
+        }
         let shadow_size = moments
             .iter()
-            .flat_map(|(scene, _)| {
-                scene.nodes().filter_map(|(_, n)| match &n.object {
-                    Object::Light(crate::Light::Directional(l)) => {
-                        l.shadow.as_ref().map(|s| s.map_size.clamp(64, 8192))
-                    }
-                    _ => None,
-                })
-            })
+            .flat_map(|(scene, _)| shadow_lights(scene).map(|(_, s)| s.map_size.clamp(64, 8192)))
+            .collect::<Vec<_>>()
+            .into_iter()
             .max();
-        let mut context = self.take_context(renderer.width, renderer.height, shadow_size);
+        let layers = moments
+            .iter()
+            .map(|(scene, _)| {
+                shadow_lights(scene)
+                    .map(|(l, _)| if matches!(l, crate::Light::Point(_)) { 6 } else { 1 })
+                    .sum::<usize>()
+                    .min(MAX_SHADOWS)
+            })
+            .max()
+            .unwrap_or(0)
+            .max(1) as u32;
+        let mut context = self.take_context(renderer.width, renderer.height, shadow_size, layers);
         let weight = 1.0 / moments.len().max(1) as f32;
         for (i, (scene, camera)) in moments.iter().enumerate() {
             self.render_moment(&mut context, scene, camera, weight, i, moments.len() == 1);
@@ -1495,12 +1524,7 @@ impl Gpu {
         let view = camera.view_matrix();
 
         // The lights, the meshes and the particles of the scene.
-        let mut lights = Lights {
-            direct: Vec::new(),
-            ambient: Vec3::ZERO,
-            hemisphere: None,
-            shadow_casters: Vec::new(),
-        };
+        let mut lights = Lights::default();
         let mut items: Vec<DrawItem> = Vec::new();
         let mut streamed: Vec<Vertex> = Vec::new();
         let mut instances = vec![InstanceData::new(Mat4::IDENTITY, Vec4::ONE)];
@@ -1591,6 +1615,7 @@ impl Gpu {
                 }
             }
         }
+        crate::render::prepare::finish_lights(&mut lights);
         let light_count = lights.direct.len().min(MAX_LIGHTS);
         for item in &mut items {
             item.variant.lights = light_count as u8;
@@ -1937,18 +1962,18 @@ impl Gpu {
             &self.shadow_draw_layout,
             &[buffer_range(&cx.draw_buffer, 0, matrix)],
         );
-        for (i, shadow) in shadows.iter().enumerate() {
+        for (i, shadow) in shadows.iter().enumerate().take(cx.shadow_layers.len()) {
             let Some(shadow) = shadow else { continue };
             let offset = i as u64 * UNIFORM_ALIGNMENT;
-            self.queue.write_buffer(
-                &cx.shadow_pass_buffer,
-                offset,
-                bytemuck::cast_slice(&shadow.view_proj),
-            );
+            let pass = ShadowPassUniform {
+                view_proj: shadow.view_proj,
+                light: shadow.light,
+            };
+            self.queue.write_buffer(&cx.shadow_pass_buffer, offset, bytemuck::bytes_of(&pass));
             let pass_group = self.bind_group(
                 "shadow pass",
                 &self.shadow_layout,
-                &[buffer_range(&cx.shadow_pass_buffer, offset, matrix)],
+                &[buffer_range(&cx.shadow_pass_buffer, offset, size_of::<ShadowPassUniform>())],
             );
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow"),
@@ -2438,27 +2463,30 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
 
 /// A light in the layout of `scene.wgsl`. `shadows` holds the fitted shadow maps.
 fn gpu_light(light: &LightInfo, shadows: &[Option<GpuShadow>]) -> GpuLight {
+    // The first map and the shadow slot, -1 without a shadow. A map with nothing to shade
+    // (no casters) counts as no shadow.
+    let (map, slot) = light
+        .kind
+        .shadow()
+        .filter(|s| shadows.get(s.map).is_some_and(Option::is_some))
+        .map_or((-1.0, -1.0), |s| (s.map as f32, s.slot as f32));
     match light.kind {
-        LightKind::Directional { direction, shadow } => {
-            let index = shadow
-                .filter(|&i| shadows.get(i).is_some_and(Option::is_some))
-                .map_or(-1.0, |i| i as f32);
-            GpuLight {
-                color: light.color.extend(0.0).to_array(),
-                position: [0.0; 4],
-                direction: direction.extend(0.0).to_array(),
-                params: [0.0, 0.0, index, 0.0],
-            }
-        }
+        LightKind::Directional { direction, .. } => GpuLight {
+            color: light.color.extend(0.0).to_array(),
+            position: [0.0; 4],
+            direction: direction.extend(0.0).to_array(),
+            params: [0.0, 0.0, map, slot],
+        },
         LightKind::Point {
             position,
             distance,
             decay,
+            ..
         } => GpuLight {
             color: light.color.extend(1.0).to_array(),
             position: position.extend(distance).to_array(),
             direction: [0.0, 0.0, 0.0, decay],
-            params: [0.0, 0.0, -1.0, 0.0],
+            params: [0.0, 0.0, map, slot],
         },
         LightKind::Spot {
             position,
@@ -2467,33 +2495,43 @@ fn gpu_light(light: &LightInfo, shadows: &[Option<GpuShadow>]) -> GpuLight {
             decay,
             cos_outer,
             cos_inner,
+            ..
         } => GpuLight {
             color: light.color.extend(2.0).to_array(),
             position: position.extend(distance).to_array(),
             direction: direction.extend(decay).to_array(),
-            params: [cos_outer, cos_inner, -1.0, 0.0],
+            params: [cos_outer, cos_inner, map, slot],
         },
     }
 }
 
-/// Fits a shadow map of `map_size` texels to each shadow casting light (two at most). `None`
-/// for a light with nothing to shade.
+/// Fits a shadow map of `map_size` texels to each shadow map of the lights. `None` for a
+/// directional light with nothing to shade.
 fn fit_shadows(lights: &Lights, items: &[DrawItem], map_size: u32) -> Vec<Option<GpuShadow>> {
     lights
         .shadow_casters
         .iter()
         .take(MAX_SHADOWS)
-        .map(|(direction, settings)| {
-            let bounds = settings.bounds.unwrap_or_else(|| {
-                items
-                    .iter()
-                    .filter(|it| it.cast_shadow)
-                    .fold(crate::Aabb::EMPTY, |acc, it| acc.union(it.bounds))
-            });
-            if bounds.is_empty() {
-                return None;
-            }
-            let f = fit(*direction, &bounds, map_size as usize);
+        .map(|caster| {
+            let settings = &caster.settings;
+            let f = match caster.view {
+                ShadowView::Ortho { direction } => {
+                    let bounds = settings.bounds.unwrap_or_else(|| {
+                        items
+                            .iter()
+                            .filter(|it| it.cast_shadow)
+                            .fold(crate::Aabb::EMPTY, |acc, it| acc.union(it.bounds))
+                    });
+                    if bounds.is_empty() {
+                        return None;
+                    }
+                    fit(direction, &bounds, map_size as usize)
+                }
+                ShadowView::Perspective { position, direction, up, fov, far } => {
+                    fit_perspective(position, direction, up, fov, far, map_size as usize)
+                }
+            };
+            let light = f.perspective.map_or([0.0; 4], |(p, far)| p.extend(far).to_array());
             Some(GpuShadow {
                 view_proj: f.view_proj.to_cols_array(),
                 params: [
@@ -2503,6 +2541,7 @@ fn fit_shadows(lights: &Lights, items: &[DrawItem], map_size: u32) -> Vec<Option
                     settings.strength.clamp(0.0, 1.0),
                 ],
                 params2: [settings.bias, map_size as f32, 0.0, 0.0],
+                light,
             })
         })
         .collect()
@@ -2631,7 +2670,7 @@ fn draw_order(items: &[DrawItem]) -> Vec<usize> {
 }
 
 impl FrameContext {
-    fn new(device: &wgpu::Device, width: u32, height: u32, shadow_size: u32) -> FrameContext {
+    fn new(device: &wgpu::Device, width: u32, height: u32, shadow_size: u32, layers: u32) -> FrameContext {
         let view = |descriptor: &wgpu::TextureDescriptor| {
             device
                 .create_texture(descriptor)
@@ -2685,7 +2724,7 @@ impl FrameContext {
         let padded_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let (tiles_w, tiles_h) = (width.div_ceil(DOF_TILE), height.div_ceil(DOF_TILE));
         let (half_w, half_h) = (width.div_ceil(2), height.div_ceil(2));
-        let (shadow_array, shadow_layers) = shadow_targets(device, shadow_size);
+        let (shadow_array, shadow_layers) = shadow_targets(device, shadow_size, layers);
         let uniform = wgpu::BufferUsages::UNIFORM;
         FrameContext {
             width,
@@ -2751,8 +2790,8 @@ impl FrameContext {
         }
     }
 
-    fn resize_shadows(&mut self, device: &wgpu::Device, size: u32) {
-        (self.shadow_array, self.shadow_layers) = shadow_targets(device, size);
+    fn resize_shadows(&mut self, device: &wgpu::Device, size: u32, layers: u32) {
+        (self.shadow_array, self.shadow_layers) = shadow_targets(device, size, layers);
         self.shadow_size = size;
     }
 }
@@ -2824,12 +2863,15 @@ impl ReflectionTargets {
 }
 
 /// The shadow maps as one array view for sampling and one view per layer for rendering.
-fn shadow_targets(device: &wgpu::Device, size: u32) -> (wgpu::TextureView, Vec<wgpu::TextureView>) {
+/// `layers` shadow maps of `size` texels. The array has at least two layers: a view of one
+/// layer would be a plain 2D texture, which the shader's array binding does not take.
+fn shadow_targets(device: &wgpu::Device, size: u32, layers: u32) -> (wgpu::TextureView, Vec<wgpu::TextureView>) {
+    let layers = layers.clamp(2, MAX_SHADOWS as u32);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         size: wgpu::Extent3d {
             width: size,
             height: size,
-            depth_or_array_layers: MAX_SHADOWS as u32,
+            depth_or_array_layers: layers,
         },
         ..texture_desc(
             "shadow maps",
@@ -2843,7 +2885,7 @@ fn shadow_targets(device: &wgpu::Device, size: u32) -> (wgpu::TextureView, Vec<w
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     });
-    let layers = (0..MAX_SHADOWS as u32)
+    let layers = (0..layers)
         .map(|layer| {
             texture.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2),

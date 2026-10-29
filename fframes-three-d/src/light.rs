@@ -29,8 +29,7 @@ pub enum Light {
     Spot(SpotLight),
 }
 
-/// Parallel rays as from the sun, three.js `DirectionalLight`. It is the only light that
-/// casts shadows.
+/// Parallel rays as from the sun, three.js `DirectionalLight`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectionalLight {
     pub color: Rgb,
@@ -41,7 +40,12 @@ pub struct DirectionalLight {
     pub shadow: Option<Shadow>,
 }
 
-/// The shadow map settings of a [`DirectionalLight`], three.js `light.shadow`.
+/// The shadow map settings of a light, three.js `light.shadow`.
+///
+/// A directional light gets one orthographic map, a spot light one perspective map along its
+/// cone, a point light six (a cube). A scene shades at most [`MAX_SHADOW_LIGHTS`] lights
+/// with shadows and [`MAX_SHADOW_MAPS`] maps; lights past either limit, in scene order, light
+/// without shadows (with a warning on stderr).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shadow {
     /// The size of the square shadow map in texels. Default 2048.
@@ -54,7 +58,9 @@ pub struct Shadow {
     /// Default 1.5.
     pub bias: f32,
     /// The world box that receives shadows. `None`, the default, fits the box of all
-    /// shadow casters. Set it when the casters are far apart.
+    /// shadow casters. Set it when the casters are far apart. Directional lights only: the
+    /// map of a spot or point light reaches as far as the light (its `distance`, or
+    /// [`SHADOW_RANGE`] without one).
     pub bounds: Option<Aabb>,
 }
 
@@ -79,6 +85,8 @@ pub struct PointLight {
     pub distance: f32,
     /// The exponent of the falloff. 2 is physically correct.
     pub decay: f32,
+    /// The shadow settings, see [`Light::with_shadow`]. `None` casts no shadows.
+    pub shadow: Option<Shadow>,
 }
 
 /// A cone of light, three.js `SpotLight`.
@@ -96,7 +104,19 @@ pub struct SpotLight {
     pub penumbra: f32,
     /// The unit direction of the cone axis, in the space of the node.
     pub direction: Vec3,
+    /// The shadow settings, see [`Light::with_shadow`]. `None` casts no shadows.
+    pub shadow: Option<Shadow>,
 }
+
+/// The most point, spot and directional lights a scene shades. Lights past it, in scene
+/// order, are left out with a warning on stderr, on the CPU as on the GPU.
+pub const MAX_LIGHTS: usize = 32;
+/// The most lights with shadows in a scene, see [`Shadow`].
+pub const MAX_SHADOW_LIGHTS: usize = 4;
+/// The most shadow maps in a scene: a point light takes six, other lights one.
+pub const MAX_SHADOW_MAPS: usize = 8;
+/// How far the shadow of a spot or point light without a `distance` reaches, in meters.
+pub const SHADOW_RANGE: f32 = 30.0;
 
 impl Light {
     /// Light from all directions, three.js `AmbientLight`.
@@ -141,6 +161,7 @@ impl Light {
             intensity,
             distance,
             decay: 2.0,
+            shadow: None,
         })
     }
 
@@ -157,15 +178,30 @@ impl Light {
             angle,
             penumbra,
             direction: Vec3::NEG_Y,
+            shadow: None,
         })
     }
 
-    /// Sets the shadow of a directional light. Other lights ignore it.
+    /// Sets the shadow of a directional, spot or point light. Ambient and hemisphere lights
+    /// ignore it. A flashlight's shadow: `Light::spot(..).with_shadow(Shadow::default())`.
     pub fn with_shadow(mut self, shadow: Shadow) -> Self {
-        if let Light::Directional(light) = &mut self {
-            light.shadow = Some(shadow);
+        match &mut self {
+            Light::Directional(DirectionalLight { shadow: s, .. })
+            | Light::Point(PointLight { shadow: s, .. })
+            | Light::Spot(SpotLight { shadow: s, .. }) => *s = Some(shadow),
+            Light::Ambient { .. } | Light::Hemisphere { .. } => {}
         }
         self
+    }
+
+    /// The shadow settings, `None` without shadows.
+    pub fn shadow(&self) -> Option<&Shadow> {
+        match self {
+            Light::Directional(DirectionalLight { shadow, .. })
+            | Light::Point(PointLight { shadow, .. })
+            | Light::Spot(SpotLight { shadow, .. }) => shadow.as_ref(),
+            Light::Ambient { .. } | Light::Hemisphere { .. } => None,
+        }
     }
 
     /// Sets the direction of a directional or spot light. Other lights ignore it.

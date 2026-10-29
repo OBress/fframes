@@ -118,7 +118,7 @@ pub use geometry::{
     Geometry, Glyph, GlyphShapes, MorphTarget, Shape, SkinWeights, StlError, TextError,
 };
 pub use gltf::{Model, ModelError, ModelInstance};
-pub use light::{DirectionalLight, Light, PointLight, Shadow, SpotLight};
+pub use light::{DirectionalLight, Light, MAX_LIGHTS, MAX_SHADOW_LIGHTS, MAX_SHADOW_MAPS, PointLight, SHADOW_RANGE, Shadow, SpotLight};
 pub use material::{Blending, Material, Shading, Side};
 pub use math::{Aabb, Mat3, Mat4, Quat, Vec2, Vec3, Vec4, deg, euler, euler_deg, vec2, vec3, vec4};
 pub use render::{Bloom, Pixels, Renderer, ToneMapping};

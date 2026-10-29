@@ -322,7 +322,7 @@ impl Renderer {
         let shadows: Vec<Option<ShadowMap>> = lights
             .shadow_casters
             .iter()
-            .map(|(direction, settings)| ShadowMap::build(*direction, settings, &world))
+            .map(|caster| ShadowMap::build(caster, &world))
             .collect();
         let baked = scene.environment.baked();
         let ortho = camera.ortho_height.is_some();
