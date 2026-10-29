@@ -187,6 +187,14 @@ impl Geometry {
             .filter(move |t| t.iter().all(|&i| (i as usize) < count))
     }
 
+    /// The index of the morph target named `name` (glTF `extras.targetNames`), the place of
+    /// its weight in [`Mesh::morph_weights`](crate::Mesh::morph_weights).
+    pub fn morph_index(&self, name: &str) -> Option<usize> {
+        self.morph_targets
+            .iter()
+            .position(|t| t.name.as_deref() == Some(name))
+    }
+
     pub fn vertex_count(&self) -> usize {
         self.positions.len()
     }

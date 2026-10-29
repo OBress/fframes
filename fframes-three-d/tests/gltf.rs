@@ -47,7 +47,8 @@ fn small_gltf() -> Vec<u8> {
                     {{ "attributes": {{ "POSITION": 0 }}, "targets": [{{ "POSITION": 1 }}] }},
                     {{ "attributes": {{ "POSITION": 0 }}, "targets": [{{ "POSITION": 1 }}] }}
                 ],
-                "weights": [0]
+                "weights": [0],
+                "extras": {{ "targetNames": ["push"] }}
             }}
         ],
         "nodes": [
@@ -91,6 +92,13 @@ fn loads_gltf_like_three_js() {
     // a node with two primitives is a group with a mesh for each
     assert!(scene[double].as_mesh().is_none());
     assert_eq!(scene[double].children().len(), 2);
+
+    // Blender's shape key names come through `extras.targetNames`.
+    let first = scene[double].children()[0];
+    assert_eq!(scene[first].as_mesh().unwrap().geometry.morph_index("push"), Some(0));
+    assert_eq!(instance.set_morph(&mut scene, "push", 0.7), 2);
+    assert_eq!(scene[first].as_mesh().unwrap().morph_weights, vec![0.7]);
+    assert_eq!(instance.set_morph(&mut scene, "pull", 1.0), 0);
 
     instance.play(&mut scene, model.animation("Go").unwrap(), 0.5);
     assert!((scene[single].position - vec3(1.0, 0.0, 0.0)).length() < 1e-6);
@@ -214,4 +222,22 @@ fn loads_texture_transforms_and_mask_materials() {
     assert!((material.alpha_test - 0.5).abs() < 1e-6);
     assert!(!material.transparent);
     assert_eq!(material.opacity, 1.0);
+}
+
+/// Blender's shape key names on a real export: it runs when `FFRAMES_3D_SHAPE_KEYS` is the
+/// path of a `.glb` with shape keys (the asset lab's `flesh.glb` has five).
+#[test]
+fn reads_blender_shape_key_names() {
+    let Ok(path) = std::env::var("FFRAMES_3D_SHAPE_KEYS") else {
+        return;
+    };
+    let model = Model::from_gltf(&std::fs::read(path).unwrap()).unwrap();
+    let names: Vec<String> = model
+        .scene
+        .nodes()
+        .filter_map(|(_, n)| n.as_mesh())
+        .flat_map(|m| m.geometry.morph_targets.iter().filter_map(|t| t.name.clone()))
+        .collect();
+    eprintln!("shape keys: {names:?}");
+    assert!(!names.is_empty());
 }

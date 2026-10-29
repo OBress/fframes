@@ -111,6 +111,27 @@ impl ModelInstance {
     pub fn blend(&self, scene: &mut Scene, clip: &AnimationClip, time: f32, weight: f32) {
         clip.apply_looped(scene, self.offset, time, weight);
     }
+
+    /// Sets the weight of the morph target (shape key) named `name` on every mesh of this
+    /// instance that has it. Returns how many meshes have it. Set it after the clips, which
+    /// may key morph weights too.
+    pub fn set_morph(&self, scene: &mut Scene, name: &str, weight: f32) -> usize {
+        let mut count = 0;
+        for id in (self.offset..self.offset + self.len).map(NodeId) {
+            let Some(mesh) = scene.get_mut(id).and_then(|n| n.mesh_mut()) else {
+                continue;
+            };
+            if let Some(i) = mesh.geometry.morph_index(name) {
+                let targets = mesh.geometry.morph_targets.len();
+                if mesh.morph_weights.len() < targets {
+                    mesh.morph_weights.resize(targets, 0.0);
+                }
+                mesh.morph_weights[i] = weight;
+                count += 1;
+            }
+        }
+        count
+    }
 }
 
 impl Model {
@@ -252,12 +273,19 @@ impl<'g> Loader<'_, 'g> {
         let meshes: Vec<Node> = gltf_node.mesh().map_or_else(Vec::new, |mesh| {
             // the node overrides the default weights of the mesh
             let weights = gltf_node.weights().or(mesh.weights()).unwrap_or_default();
+            let names = target_names(&mesh);
             mesh.primitives()
                 .filter(|p| p.mode() == gltf::mesh::Mode::Triangles)
                 .map(|primitive| {
                     let mut node = self.mesh_node(&primitive);
                     if let Some(mesh) = node.mesh_mut() {
                         mesh.morph_weights = weights.to_vec();
+                        if !names.is_empty() {
+                            let geometry = std::sync::Arc::make_mut(&mut mesh.geometry);
+                            for (target, name) in geometry.morph_targets.iter_mut().zip(&names) {
+                                target.name = Some(name.clone());
+                            }
+                        }
                     }
                     node
                 })
@@ -570,6 +598,25 @@ impl UvTransform {
             scale: pair("scale", 1.0),
         })
     }
+}
+
+/// The morph target names of a mesh, from `extras.targetNames`: not part of the glTF
+/// specification, but what Blender, three.js and Babylon read and write.
+fn target_names(mesh: &gltf::Mesh) -> Vec<String> {
+    let Some(raw) = mesh.extras().as_ref() else {
+        return Vec::new();
+    };
+    let value: gltf::json::Value = gltf::json::deserialize::from_str(raw.get()).unwrap_or_default();
+    value
+        .get("targetNames")
+        .and_then(gltf::json::Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .map(|n| n.as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Reads a glTF vector attribute. A missing attribute gives no values.
