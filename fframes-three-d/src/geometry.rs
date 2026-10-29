@@ -723,7 +723,13 @@ impl Geometry {
             .iter()
             .map(|c| (0..c.len()).map(|i| inset(c, i, bevel)).collect())
             .collect();
-        let triangles = fill_nonzero(&insets);
+        // One outline: ear clipping, which uses only its corners, so the caps meet the side
+        // walls without T-junctions and the solid is closed (subdivision needs that). Font
+        // glyphs with holes or overlapping contours take the non-zero fill.
+        let triangles = match insets.as_slice() {
+            [outline] => ear_clip(outline).unwrap_or_else(|| fill_nonzero(&insets)),
+            _ => fill_nonzero(&insets),
+        };
         let bounds = Aabb::from_points(insets.iter().flatten().map(|p| p.extend(0.0)));
         let min = bounds.min.truncate();
         let size = bounds.size().truncate().max(Vec2::splat(1e-6));
@@ -1647,6 +1653,58 @@ fn shapes_from_contours(contours: Vec<Vec<Vec2>>) -> Vec<Shape> {
 /// crossing cut the plane into slabs. In each slab, each span between edges with a winding
 /// number that is not zero becomes a trapezoid. Ear clipping fails on holes, overlaps and
 /// contours that cross themselves, which are frequent in fonts. This method does not.
+/// Triangulates a simple counter-clockwise polygon by ear clipping, with only its own
+/// corners. `None` when it cannot (the outline crosses itself).
+fn ear_clip(poly: &[Vec2]) -> Option<Vec<[Vec2; 3]>> {
+    let mut idx: Vec<usize> = (0..poly.len()).collect();
+    let mut out = Vec::with_capacity(poly.len().saturating_sub(2));
+    let cross = |a: Vec2, b: Vec2, c: Vec2| (b - a).perp_dot(c - a);
+    let inside = |p: Vec2, a: Vec2, b: Vec2, c: Vec2| cross(a, b, p) >= 0.0 && cross(b, c, p) >= 0.0 && cross(c, a, p) >= 0.0;
+    let mut guard = 0;
+    while idx.len() > 3 {
+        guard += 1;
+        if guard > poly.len() * poly.len() + 8 {
+            return None;
+        }
+        let n = idx.len();
+        // The best ear: convex, empty, and the widest smallest angle (fewer slivers).
+        let mut best: Option<(usize, f32)> = None;
+        for i in 0..n {
+            let (a, b, c) = (poly[idx[(i + n - 1) % n]], poly[idx[i]], poly[idx[(i + 1) % n]]);
+            if cross(a, b, c) <= 1e-12 {
+                continue;
+            }
+            let blocked = idx.iter().any(|&k| {
+                let p = poly[k];
+                p != a && p != b && p != c && inside(p, a, b, c)
+            });
+            if blocked {
+                continue;
+            }
+            let angle = [(a, b, c), (b, c, a), (c, a, b)]
+                .iter()
+                .map(|&(p, q, r)| (q - p).angle_to(r - p).abs())
+                .fold(f32::INFINITY, f32::min);
+            if best.is_none_or(|(_, x)| angle > x) {
+                best = Some((i, angle));
+            }
+        }
+        let (i, _) = best.or_else(|| {
+            // Only collinear corners left: drop one.
+            (0..n).find(|&i| cross(poly[idx[(i + n - 1) % n]], poly[idx[i]], poly[idx[(i + 1) % n]]).abs() <= 1e-12).map(|i| (i, 0.0))
+        })?;
+        let (a, b, c) = (idx[(i + n - 1) % n], idx[i], idx[(i + 1) % n]);
+        if cross(poly[a], poly[b], poly[c]) > 1e-12 {
+            out.push([poly[a], poly[b], poly[c]]);
+        }
+        idx.remove(i);
+    }
+    if idx.len() == 3 && cross(poly[idx[0]], poly[idx[1]], poly[idx[2]]) > 1e-12 {
+        out.push([poly[idx[0]], poly[idx[1]], poly[idx[2]]]);
+    }
+    Some(out)
+}
+
 fn fill_nonzero(contours: &[Vec<Vec2>]) -> Vec<[Vec2; 3]> {
     let edges: Vec<(Vec2, Vec2)> = contours
         .iter()

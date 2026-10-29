@@ -942,6 +942,20 @@ mod tests {
     }
 
     #[test]
+    fn concave_extrusions_are_closed_and_subdivide_cleanly() {
+        let l = [Vec2::ZERO, Vec2::new(3.0, 0.0), Vec2::new(3.0, 1.0), Vec2::new(1.0, 1.0), Vec2::new(1.0, 3.0), Vec2::new(0.0, 3.0)];
+        for bevel in [0.0, 0.03] {
+            let g = Geometry::extrude(&l, 0.5, bevel);
+            assert_eq!(open_edges(&g), 0, "bevel {bevel}");
+            // Subdivided, the L keeps its volume's sign everywhere: no fins pointing out
+            // past the outline.
+            let round = g.subdivide(2);
+            let b = round.bounds();
+            assert!(b.min.x > -0.05 && b.max.x < 3.05 && b.min.y > -0.05 && b.max.y < 3.05, "bevel {bevel}: {b:?}");
+        }
+    }
+
+    #[test]
     fn loop_subdivision_rounds_a_cube() {
         let cube = Geometry::cuboid(1.0, 1.0, 1.0);
         let round = cube.subdivide(3);
