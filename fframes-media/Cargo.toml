@@ -66,6 +66,9 @@ videotoolbox = ["ffmpeg-sys-fframes/build-videotoolbox"]
 audiotoolbox = ["ffmpeg-sys-fframes/build-audiotoolbox"]
 vaapi = ["ffmpeg-sys-fframes/build-vaapi"]
 nvidia = ["ffmpeg-sys-fframes/build-nvidia"]
+# only the NVENC encoders (h264_nvenc, hevc_nvenc, av1_nvenc): no CUDA toolkit, FFmpeg loads
+# the NVIDIA driver at run time
+nvenc = ["ffmpeg-sys-fframes/build-nvenc"]
 qsv = ["ffmpeg-sys-fframes/build-lib-libmfx"]
 vulkan = ["ffmpeg-sys-fframes/build-vulkan"]
 mediacodec = ["ffmpeg-sys-fframes/build-mediacodec"]
