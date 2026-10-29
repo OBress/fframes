@@ -631,11 +631,16 @@ fn standard(rel: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: ve
     }
     var indirect = diffuse * irradiance;
     let brdf = env_brdf(roughness, n_dot_v);
-    if (has_env) {
+    // A mirror (planar reflection) shows the scene with or without an environment.
+    let mirrored = REFLECTION && draw.attrs.z > 0.0;
+    if (has_env || mirrored) {
         var r = reflect(-v, n);
         r = normalize_or(mix(r, n, alpha), n);
         let horizon = pow(clamp(1.0 + dot(r, face), 0.0, 1.0), 2.0);
-        let env = env_radiance(r, roughness) * env_intensity;
+        var env = vec3f(0.0);
+        if (has_env) {
+            env = env_radiance(r, roughness) * env_intensity;
+        }
         var radiance = env * horizon;
         if (REFLECTION) {
             // The reflection of the scene replaces the environment where it covers the pixel.
@@ -647,12 +652,19 @@ fn standard(rel: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: ve
             let rc = reflect(-v, n);
             let cb = env_brdf(cc_roughness, n_dot_v);
             let fc = (0.04 * cb.x + cb.y) * clearcoat;
-            var coat = env_radiance(rc, cc_roughness) * env_intensity;
+            var coat = vec3f(0.0);
+            if (has_env) {
+                coat = env_radiance(rc, cc_roughness) * env_intensity;
+            }
             if (REFLECTION) {
                 let p = planar_reflection(screen, cc_roughness);
                 coat = mix(coat, p.rgb + coat * (1.0 - p.a), draw.attrs.z);
             }
             indirect = indirect * (1.0 - fc) + coat * (horizon * fc);
+        }
+        if (!has_env) {
+            // Where the mirror shows nothing, the ambient sheen below.
+            indirect += irradiance * (f0 * brdf.x + vec3f(brdf.y)) * 0.5 * (1.0 - draw.attrs.z);
         }
     } else {
         indirect += irradiance * (f0 * brdf.x + vec3f(brdf.y)) * 0.5;

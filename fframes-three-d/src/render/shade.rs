@@ -309,16 +309,17 @@ fn standard(
         _ => 1.0,
     };
 
-    if has_env {
+    // A mirror (planar reflection) shows the scene with or without an environment.
+    let reflection = ctx.reflection.filter(|_| m.reflection > 0.0);
+    if has_env || reflection.is_some() {
         let mirror = (-v).reflect(n);
         // the main direction of a rough reflection moves to the normal
         let r = mirror.lerp(n, alpha).normalize_or(n);
         // reflections from below the surface are hidden
         let horizon = (1.0 + r.dot(face)).clamp(0.0, 1.0).powi(2);
         let (scale, bias) = env_brdf(roughness, n_dot_v);
-        let reflection = ctx.reflection.filter(|_| m.reflection > 0.0);
         let uv = s.screen / ctx.viewport;
-        let env = ctx.env_radiance(r, roughness) * m.env_intensity;
+        let env = if has_env { ctx.env_radiance(r, roughness) * m.env_intensity } else { Vec3::ZERO };
         let mut radiance = env * horizon;
         if let Some(map) = reflection {
             // the reflection of the scene over the environment, where it covers the pixel
@@ -329,12 +330,16 @@ fn standard(
         if clearcoat > 0.0 {
             let (cs, cb) = env_brdf(cc_roughness, n_dot_v);
             let fc = (0.04 * cs + cb) * clearcoat;
-            let mut coat = ctx.env_radiance(mirror, cc_roughness) * m.env_intensity;
+            let mut coat = if has_env { ctx.env_radiance(mirror, cc_roughness) * m.env_intensity } else { Vec3::ZERO };
             if let Some(map) = reflection {
                 let p = map.sample(uv, cc_roughness);
                 coat = coat.lerp(p.truncate() + coat * (1.0 - p.w), m.reflection);
             }
             indirect = indirect * (1.0 - fc) + coat * (horizon * fc);
+        }
+        if !has_env {
+            // where the mirror shows nothing, the ambient sheen below
+            indirect += irradiance * (f0 * scale + Vec3::splat(bias)) * 0.5 * (1.0 - m.reflection);
         }
     } else {
         // without an environment, ambient light still gives a little sheen
