@@ -588,8 +588,9 @@ fn to_f16(value: f32) -> u16 {
 
 impl Gpu {
     async fn new() -> Result<Gpu, String> {
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = wgpu::Backends::PRIMARY;
+        // The `WGPU_*` environment variables apply, e.g. to allow a non-conformant driver.
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        descriptor.backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY);
         let instance = wgpu::Instance::new(descriptor);
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {

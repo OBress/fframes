@@ -40,7 +40,8 @@ impl Interop {
                 0,
                 None,
                 instance_extensions.to_vec(),
-                wgpu::InstanceFlags::empty(),
+                // e.g. `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1` for a non-conformant driver
+                wgpu::InstanceFlags::empty().with_env(),
                 wgpu::MemoryBudgetThresholds::default(),
                 false,
                 // the instance belongs to the Skia context
