@@ -34,6 +34,10 @@ pub struct SkiaPipelineConfig {
     pub buffer_queue_size: usize,
     /// The number of threads that build frame trees and encode the rendered frames.
     pub encoder_threads: usize,
+    /// The most hardware encoder sessions (`NVENC`, `VideoToolbox`, ...) open at once. Each
+    /// segment that encodes holds one. Consumer NVIDIA GPUs refuse more than 8 sessions per
+    /// system, counting other programs. Default 8.
+    pub max_hardware_encoders: usize,
     pub concurrency_policy: SkiaPipelineConcurrencyPolicy,
     /// Per-worker SVG text and Skia geometry cache limits.
     pub cache: SkiaCacheConfig,
@@ -44,6 +48,7 @@ impl Default for SkiaPipelineConfig {
         Self {
             buffer_queue_size: 10,
             encoder_threads: get_thread_count(),
+            max_hardware_encoders: 8,
             concurrency_policy: SkiaPipelineConcurrencyPolicy::OnePipeline,
             cache: SkiaCacheConfig::default(),
         }
@@ -172,7 +177,8 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
         .map_err(|err| FFramesRendererError::RenderChunkError(0, err))?;
 
     // Generators own the segments, so their count also caps how many segments encode at
-    // once. Half of the threads keeps the GPU fed and is enough for hardware encoders. A
+    // once. Half of the threads keeps the GPU fed and is enough for hardware encoders, up
+    // to the sessions the hardware allows (`max_hardware_encoders`). A
     // software encoder runs each segment on one thread and uses almost all the CPU of a
     // render, so we start more segments than threads: while some encoders wait for a frame,
     // the rest keep the cores busy. With 1.5x the threads, the 1080p60 x264 fframes-intro
@@ -180,7 +186,7 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
     // `SOFTWARE_ENCODERS_MEMORY` caps the count (4K stays at half of the threads).
     let generators = (workers / 2).max(1);
     let generators = if hardware_encoder {
-        generators
+        generators.min(pipeline_config.max_hardware_encoders.max(1))
     } else {
         let frame_bytes = ctx.current_video_size.width
             * ctx.current_video_size.height
