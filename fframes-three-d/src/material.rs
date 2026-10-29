@@ -122,6 +122,9 @@ pub struct Material {
     pub rim: Rgb,
     /// How tight the rim is: the glow is `rim * (1 - n·v)^rim_power`. Default 3.
     pub rim_power: f32,
+    /// Fades a blended or additive surface where it turns away from the camera: its opacity
+    /// is multiplied by `(n·v)^edge_fade`. Default 0, no fade. See [`Material::edge_fade`].
+    pub edge_fade: f32,
     /// Casts its shadow but is not drawn, for a figure seen only by its shadow. Default
     /// `false`. See [`Material::shadow_only`].
     pub shadow_only: bool,
@@ -156,6 +159,7 @@ impl Default for Material {
             fog: true,
             rim: Rgb::BLACK,
             rim_power: 3.0,
+            edge_fade: 0.0,
             shadow_only: false,
         }
     }
@@ -331,7 +335,6 @@ impl Material {
         self
     }
 
-    /// Turns off the scene fog for this surface.
     /// Adds a rim (fresnel) glow, see [`Material::rim`]: `color` is its strength at the
     /// silhouette (HDR, can exceed 1), `power` how tight it hugs the edge (2 soft, 6 thin).
     pub fn rim(mut self, color: impl Into<Rgb>, power: f32) -> Self {
@@ -347,6 +350,24 @@ impl Material {
         self
     }
 
+    /// Fades the surface out where it turns away from the camera: the opacity of a blended
+    /// surface, or the light an additive one adds, is multiplied by `(n·v)^power`. A cone of
+    /// additive light then reads as a soft shaft in hazy air instead of a shell with hard
+    /// edges, and a ghost thins out at its silhouette. 1 is gentle, 3 keeps only what faces
+    /// the camera. No effect on opaque surfaces.
+    pub fn edge_fade(mut self, power: f32) -> Self {
+        self.edge_fade = power.max(0.0);
+        self
+    }
+
+    /// The factor [`Material::edge_fade`] puts on the opacity at `n_dot_v`.
+    pub(crate) fn edge_factor(&self, n_dot_v: f32) -> f32 {
+        if self.edge_fade <= 0.0 {
+            return 1.0;
+        }
+        n_dot_v.clamp(0.0, 1.0).powf(self.edge_fade)
+    }
+
     /// The rim glow for a surface at `n_dot_v` (the cosine between the normal and the view).
     pub(crate) fn rim_light(&self, n_dot_v: f32) -> glam::Vec3 {
         if self.rim.0 == glam::Vec3::ZERO {
@@ -355,6 +376,7 @@ impl Material {
         self.rim.0 * (1.0 - n_dot_v.clamp(0.0, 1.0)).powf(self.rim_power.max(0.01))
     }
 
+    /// Turns off the scene fog for this surface.
     pub fn no_fog(mut self) -> Self {
         self.fog = false;
         self

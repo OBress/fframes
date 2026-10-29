@@ -519,9 +519,12 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     }
     // The HDR target is a 16 bit float. A sharp sun glint can overflow to infinity.
     rgb = clamp(rgb, vec3f(0.0), vec3f(30000.0));
-    // An opaque surface covers its pixels whatever the alpha of its texture.
+    // An opaque surface covers its pixels whatever the alpha of its texture; a blended one
+    // can fade toward its silhouette (`Material::edge_fade`).
     if (draw.flags.w < 0.5) {
         alpha = 1.0;
+    } else if (draw.attrs.w > 0.0) {
+        alpha *= pow(clamp(n_dot_v, 0.0, 1.0), draw.attrs.w);
     }
     if (draw.flags.y > 0.5) {
         out.color = vec4f(rgb * alpha, 0.0);

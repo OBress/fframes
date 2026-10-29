@@ -167,7 +167,7 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
     // As on the GPU, whose 16 bit float target would overflow to infinity.
     let rgb = rgb.clamp(Vec3::ZERO, Vec3::splat(30000.0));
     // An opaque surface covers its pixels whatever the alpha of its texture, as in three.js.
-    let alpha = if m.is_blended() { alpha } else { 1.0 };
+    let alpha = if m.is_blended() { alpha * m.edge_factor(n_dot_v) } else { 1.0 };
     match m.blending {
         // additive light has no coverage
         Blending::Additive => (rgb * alpha).extend(0.0),

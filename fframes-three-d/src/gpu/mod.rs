@@ -2450,7 +2450,7 @@ fn draw_uniform(mesh: &Mesh, model: Mat4, normal_matrix: Mat4) -> DrawUniform {
                         .is_some_and(|i| !i.colors.is_empty()),
             ),
             m.reflection,
-            0.0,
+            m.edge_fade,
         ],
         uv_transforms,
         uv_offsets,

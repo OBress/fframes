@@ -1,4 +1,4 @@
-//! The rim (fresnel) glow and shadow-only materials, on the CPU and the GPU.
+//! The rim (fresnel) glow, edge fade and shadow-only materials, on the CPU and the GPU.
 
 use fframes_three_d::*;
 
@@ -84,5 +84,34 @@ fn a_shadow_only_mesh_casts_its_shadow_unseen() {
         let d = mean_diff(cpu, gpu);
         eprintln!("shadow only cpu vs gpu: {d:.2} / 255");
         assert!(d < 3.0);
+    }
+}
+
+#[test]
+fn edge_fade_softens_a_glowing_shell_toward_its_silhouette() {
+    let mut images = Vec::new();
+    for renderer in renderers() {
+        let mut scene = Scene::new().background(Background::Color(Rgb::BLACK));
+        // Two additive double-sided balls: left plain, right fading to its edge.
+        let glow = Material::unlit(Rgb::BLACK).emissive(Rgb::WHITE, 0.12).additive().double_sided();
+        scene.add(Node::mesh(Geometry::sphere(1.0, 48, 32), glow.clone()).at(-1.2, 0.0, 0.0));
+        scene.add(Node::mesh(Geometry::sphere(1.0, 48, 32), glow.edge_fade(2.0)).at(1.2, 0.0, 0.0));
+        let camera = Camera::perspective(40.0).at(0.0, 0.0, 7.0).look_at(Vec3::ZERO);
+        let p = renderer.render_pixels(&scene, &camera);
+        common::save(&format!("edge_fade_{}", if renderer.uses_gpu() { "gpu" } else { "cpu" }), &p);
+        // Centers and points just inside each silhouette (39 px to a meter).
+        let (plain_c, plain_e) = (lum(&p, 53, 100), lum(&p, 20, 100));
+        let (fade_c, fade_e) = (lum(&p, 147, 100), lum(&p, 180, 100));
+        eprintln!("gpu {}: plain {plain_c:.3} / {plain_e:.3}, faded {fade_c:.3} / {fade_e:.3}", renderer.uses_gpu());
+        // The plain shell is as bright or brighter at its edge; the faded one dims there.
+        assert!(plain_e >= plain_c * 0.9, "plain {plain_c} {plain_e}");
+        assert!(fade_e < fade_c * 0.7, "faded {fade_c} {fade_e}");
+        assert!((fade_c - plain_c).abs() < 0.08, "the middle faces the camera: {fade_c} vs {plain_c}");
+        images.push(p);
+    }
+    if let [cpu, gpu] = &images[..] {
+        let d = mean_diff(cpu, gpu);
+        eprintln!("edge fade cpu vs gpu: {d:.2} / 255");
+        assert!(d < 1.0, "{d}");
     }
 }
