@@ -273,11 +273,11 @@ fn orthographic_cameras_cull_and_order_like_perspective_ones() {
 }
 
 /// A cut out surface (`alpha_test`) leaves the pixels where its texture is clear empty and
-/// covers the others fully. Both renderers.
+/// covers the opaque ones fully. Both renderers.
 #[test]
 fn cut_out_surfaces_hide_where_the_texture_is_clear() {
-    // left half clear, right half 60% opaque
-    let half = Texture::from_rgba8(2, 1, &[255, 255, 255, 0, 255, 255, 255, 153], true);
+    // left half clear, right half opaque
+    let half = Texture::from_rgba8(2, 1, &[255, 255, 255, 0, 255, 255, 255, 255], true);
     let mut scene = Scene::new();
     scene.add(Node::mesh(
         Geometry::plane(4.0, 4.0),
@@ -292,8 +292,47 @@ fn cut_out_surfaces_hide_where_the_texture_is_clear() {
         assert_eq!(
             pixels.get(48, 32)[3],
             255,
-            "gpu: {gpu}, the kept half blends"
+            "gpu: {gpu}, the opaque half is not covered"
         );
+    }
+}
+
+/// A cut out surface at half its cutoff covers about half of every pixel (alpha to coverage),
+/// so a wire thinner than a pixel becomes an even haze rather than pixels that are on or off.
+/// Over a transparent background it is cut at the cutoff instead. Both renderers.
+#[test]
+fn cut_out_surfaces_cover_pixels_by_their_alpha() {
+    let half = Texture::from_rgba8(1, 1, &[255, 255, 255, 64], true);
+    let mut scene = Scene::new().background(Background::Color(Rgb::BLACK));
+    scene.add(Node::mesh(
+        Geometry::plane(4.0, 4.0),
+        Material::unlit(Rgb::WHITE).map(half).alpha_test(0.5),
+    ));
+    let camera = Camera::orthographic(4.0).at(0.0, 0.0, 3.0);
+    let renderer = Renderer::new(64, 64).tone_mapping(ToneMapping::Linear);
+    let linear = |v: u8| ((f32::from(v) / 255.0 + 0.055) / 1.055).powf(2.4);
+    for renderer in [renderer.clone(), renderer.cpu()] {
+        let gpu = renderer.uses_gpu();
+        // white over black: the linear brightness of a pixel is its coverage
+        let pixels = renderer.render_pixels(&scene, &camera);
+        let covered: Vec<f32> = (16..48)
+            .flat_map(|y| (16..48).map(move |x| (x, y)))
+            .map(|(x, y)| linear(pixels.get(x, y)[0]))
+            .collect();
+        let mean = covered.iter().sum::<f32>() / covered.len() as f32;
+        assert!(
+            (mean - 0.5).abs() < 0.08,
+            "gpu: {gpu}, mean coverage {mean}"
+        );
+        let (min, max) = covered
+            .iter()
+            .fold((1.0f32, 0.0f32), |(lo, hi), c| (lo.min(*c), hi.max(*c)));
+        assert!(min > 0.1 && max < 0.9, "gpu: {gpu}, coverage {min}..{max}");
+
+        let mut clear = scene.clone();
+        clear.background = Background::Transparent;
+        let pixels = renderer.render_pixels(&clear, &camera);
+        assert_eq!(pixels.get(32, 32)[3], 0, "gpu: {gpu}, cut over transparent");
     }
 }
 

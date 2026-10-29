@@ -238,64 +238,6 @@ impl Texture {
         self
     }
 
-    /// The texture with the alpha of each smaller mipmap level scaled so that as much of it
-    /// reaches `cutoff` as of the full-size image (coverage preserving mipmaps). A cut out
-    /// surface (see [`Material::alpha_test`](crate::Material::alpha_test)) then keeps its
-    /// coverage in the distance, where the averaged alpha of thin wires or leaves would
-    /// otherwise fall below the cutoff and they would disappear. A level where the shape
-    /// has averaged out to an even haze stays as it is: a cutoff can keep all or nothing of it.
-    #[must_use]
-    pub fn preserve_coverage(&self, cutoff: f32) -> Self {
-        let levels = self.cpu_levels();
-        let cutoff8 = (cutoff.clamp(0.0, 1.0) * 255.0).round() as usize;
-        // The number of texels with each alpha value.
-        let histogram = |level: &Level| {
-            let mut counts = [0usize; 256];
-            for texel in &level.data {
-                counts[usize::from(texel[3])] += 1;
-            }
-            counts
-        };
-        let full = histogram(&levels[0]);
-        let coverage = full[cutoff8..].iter().sum::<usize>() as f32 / levels[0].data.len() as f32;
-        let mut scaled = vec![levels[0].clone()];
-        for level in &levels[1..] {
-            // The alpha above which the share of texels comes closest to the full size. Of
-            // two equally close, the larger share, so that thin parts rather stay.
-            let counts = histogram(level);
-            let target = (coverage * level.data.len() as f32).round() as usize;
-            let (mut threshold, mut error) = (256, target);
-            let mut above = 0;
-            for alpha in (1..256).rev() {
-                above += counts[alpha];
-                if above.abs_diff(target) <= error {
-                    (threshold, error) = (alpha, above.abs_diff(target));
-                }
-                if above >= target {
-                    break;
-                }
-            }
-            let scale = if threshold > 255 || cutoff8 == 0 {
-                1.0
-            } else {
-                cutoff8 as f32 / threshold as f32
-            };
-            let mut level = level.clone();
-            for texel in &mut level.data {
-                texel[3] = (f32::from(texel[3]) * scale).round().min(255.0) as u8;
-            }
-            scaled.push(level);
-        }
-        Self {
-            width: self.width,
-            height: self.height,
-            levels: Levels::cpu(scaled),
-            #[cfg(not(target_arch = "wasm32"))]
-            _image: None,
-            ..self.clone()
-        }
-    }
-
     /// Moves the texture by `u`, `v` after the repeat and the rotation.
     pub fn offset(mut self, u: f32, v: f32) -> Self {
         self.offset = Vec2::new(u, v);
@@ -535,39 +477,4 @@ fn downsample(level: &Level, srgb: bool) -> Level {
 fn srgb_lut() -> &'static [f32; 256] {
     static LUT: OnceLock<[f32; 256]> = OnceLock::new();
     LUT.get_or_init(|| std::array::from_fn(|i| srgb_to_linear(i as f32 / 255.0)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Thin wires keep their share of opaque texels in the small levels, instead of
-    /// fading below the cutoff.
-    #[test]
-    fn preserved_coverage_keeps_thin_wires() {
-        // diagonal wires with soft edges, like a scanned chain-link texture
-        let wires = Texture::from_fn_data(128, 128, false, |u, v| {
-            let across = (((u + v) * 8.0).fract() - 0.5).abs();
-            let grain = ((u * 91.7 + v * 47.3).sin() * 43758.547).fract().abs();
-            let a = ((0.08 - across) / 0.04 * (0.8 + 0.4 * grain)).clamp(0.0, 1.0);
-            [255, 255, 255, (a * 255.0) as u8]
-        });
-        let share = |t: &Texture, level: usize| {
-            let level = &t.cpu_levels()[level];
-            let kept = level.data.iter().filter(|t| t[3] >= 128).count();
-            kept as f32 / level.data.len() as f32
-        };
-        let full = share(&wires, 0);
-        assert!(share(&wires, 3) < full / 4.0);
-        let kept = wires.preserve_coverage(0.5);
-        assert_eq!(share(&kept, 0), full);
-        // At 16x16 the wires still show; below, the levels are an even haze.
-        for level in 1..4 {
-            let share = share(&kept, level);
-            assert!(
-                (share - full).abs() < 0.05,
-                "level {level}: {share} of {full}"
-            );
-        }
-    }
 }

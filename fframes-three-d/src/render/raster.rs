@@ -151,6 +151,9 @@ fn render_tile(
     for &ti in opaque {
         let t = &frame.opaque[ti as usize];
         let cutout = frame.draws[t.draw as usize].material.alpha_test > 0.0;
+        // as on the GPU, a transparent background cuts at the cutoff instead of covering
+        let to_coverage = !matches!(frame.shade.background, Background::Transparent);
+        let all = (1u8 << ns) - 1;
         let r = t.bounds.intersect(tile);
         // the steps of the barycentrics and the depth key from the pixel center to the samples
         let mut dl = [Vec3::ZERO; 4];
@@ -169,12 +172,24 @@ fn render_tile(
                 let l = t.bary(cx, cy);
                 let z = t.key(cx, cy);
                 let base = first_sample(x, y);
-                // As on the GPU, the cutout is tested once per pixel, at its center.
-                if cutout && !kept(frame, t, Vec2::new(cx, cy)) {
+                // As on the GPU, the coverage of a cutout is found once per pixel, at its center.
+                let covered = if cutout {
+                    let coverage = cutout_coverage(frame, t, Vec2::new(cx, cy));
+                    if to_coverage {
+                        coverage_mask(coverage, x, y, ns)
+                    } else if coverage >= 1.0 {
+                        all
+                    } else {
+                        0
+                    }
+                } else {
+                    all
+                };
+                if covered == 0 {
                     continue;
                 }
                 for s in 0..ns {
-                    if inside(l + dl[s]) {
+                    if covered & (1 << s) != 0 && inside(l + dl[s]) {
                         let zs = z + dz[s];
                         if zs > depth[base + s] {
                             depth[base + s] = zs;
@@ -303,9 +318,9 @@ fn blend(dst: Vec4, src: Vec4, additive: bool) -> Vec4 {
     }
 }
 
-/// Whether the cutout of an opaque triangle (see `Material::alpha_test`) keeps the screen
-/// point `at`. The alpha is the one that `shade` computes.
-fn kept(frame: &Frame, t: &ScreenTri, at: Vec2) -> bool {
+/// The share of the samples at the screen point `at` that a cut out opaque triangle covers
+/// (see `Material::alpha_test`). The alpha is the one that `shade` computes.
+fn cutout_coverage(frame: &Frame, t: &ScreenTri, at: Vec2) -> f32 {
     let draw = &frame.draws[t.draw as usize];
     let m = draw.material;
     let s = frame.streams;
@@ -324,7 +339,18 @@ fn kept(frame: &Frame, t: &ScreenTri, at: Vec2) -> bool {
         let dy = uv_at(t.perspective_bary(at.x, at.y + 1.0)) - uv;
         alpha *= map.sample_grad(uv, dx, dy).w;
     }
-    alpha >= m.alpha_test
+    (alpha / m.alpha_test).clamp(0.0, 1.0)
+}
+
+/// The samples of the pixel `x`, `y` that a `coverage` share covers (alpha to coverage):
+/// rounded with a 4x4 ordered dither, from a sample that changes from pixel to pixel. GPUs
+/// pick their own pattern for the same share.
+fn coverage_mask(coverage: f32, x: usize, y: usize, samples: usize) -> u8 {
+    const BAYER: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    let dither = (f32::from(BAYER[(y % 4) * 4 + x % 4]) + 0.5) / 16.0;
+    let count = ((coverage * samples as f32 + dither) as usize).min(samples);
+    let start = (x + y * 3) % samples;
+    (0..count).fold(0, |mask, i| mask | (1 << ((start + i) % samples)))
 }
 
 /// Shades the triangle `t` at the screen point `at`.

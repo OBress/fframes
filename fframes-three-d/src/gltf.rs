@@ -513,15 +513,9 @@ impl<'g> Loader<'_, 'g> {
             },
             transparent: alpha_mode == AlphaMode::Blend,
             alpha_test,
-            map: pbr.base_color_texture().and_then(|info| {
-                let map = self.info_texture(&info, true)?;
-                // A MASK texture keeps its cut out shape in the distance.
-                Some(if alpha_test > 0.0 {
-                    Arc::new(map.preserve_coverage(alpha_test))
-                } else {
-                    map
-                })
-            }),
+            map: pbr
+                .base_color_texture()
+                .and_then(|info| self.info_texture(&info, true)),
             metal_rough_map: pbr
                 .metallic_roughness_texture()
                 .and_then(|info| self.info_texture(&info, false)),

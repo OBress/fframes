@@ -93,10 +93,13 @@ pub struct Material {
     pub transparent: bool,
     /// Blended surfaces write depth only when this is set. Default `false`.
     pub depth_write: bool,
-    /// Cuts the surface out where its alpha (of `opacity`, `map` and the vertex colors) is
-    /// below this, three.js `alphaTest` and the `alphaCutoff` of a glTF `MASK` material.
-    /// What stays is opaque, unless the material blends. Default 0, no cutout. A cut out
-    /// surface casts no shadow.
+    /// Cuts the surface out by its alpha (of `opacity`, `map` and the vertex colors), three.js
+    /// `alphaTest` and the `alphaCutoff` of a glTF `MASK` material. An opaque surface is solid
+    /// where its alpha reaches the cutoff and below it covers that share of each pixel's samples
+    /// (alpha over cutoff, alpha to coverage), so thin wires and leaves fade into an even haze in
+    /// the distance instead of flickering. A blended surface is cut where its alpha is below the
+    /// cutoff, and so is an opaque one over a transparent background (the covered samples would
+    /// keep its alpha 0). Default 0, no cutout. A cut out surface casts no shadow.
     pub alpha_test: f32,
     /// The base color texture, three.js `map`. It multiplies `color`.
     pub map: Option<Arc<Texture>>,
@@ -251,7 +254,7 @@ impl Material {
         self
     }
 
-    /// Cuts the surface out where its alpha is below `cutoff`, see [`Material::alpha_test`].
+    /// Cuts the surface out by its alpha around `cutoff`, see [`Material::alpha_test`].
     pub fn alpha_test(mut self, cutoff: f32) -> Self {
         self.alpha_test = cutoff;
         self

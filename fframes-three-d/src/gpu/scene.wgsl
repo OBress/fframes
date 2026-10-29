@@ -100,6 +100,8 @@ override LIGHTS: u32 = 255u; // the light count, 255 from the frame
 override REFLECTION: bool = false; // the material shows the reflection of the scene
 override REFLECTION_PASS: bool = false; // draws the reflection: nothing behind the reflector
 override NORMAL_MAP: bool = false;
+// 0 no cutout, 1 cut at the alpha cutoff, 2 alpha to coverage (see `Variant::cutout`)
+override CUTOUT: u32 = 0u;
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var shadow_maps: texture_depth_2d_array;
@@ -401,7 +403,16 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         base *= texel.rgb;
         alpha *= texel.a;
     }
-    if (alpha < draw.detail.w) {
+    // A cut out surface (`Material::alpha_test`): with alpha to coverage it covers all samples
+    // from the cutoff up and the share alpha / cutoff below it; otherwise it is cut at the cutoff.
+    let to_coverage = CUTOUT == 2u && !REFLECTION_PASS;
+    var coverage = 1.0;
+    if (to_coverage) {
+        coverage = clamp(alpha / draw.detail.w, 0.0, 1.0);
+        if (coverage <= 0.0) {
+            discard;
+        }
+    } else if (CUTOUT != 0u && alpha < draw.detail.w) {
         discard;
     }
     var emissive = draw.emissive.rgb;
@@ -495,6 +506,10 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         out.color = vec4f(rgb * alpha, 0.0);
     } else {
         out.color = vec4f(rgb * alpha, alpha);
+    }
+    // The pipeline turns this alpha into the covered samples and writes only the color.
+    if (to_coverage) {
+        out.color = vec4f(rgb, coverage);
     }
     return out;
 }

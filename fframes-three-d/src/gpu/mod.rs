@@ -266,6 +266,10 @@ struct Variant {
     lights: u8,
     reflection: bool,
     normal_map: bool,
+    /// 0 no cutout, 1 cut at the alpha cutoff, 2 alpha to coverage. Coverage needs an opaque
+    /// surface; its pipeline does not write alpha, which would be the coverage, so the samples
+    /// keep the alpha of the background and it also needs an opaque background.
+    cutout: u8,
 }
 
 impl Variant {
@@ -294,10 +298,22 @@ impl Variant {
             fog: m.fog && scene.fog.is_some(),
             reflection: m.reflection > 0.0 && scene.reflector.is_some(),
             normal_map: has_uv && m.normal_map.is_some(),
+            cutout: if m.alpha_test <= 0.0 {
+                0
+            } else if m.is_blended() || matches!(scene.background, Background::Transparent) {
+                1
+            } else {
+                2
+            },
         }
     }
 
-    fn constants(self, reflection_pass: bool) -> [(&'static str, f64); 9] {
+    /// Whether the pipeline turns the alpha into covered samples.
+    fn alpha_to_coverage(self, reflection_pass: bool) -> bool {
+        self.cutout == 2 && !reflection_pass
+    }
+
+    fn constants(self, reflection_pass: bool) -> [(&'static str, f64); 10] {
         [
             ("LIGHTS", f64::from(self.lights)),
             ("REFLECTION", f64::from(self.reflection && !reflection_pass)),
@@ -308,6 +324,7 @@ impl Variant {
             ("TEXTURED", f64::from(self.textured)),
             ("FOG", f64::from(self.fog)),
             ("NORMAL_MAP", f64::from(self.normal_map)),
+            ("CUTOUT", f64::from(self.cutout)),
         ]
     }
 }
@@ -986,6 +1003,11 @@ impl Gpu {
             Blend::Additive => Some(ADD_LIGHT),
         };
         let constants = key.variant.constants(key.reflection_pass);
+        let alpha_to_coverage = key.variant.alpha_to_coverage(key.reflection_pass);
+        let mut targets = scene_targets(blend);
+        if alpha_to_coverage && let Some(color) = &mut targets[0] {
+            color.write_mask = wgpu::ColorWrites::COLOR;
+        }
         let pipeline = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1011,6 +1033,7 @@ impl Gpu {
                 depth_stencil: Some(depth_test(key.depth_write, wgpu::CompareFunction::Greater)),
                 multisample: wgpu::MultisampleState {
                     count: if key.reflection_pass { 1 } else { MSAA },
+                    alpha_to_coverage_enabled: alpha_to_coverage,
                     ..Default::default()
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -1020,7 +1043,7 @@ impl Gpu {
                         constants: &constants,
                         ..Default::default()
                     },
-                    targets: &scene_targets(blend),
+                    targets: &targets,
                 }),
                 multiview_mask: None,
                 cache: None,
