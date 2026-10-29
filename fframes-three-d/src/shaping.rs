@@ -539,13 +539,24 @@ impl Geometry {
         const TETS: [[usize; 4]; 6] = [[0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6]];
         let mut positions: Vec<Vec3> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
-        // One vertex per crossed grid edge, shared by every tetrahedron on it.
+        // One vertex per crossed grid edge, shared by every tetrahedron on it. A crossing
+        // close to a grid point snaps to it (one vertex for every edge there): otherwise the
+        // tetrahedra leave needle triangles, whose face normals are so noisy that the
+        // renderers flip the shading on some pixels (speckles). The snapped triangles
+        // degenerate and are dropped below.
+        const SNAP: f32 = 0.12;
         let mut on_edge: HashMap<(usize, usize), u32> = HashMap::new();
         let mut vertex = |a: usize, b: usize, pa: Vec3, pb: Vec3, va: f32, vb: f32, positions: &mut Vec<Vec3>| {
-            let key = (a.min(b), a.max(b));
+            let t = (va / (va - vb)).clamp(0.0, 1.0);
+            let (key, p) = if t < SNAP {
+                ((a, a), pa)
+            } else if t > 1.0 - SNAP {
+                ((b, b), pb)
+            } else {
+                ((a.min(b), a.max(b)), pa.lerp(pb, t))
+            };
             *on_edge.entry(key).or_insert_with(|| {
-                let t = (va / (va - vb)).clamp(0.0, 1.0);
-                positions.push(pa.lerp(pb, t));
+                positions.push(p);
                 positions.len() as u32 - 1
             })
         };
@@ -877,6 +888,57 @@ mod tests {
             0.05,
         );
         assert!(body.triangle_count() > 500);
+    }
+
+    /// Edges not shared by exactly two triangles, after welding by position.
+    fn open_edges(g: &Geometry) -> usize {
+        let w = g.weld();
+        let mut count: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in w.indices.chunks_exact(3) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *count.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        count.values().filter(|&&c| c != 2).count()
+    }
+
+    /// Edges with an odd number of triangles: holes in the surface.
+    fn holes(g: &Geometry) -> usize {
+        let w = g.weld();
+        let mut count: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in w.indices.chunks_exact(3) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                *count.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        count.values().filter(|&&c| c % 2 == 1).count()
+    }
+
+    /// The share of triangles with a corner under 4 degrees: needles.
+    fn needles(g: &Geometry) -> f32 {
+        let bad = g
+            .indices
+            .chunks_exact(3)
+            .filter(|t| {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| g.positions[i as usize]);
+                [(a, b, c), (b, c, a), (c, a, b)].iter().any(|&(p, q, r)| (q - p).angle_between(r - p).to_degrees() < 4.0)
+            })
+            .count();
+        bad as f32 / g.triangle_count().max(1) as f32
+    }
+
+    #[test]
+    fn sdf_surfaces_have_no_needles_and_stay_closed() {
+        let body = Geometry::from_sdf(
+            |p| sdf::smooth_union(sdf::sphere(p, Vec3::ZERO, 0.6), sdf::capsule(p, Vec3::ZERO, Vec3::new(1.0, 0.4, 0.2), 0.2, 0.1), 0.15),
+            Aabb::from_points([Vec3::splat(-0.9), Vec3::new(1.4, 0.9, 0.9)]),
+            0.05,
+        );
+        let share = needles(&body);
+        assert!(share < 0.02, "{:.1}% needle triangles", share * 100.0);
+        // Snapping can pinch an edge between four triangles, but never opens a hole.
+        assert_eq!(holes(&body), 0);
+        assert!(open_edges(&body) < 8, "{}", open_edges(&body));
     }
 
     #[test]
