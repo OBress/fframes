@@ -2,6 +2,7 @@
 
 use fframes_three_d::*;
 
+#[allow(dead_code)]
 mod common;
 
 fn lum(p: &Pixels, x: u32, y: u32) -> f32 {

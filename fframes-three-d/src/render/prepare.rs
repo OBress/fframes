@@ -122,13 +122,11 @@ pub(crate) const CUBE_FACES: [(Vec3, Vec3); 6] = [
 pub(crate) fn cube_face(d: Vec3) -> usize {
     let a = d.abs();
     if a.x >= a.y && a.x >= a.z {
-        if d.x >= 0.0 { 0 } else { 1 }
+        usize::from(d.x < 0.0)
     } else if a.y >= a.z {
-        if d.y >= 0.0 { 2 } else { 3 }
-    } else if d.z >= 0.0 {
-        4
+        2 + usize::from(d.y < 0.0)
     } else {
-        5
+        4 + usize::from(d.z < 0.0)
     }
 }
 

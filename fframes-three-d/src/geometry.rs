@@ -126,8 +126,9 @@ impl Geometry {
     /// `toCreasedNormals`. Only faces that meet at less than `crease_degrees` share a
     /// normal, so sharp edges stay sharp. Vertices with different UVs stay apart, so
     /// texture seams stay. Use it on triangle soups, for example from
-    /// [`Geometry::from_stl`] or [`Geometry::flat`]. The result has no skin and no morph
-    /// targets.
+    /// [`Geometry::from_stl`] or [`Geometry::flat`]. Skin weights and morph targets come
+    /// along (a welded vertex keeps those of the first of its copies); morph normal deltas
+    /// are recomputed with [`Geometry::compute_morph_normals`] when the source had them.
     pub fn smooth(self, crease_degrees: f32) -> Self {
         let cos_crease = crease_degrees.to_radians().cos();
         let triangles: Vec<[u32; 3]> = self.triangles().collect();
@@ -173,7 +174,43 @@ impl Geometry {
             });
             b.tri(i0, i1, i2);
         }
-        b.build()
+        let had_morph_normals = self.morph_targets.iter().any(|t| !t.normals.is_empty());
+        let mut out = b.build();
+        if had_morph_normals {
+            for t in &mut out.morph_targets {
+                t.normals.clear();
+            }
+            out.compute_morph_normals();
+        }
+        out
+    }
+
+    /// Fills the normal deltas of the morph targets that have none: the normals of the
+    /// fully applied target minus the rest normals. Without them a morphed surface keeps
+    /// its rest shading (an opened slit stays shaded as if closed).
+    pub fn compute_morph_normals(&mut self) {
+        if self.normals.len() != self.positions.len() {
+            self.compute_vertex_normals();
+        }
+        for t in 0..self.morph_targets.len() {
+            if !self.morph_targets[t].normals.is_empty() {
+                continue;
+            }
+            let moved: Vec<Vec3> = (self.positions.iter())
+                .zip(&self.morph_targets[t].positions)
+                .map(|(p, d)| *p + *d)
+                .collect();
+            let mut full = Geometry {
+                positions: moved,
+                indices: self.indices.clone(),
+                ..Default::default()
+            };
+            full.compute_vertex_normals();
+            self.morph_targets[t].normals = (full.normals.iter())
+                .zip(&self.normals)
+                .map(|(a, b)| *a - *b)
+                .collect();
+        }
     }
 
     /// The triangles whose indices are all in range.
@@ -950,6 +987,55 @@ impl Geometry {
         b.build()
     }
 
+    /// A tube along `path` whose radius is `radius(s)`, `s` going from 0 at the first point to
+    /// 1 at the last, with a rounded-off tip: tentacles, necks, horns, roots, whips. Like
+    /// [`Geometry::tube`], the frames follow the path without twisting. V goes along the path
+    /// from 0 to 1.
+    pub fn tube_with(path: &[Vec3], radius: impl Fn(f32) -> f32, radial_segments: u32) -> Self {
+        let ring = radial_segments.max(3);
+        let n = path.len();
+        if n < 2 {
+            return Geometry::default();
+        }
+        let tangent = |i: usize| (path[(i + 1).min(n - 1)] - path[i.saturating_sub(1)]).normalize_or(Vec3::Y);
+        let mut normal = tangent(0).any_orthonormal_vector();
+        let mut b = Builder::default();
+        for i in 0..n {
+            if i > 0 {
+                let (a, c) = (tangent(i - 1), tangent(i));
+                let axis = a.cross(c);
+                if axis.length_squared() > 1e-10 {
+                    normal = Quat::from_axis_angle(axis.normalize(), a.dot(c).clamp(-1.0, 1.0).acos()) * normal;
+                }
+            }
+            let t = tangent(i);
+            let binormal = t.cross(normal);
+            let s = i as f32 / (n - 1) as f32;
+            let r = radius(s);
+            for j in 0..=ring {
+                let a = j as f32 / ring as f32 * TAU;
+                let d = (normal * a.cos() + binormal * a.sin()).normalize();
+                b.vertex(path[i] + d * r, d, Vec2::new(j as f32 / ring as f32, s));
+            }
+        }
+        let row = ring + 1;
+        for i in 0..n as u32 - 1 {
+            for j in 0..ring {
+                let a = i * row + j;
+                b.tri(a, a + 1, a + row);
+                b.tri(a + 1, a + row + 1, a + row);
+            }
+        }
+        // The tip: a point one end radius past the last ring.
+        let t = tangent(n - 1);
+        let tip = b.vertex(path[n - 1] + t * radius(1.0), t, Vec2::new(0.5, 1.0));
+        let last = (n as u32 - 1) * row;
+        for j in 0..ring {
+            b.tri(last + j, last + j + 1, tip);
+        }
+        b.build()
+    }
+
     /// Applies the matrix `m` to the positions, the normals and the morph targets. When `m`
     /// mirrors the geometry, this function also reverses the winding, so the triangles
     /// still face out.
@@ -1019,16 +1105,68 @@ impl Geometry {
     }
 
     /// Joins geometries into one. When only some parts have UVs or vertex colors, the
-    /// other parts get zero UVs and white vertex colors. The result has no skin and no
-    /// morph targets.
+    /// other parts get zero UVs and white vertex colors.
+    ///
+    /// Skins and morph targets come along, so a creature can be assembled from skinned parts
+    /// bound to one set of joints: the joint indices of every part refer to the same
+    /// [`Skin`](crate::Skin). A part without a skin hangs on joint 0. Morph targets match by
+    /// name (by position for unnamed ones); a part without a target gets zero deltas for it.
     pub fn merge(parts: impl IntoIterator<Item = Geometry>) -> Self {
         let parts: Vec<Geometry> = parts.into_iter().collect();
         let any_uvs = parts.iter().any(|p| !p.uvs.is_empty());
         let any_colors = parts.iter().any(|p| !p.colors.is_empty());
+        let any_skin = parts.iter().any(|p| p.skin.is_some());
+        // The targets of all parts: named ones by name, unnamed ones by place.
+        let mut keys: Vec<(Option<String>, usize)> = Vec::new();
+        for part in &parts {
+            for (i, t) in part.morph_targets.iter().enumerate() {
+                let key = (t.name.clone(), if t.name.is_some() { 0 } else { i });
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        let any_morph_normals = parts.iter().any(|p| p.morph_targets.iter().any(|t| !t.normals.is_empty()));
         let mut out = Geometry::default();
+        if any_skin {
+            out.skin = Some(SkinWeights::default());
+        }
+        out.morph_targets = keys
+            .iter()
+            .map(|(name, _)| MorphTarget { name: name.clone(), ..Default::default() })
+            .collect();
         for part in parts {
             let offset = out.positions.len() as u32;
             let count = part.positions.len();
+            if let Some(skin) = &mut out.skin {
+                match &part.skin {
+                    Some(s) if s.joints.len() == count => {
+                        skin.joints.extend(&s.joints);
+                        skin.weights.extend(&s.weights);
+                    }
+                    _ => {
+                        skin.joints.extend(std::iter::repeat_n([0u16; 4], count));
+                        skin.weights.extend(std::iter::repeat_n([1.0, 0.0, 0.0, 0.0], count));
+                    }
+                }
+            }
+            for (k, (name, index)) in keys.iter().enumerate() {
+                let found = part.morph_targets.iter().enumerate().find(|(i, t)| match name {
+                    Some(n) => t.name.as_deref() == Some(n.as_str()),
+                    None => t.name.is_none() && i == index,
+                });
+                let target = &mut out.morph_targets[k];
+                match found {
+                    Some((_, t)) if t.positions.len() == count => target.positions.extend(&t.positions),
+                    _ => target.positions.extend(std::iter::repeat_n(Vec3::ZERO, count)),
+                }
+                if any_morph_normals {
+                    match found {
+                        Some((_, t)) if t.normals.len() == count => target.normals.extend(&t.normals),
+                        _ => target.normals.extend(std::iter::repeat_n(Vec3::ZERO, count)),
+                    }
+                }
+            }
             out.positions.extend(part.positions);
             out.normals.extend(part.normals);
             if any_uvs {
@@ -1052,7 +1190,7 @@ impl Geometry {
     }
 
     /// Gives each triangle its own vertices with the face normal. The result looks faceted
-    /// with any material. It has no skin and no morph targets.
+    /// with any material. Skin weights and morph targets come along.
     pub fn flat(self) -> Self {
         let mut b = Builder::default();
         for tri in self.triangles() {
@@ -1072,6 +1210,9 @@ struct Builder {
     uvs: Vec<Vec2>,
     colors: Vec<Vec4>,
     indices: Vec<u32>,
+    /// Copied with [`Builder::copy_vertex`] from a skinned or morphed source.
+    skin: Option<SkinWeights>,
+    morph_targets: Vec<MorphTarget>,
 }
 
 impl Builder {
@@ -1094,6 +1235,21 @@ impl Builder {
         }
         if let Some(&color) = source.colors.get(i) {
             self.colors.push(color);
+        }
+        if let Some(skin) = &source.skin {
+            let out = self.skin.get_or_insert_with(SkinWeights::default);
+            out.joints.push(skin.joints.get(i).copied().unwrap_or_default());
+            out.weights.push(skin.weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]));
+        }
+        for (t, target) in source.morph_targets.iter().enumerate() {
+            if self.morph_targets.len() <= t {
+                self.morph_targets.push(MorphTarget { name: target.name.clone(), ..Default::default() });
+            }
+            let out = &mut self.morph_targets[t];
+            out.positions.push(target.positions.get(i).copied().unwrap_or_default());
+            if !target.normals.is_empty() {
+                out.normals.push(target.normals.get(i).copied().unwrap_or_default());
+            }
         }
         self.positions.len() as u32 - 1
     }
@@ -1130,6 +1286,8 @@ impl Builder {
     fn build(self) -> Geometry {
         let mut geometry = Geometry::new(self.positions, self.normals, self.uvs, self.indices);
         geometry.colors = self.colors;
+        geometry.skin = self.skin;
+        geometry.morph_targets = self.morph_targets;
         geometry
     }
 }

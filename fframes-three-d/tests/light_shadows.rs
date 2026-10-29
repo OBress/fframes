@@ -3,6 +3,7 @@
 
 use fframes_three_d::*;
 
+#[allow(dead_code)]
 mod common;
 
 /// The luminance of the pixel at `(x, y)`, `0..1`.

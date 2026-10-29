@@ -107,6 +107,7 @@ mod light;
 mod material;
 pub mod math;
 mod render;
+pub mod shaping;
 mod scene;
 mod texture;
 
