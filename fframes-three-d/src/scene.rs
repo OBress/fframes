@@ -374,31 +374,55 @@ pub enum Background {
     Environment { blur: f32 },
 }
 
-/// Distance fog, three.js `Fog` and `FogExp2`.
+/// Distance fog, three.js `Fog` and `FogExp2`, and height fog.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Fog {
     /// No fog closer than `near` meters, full fog beyond `far` meters, three.js `Fog`.
     Linear { color: Rgb, near: f32, far: f32 },
     /// Fog that grows as `1 - exp(-(density * distance)²)`, three.js `FogExp2`.
     Exp2 { color: Rgb, density: f32 },
+    /// Fog that lies on the ground: per meter it is `density` everywhere plus
+    /// `ground * exp(-falloff * (y - height))`, so it thins out above `height` and thickens
+    /// below it. Along a view ray the amount is integrated exactly, so a camera in the
+    /// fog sees it close by and a camera above it looks down into it. `falloff` 0 is plain
+    /// exponential fog of `density + ground`.
+    Height { color: Rgb, density: f32, ground: f32, height: f32, falloff: f32 },
 }
 
 impl Fog {
-    /// The amount of fog at `distance` meters from the camera, `0..1`.
-    pub(crate) fn factor(&self, distance: f32) -> f32 {
+    /// The amount of fog between the camera at height `from_y` and a point `distance`
+    /// meters away at height `to_y`, `0..1`.
+    pub(crate) fn factor(&self, distance: f32, from_y: f32, to_y: f32) -> f32 {
         match *self {
             Fog::Linear { near, far, .. } => {
                 ((distance - near) / (far - near).max(1e-6)).clamp(0.0, 1.0)
             }
             Fog::Exp2 { density, .. } => 1.0 - (-(density * distance).powi(2)).exp(),
+            Fog::Height { density, ground, height, falloff, .. } => {
+                let depth = distance * (density + ground * height_fog_mean(from_y - height, to_y - height, falloff));
+                1.0 - (-depth.max(0.0)).exp()
+            }
         }
     }
 
     pub(crate) fn color(&self) -> Rgb {
         match *self {
-            Fog::Linear { color, .. } | Fog::Exp2 { color, .. } => color,
+            Fog::Linear { color, .. } | Fog::Exp2 { color, .. } | Fog::Height { color, .. } => color,
         }
     }
+}
+
+/// The mean of `exp(-falloff * y)` along a straight line from height `a` to height `b`
+/// (relative to the fog's height). `fog_mean` in `scene.wgsl` is the same.
+pub(crate) fn height_fog_mean(a: f32, b: f32, falloff: f32) -> f32 {
+    // Far below the fog's height the exponent would overflow.
+    let ea = (-falloff * a).min(30.0).exp();
+    let span = falloff * (b - a);
+    if span.abs() < 1e-4 {
+        return ea;
+    }
+    let eb = (-falloff * b).min(30.0).exp();
+    (ea - eb) / span
 }
 
 /// A scene graph, three.js `Scene`.

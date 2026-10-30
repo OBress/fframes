@@ -157,7 +157,7 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
     if m.fog
         && let Some(fog) = ctx.fog
     {
-        let f = fog.factor(distance);
+        let f = fog.factor(distance, ctx.camera_position.y, s.position.y);
         rgb = match m.blending {
             Blending::Additive => rgb * (1.0 - f),
             Blending::Normal => rgb.lerp(fog.color().0, f),

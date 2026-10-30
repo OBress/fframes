@@ -184,6 +184,7 @@ struct PostUniform {
     bloom: [f32; 4],
     encode: [f32; 4],
     texel: [f32; 4],
+    ao: [f32; 4],
 }
 
 /// `VertexIn` in `scene.wgsl`.
@@ -433,6 +434,9 @@ struct PostPipelines {
     down_rgba: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
     encode: wgpu::RenderPipeline,
+    ao: wgpu::RenderPipeline,
+    /// Multiplies the frame by the blurred occlusion.
+    ao_apply: wgpu::RenderPipeline,
 }
 
 /// The texture that holds the finished HDR frame. A single moment needs no accumulation, so
@@ -518,6 +522,8 @@ struct FrameContext {
     half_hdr: wgpu::TextureView,
     half_key: wgpu::TextureView,
     dof: wgpu::TextureView,
+    /// The unblurred ambient occlusion.
+    ao: wgpu::TextureView,
     accum: wgpu::TextureView,
     /// The bloom levels with their sizes, each half the size of the one before.
     bloom: Vec<(wgpu::TextureView, u32, u32)>,
@@ -889,6 +895,25 @@ impl Gpu {
             down_rgba: post_pipeline("fs_down_rgba", &[Some(HDR.into())]),
             up: post_pipeline("fs_up", &added_hdr),
             encode: post_pipeline("fs_encode", &[Some(OUTPUT.into())]),
+            ao: post_pipeline("fs_ao", &[Some(KEY.into())]),
+            ao_apply: post_pipeline(
+                "fs_ao_apply",
+                &[Some(wgpu::ColorTargetState {
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::Src,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    ..HDR.into()
+                })],
+            ),
         };
 
         let mip_module = device.create_shader_module(wgpu::include_wgsl!("mip.wgsl"));
@@ -1503,7 +1528,7 @@ impl Gpu {
         let mut context = self.take_context(renderer.width, renderer.height, shadow_size, layers);
         let weight = 1.0 / moments.len().max(1) as f32;
         for (i, (scene, camera)) in moments.iter().enumerate() {
-            self.render_moment(&mut context, scene, camera, weight, i, moments.len() == 1);
+            self.render_moment(&mut context, renderer, scene, camera, weight, i, moments.len() == 1);
         }
         context
     }
@@ -1511,9 +1536,11 @@ impl Gpu {
     /// Renders the moment with index `moment` and adds it with `weight` to the average of
     /// the frame. Moment 0 starts a new average. `single` tells that the moment is the
     /// whole frame.
+    #[allow(clippy::too_many_arguments)]
     fn render_moment(
         &self,
         cx: &mut FrameContext,
+        renderer: &Renderer,
         scene: &Scene,
         camera: &Camera,
         weight: f32,
@@ -1671,7 +1698,7 @@ impl Gpu {
             .position
             .extend(f32::from(camera.ortho_height.is_some()))
             .to_array();
-        frame.forward = camera.forward().extend(0.0).to_array();
+        frame.forward = camera.forward().extend(renderer.affine).to_array();
         frame.viewport = [width as f32, height as f32, focal, camera.near];
         frame.ambient = lights
             .ambient
@@ -1703,7 +1730,7 @@ impl Gpu {
             light_count as f32,
             env.as_ref().map_or(0.0, |(_, levels)| *levels as f32),
             reflection.map_or(0.0, |r| r.levels as f32),
-            0.0,
+            renderer.snap,
         ];
         if let (Some(reflector), Some(targets)) = (reflector, reflection) {
             let (rw, rh) = (targets.width as f32, targets.height as f32);
@@ -1866,8 +1893,23 @@ impl Gpu {
             let blur = f.blur * height as f32 / 1080.0;
             post.dof = [f.distance, blur, (blur * 1.6).min(40.0), DOF_TILE as f32];
         }
+        let ao = renderer
+            .ambient_occlusion
+            .filter(|a| a.strength > 0.0 && a.radius > 0.0 && camera.ortho_height.is_none());
+        if let Some(a) = ao {
+            let max_radius = crate::render::AO_MAX_RADIUS * height as f32 / 1080.0;
+            post.ao = [focal, a.radius, a.strength, max_radius];
+        }
         self.queue
             .write_buffer(&cx.post_buffer, 0, bytemuck::bytes_of(&post));
+        // The ambient occlusion darkens the frame before the depth of field blurs it.
+        if ao.is_some() {
+            let black = &self.black_hdr;
+            let group = self.post_group(cx, 0, [black, &cx.key, black, black, black]);
+            fullscreen(&mut encoder, &self.post.ao, &[&group], &[&cx.ao], None);
+            let group = self.post_group(cx, 0, [black, &cx.key, &cx.ao, black, black]);
+            fullscreen(&mut encoder, &self.post.ao_apply, &[&group], &[&cx.hdr], None);
+        }
         let (source, result) = if focus.is_some() {
             self.depth_of_field(&mut encoder, cx);
             (&cx.dof, Accumulated::Dof)
@@ -1909,6 +1951,10 @@ impl Gpu {
             Some(Fog::Exp2 { color, density }) => {
                 frame.fog = color.0.extend(2.0).to_array();
                 frame.fog_params = [0.0, 0.0, density, 0.0];
+            }
+            Some(Fog::Height { color, density, ground, height, falloff }) => {
+                frame.fog = color.0.extend(3.0).to_array();
+                frame.fog_params = [height, falloff, density, ground];
             }
             None => {}
         }
@@ -2149,13 +2195,11 @@ impl Gpu {
                     &cx.bloom[i].0,
                 );
             }
-            let factors: [f32; BLOOM_LEVELS] = [1.0, 0.8, 0.6, 0.4, 0.2, 0.1];
             for i in (0..cx.bloom.len() - 1).rev() {
                 let (source, width, height) = &cx.bloom[i + 1];
-                let f = factors[i + 1];
                 pass(
                     PostUniform {
-                        bloom: [0.0, 0.0, (f + (1.2 - f - f) * b.radius).max(0.0), 0.0],
+                        bloom: [0.0, 0.0, crate::render::bloom_weight(i + 1, b.radius), 0.0],
                         texel: texel(*width, *height),
                         ..Default::default()
                     },
@@ -2170,10 +2214,13 @@ impl Gpu {
             ToneMapping::Linear => 0.0,
             ToneMapping::Aces => 1.0,
             ToneMapping::Neutral => 2.0,
+            ToneMapping::Agx => 3.0,
         };
+        let mix = bloom.is_some() && renderer.bloom_mix;
+        let total = crate::render::bloom_total(cx.bloom.len(), bloom.map_or(0.0, |b| b.radius));
         pass(
             PostUniform {
-                bloom: [0.0, 0.0, 0.0, bloom.map_or(0.0, |b| b.strength)],
+                bloom: [f32::from(mix), 1.0 / total, 0.0, bloom.map_or(0.0, |b| b.strength)],
                 encode: [renderer.exposure, tone, f32::from(bloom.is_some()), 1.0],
                 ..Default::default()
             },
@@ -2743,6 +2790,7 @@ impl FrameContext {
             half_hdr: sampled("half", HDR, half_w, half_h),
             half_key: sampled("half key", KEY, half_w, half_h),
             dof: sampled("dof", HDR, width, height),
+            ao: sampled("ambient occlusion", KEY, width, height),
             accum: sampled("accumulation", HDR, width, height),
             bloom,
             output_view: output.create_view(&wgpu::TextureViewDescriptor::default()),

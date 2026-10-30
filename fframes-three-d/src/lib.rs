@@ -8,8 +8,10 @@
 //! The renderer has 4x multisampling and physically based materials: metal and roughness,
 //! clearcoat and specular antialiasing. A procedural studio or an HDR panorama lights the
 //! scene. The renderer draws soft shadows, planar reflections ([`Reflector`]), transparency,
-//! additive glows and particles. It also has fog, depth of field, motion blur, bloom and
-//! ACES tone mapping.
+//! additive glows and particles. It also has distance and height fog, screen-space ambient
+//! occlusion, depth of field, motion blur, bloom (added or energy-preserving), and ACES, AgX
+//! or neutral tone mapping. For a low-fi console look the GPU renderer snaps vertices to a
+//! pixel grid and maps textures affinely ([`Renderer::low_fi`]).
 //!
 //! The default renderer is a multithreaded software rasterizer. It runs on all backends:
 //! CPU, Skia and the wasm editor. The `wgpu` feature of fframes (the `gpu` feature of this
@@ -83,7 +85,8 @@
 //! | `STLLoader`, `toCreasedNormals` | [`Geometry::from_stl`], [`Geometry::smooth`] |
 //! | `VideoTexture` | [`Texture::from_image`] of a decoded video frame, for each frame |
 //! | `CanvasTexture` | [`Texture::from_image`] of `ctx.render_svgr(svgr, width, height)` |
-//! | `UnrealBloomPass`, `ACESFilmicToneMapping` | [`Bloom`], [`ToneMapping`] |
+//! | `UnrealBloomPass`, `ACESFilmicToneMapping`, `AgXToneMapping` | [`Bloom`], [`ToneMapping`] |
+//! | `SAOPass`, `GTAOPass` | [`AmbientOcclusion`] |
 //! | `Points` | [`Node::particles`] |
 //! | `InstancedMesh`, `instanceColor` | [`Node::instanced`] with [`Instances`] |
 
@@ -122,7 +125,7 @@ pub use gltf::{Model, ModelError, ModelInstance};
 pub use light::{DirectionalLight, Light, MAX_LIGHTS, MAX_SHADOW_LIGHTS, MAX_SHADOW_MAPS, PointLight, SHADOW_RANGE, Shadow, SpotLight};
 pub use material::{Blending, Material, Shading, Side};
 pub use math::{Aabb, Mat3, Mat4, Quat, Vec2, Vec3, Vec4, deg, euler, euler_deg, vec2, vec3, vec4};
-pub use render::{Bloom, Pixels, Renderer, ToneMapping};
+pub use render::{AmbientOcclusion, Bloom, Pixels, Renderer, ToneMapping};
 pub use scene::{
     Background, Fog, Instances, Mesh, Node, NodeId, Object, Particle, Particles, Reflector, Scene,
     Skin,

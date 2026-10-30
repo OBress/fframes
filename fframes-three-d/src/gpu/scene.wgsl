@@ -39,7 +39,7 @@ struct Frame {
     view_proj_rel: mat4x4f,
     // xyz, 1 for an orthographic camera
     camera: vec4f,
-    // xyz, 0
+    // xyz, affine texture mapping (0..1)
     forward: vec4f,
     // width, height, focal length (pixels per unit at distance 1), near
     viewport: vec4f,
@@ -47,9 +47,9 @@ struct Frame {
     ambient: vec4f,
     hemi_sky: vec4f,
     hemi_ground: vec4f,
-    // rgb, kind (0 none, 1 linear, 2 exp2)
+    // rgb, kind (0 none, 1 linear, 2 exp2, 3 height)
     fog: vec4f,
-    // near, far, density, 0
+    // near, far, density, 0; height fog: height, falloff, density, ground
     fog_params: vec4f,
     // kind (0 none, 1 studio, 2 map), intensity, rotation, softbox count
     env: vec4f,
@@ -59,7 +59,8 @@ struct Frame {
     // kind (0 transparent, 1 color, 2 environment), blur, 0, 0
     background: vec4f,
     background_color: vec4f,
-    // light count, environment map levels, reflection levels (0 without a reflection), 0
+    // light count, environment map levels, reflection levels (0 without a reflection),
+    // vertex snap grid in pixels (0 none)
     counts: vec4f,
     // the plane of the reflector: xyz normal, w offset
     clip_plane: vec4f,
@@ -99,6 +100,17 @@ fn rim_light(n_dot_v: f32) -> vec3f {
         return vec3f(0.0);
     }
     return draw.rim.rgb * pow(1.0 - clamp(n_dot_v, 0.0, 1.0), draw.rim.w);
+}
+
+// The mean of `exp(-falloff * y)` along a line from height `a` to height `b` (relative to the
+// height fog's height), as `height_fog_mean` in `scene.rs`.
+fn fog_mean(a: f32, b: f32, falloff: f32) -> f32 {
+    let ea = exp(min(-falloff * a, 30.0));
+    let span = falloff * (b - a);
+    if (abs(span) < 1e-4) {
+        return ea;
+    }
+    return (ea - exp(min(-falloff * b, 30.0))) / span;
 }
 
 // The pipeline constants of a material (`Variant` in `mod.rs`). A material compiles only the
@@ -342,6 +354,9 @@ struct VertexOut {
     @location(2) @interpolate(perspective, centroid) uv: vec2f,
     @location(3) @interpolate(perspective, centroid) color: vec4f,
     @location(4) @interpolate(perspective, centroid) view_w: f32,
+    // uv times w, and w: their ratio interpolates the uv linearly on the screen (affine
+    // texture mapping, as on early consoles)
+    @location(5) @interpolate(perspective, centroid) affine: vec3f,
 }
 
 struct FragmentOut {
@@ -361,11 +376,20 @@ fn vs_main(in: VertexIn, copy: InstanceIn) -> VertexOut {
     let m = draw.model;
     let rel = mat3x3f(m[0].xyz, m[1].xyz, m[2].xyz) * local.xyz + (m[3].xyz - frame.camera.xyz) * local.w;
     out.clip = frame.view_proj_rel * vec4f(rel, 1.0);
+    // Vertices snapped to a coarse grid of pixels, as on early consoles: geometry jitters
+    // as the camera moves.
+    let snap = frame.counts.w;
+    if (snap > 0.0 && out.clip.w > 0.0) {
+        let grid = frame.viewport.xy / snap;
+        let ndc = round(out.clip.xy / out.clip.w * 0.5 * grid) / (0.5 * grid);
+        out.clip = vec4f(ndc * out.clip.w, out.clip.zw);
+    }
     out.rel = rel;
     out.normal = (draw.normal_matrix * vec4f(normal * in.normal, 0.0)).xyz;
     out.uv = in.uv;
     out.color = in.color * copy.color;
     out.view_w = out.clip.w;
+    out.affine = vec3f(in.uv * out.clip.w, out.clip.w);
     return out;
 }
 
@@ -389,15 +413,17 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     let dnx = dpdx(n_smooth);
     let dny = dpdy(n_smooth);
     let normal_variation = dot(dnx, dnx) + dot(dny, dny);
+    // Affine texture mapping (`Renderer::affine`) swims across large triangles.
+    let surface_uv = mix(in.uv, in.affine.xy / max(in.affine.z, 1e-6), frame.forward.w);
     var texel = vec4f(1.0);
     var emissive_texel = vec4f(1.0);
     var mr_texel = vec4f(1.0);
     var ao_texel = vec4f(1.0);
     if (TEXTURED) {
-        texel = textureSample(map_tex, tex_sampler, map_uv(in.uv, 0));
-        emissive_texel = textureSample(emissive_tex, tex_sampler, map_uv(in.uv, 1));
-        mr_texel = textureSample(mr_tex, tex_sampler, map_uv(in.uv, 2));
-        ao_texel = textureSample(ao_tex, tex_sampler, map_uv(in.uv, 4));
+        texel = textureSample(map_tex, tex_sampler, map_uv(surface_uv, 0));
+        emissive_texel = textureSample(emissive_tex, tex_sampler, map_uv(surface_uv, 1));
+        mr_texel = textureSample(mr_tex, tex_sampler, map_uv(surface_uv, 2));
+        ao_texel = textureSample(ao_tex, tex_sampler, map_uv(surface_uv, 4));
     }
     // The normal map, and the directions of +U and +V on the triangle (`uv_directions` in
     // `shade.rs`).
@@ -405,7 +431,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     var dpdu = vec3f(0.0);
     var dpdv = vec3f(0.0);
     if (NORMAL_MAP) {
-        let uv = map_uv(in.uv, 3);
+        let uv = map_uv(surface_uv, 3);
         normal_texel = textureSample(normal_tex, tex_sampler, uv);
         let uv_x = dpdx(uv);
         let uv_y = dpdy(uv);
@@ -508,8 +534,12 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         var f = 0.0;
         if (frame.fog.w < 1.5) {
             f = clamp((distance - frame.fog_params.x) / (frame.fog_params.y - frame.fog_params.x), 0.0, 1.0);
-        } else {
+        } else if (frame.fog.w < 2.5) {
             f = 1.0 - exp(-pow(frame.fog_params.z * distance, 2.0));
+        } else {
+            let h = frame.fog_params.x;
+            let mean = fog_mean(frame.camera.y - h, world.y - h, frame.fog_params.y);
+            f = 1.0 - exp(-max(distance * (frame.fog_params.z + frame.fog_params.w * mean), 0.0));
         }
         if (draw.flags.y > 0.5) {
             rgb *= 1.0 - f;

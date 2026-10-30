@@ -1,15 +1,21 @@
-// The post processing passes of the GPU renderer: depth of field, motion blur accumulation,
-// bloom, and the final tone mapping and encoding. They follow `render/post.rs`.
+// The post processing passes of the GPU renderer: ambient occlusion, depth of field, motion
+// blur accumulation, bloom, and the final tone mapping and encoding. They follow
+// `render/post.rs`.
 
 struct Post {
     // focus distance, blur (pixels), max blur, tile size
     dof: vec4f,
-    // threshold, knee, up weight, strength
+    // threshold, knee, up weight, strength; in the encoding: mix (1 mixes the bloom in),
+    // 1 / the total weight of the bloom levels, 0, strength
     bloom: vec4f,
-    // exposure, tone mapping (0 linear, 1 aces, 2 neutral), has bloom, accumulate weight
+    // exposure, tone mapping (0 linear, 1 aces, 2 neutral, 3 agx), has bloom, accumulate
+    // weight
     encode: vec4f,
     // texel size of the source (1 / width, 1 / height), 0, 0
     texel: vec4f,
+    // ambient occlusion: focal length (pixels at 1 m), radius (meters), strength, largest
+    // radius (pixels)
+    ao: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -176,6 +182,114 @@ fn fs_dof(in: FullscreenOut) -> @location(0) vec4f {
     return sum / count;
 }
 
+// The ambient occlusion (`ambient_occlusion` in `render/post.rs`).
+
+const AO_SAMPLES: i32 = 12;
+const AO_BIAS: f32 = 0.25;
+
+// The view space position of a pixel (x right, y down, z forward), w 0 where there is no
+// surface.
+fn ao_position(q: vec2i) -> vec4f {
+    let size = vec2i(textureDimensions(depth_key));
+    let p = clamp(q, vec2i(0), size - 1);
+    let key = textureLoad(depth_key, p, 0).r;
+    if (key <= 0.0) {
+        return vec4f(0.0);
+    }
+    let z = 1.0 / key;
+    let xy = (vec2f(p) + 0.5 - vec2f(size) * 0.5) * (z / post.ao.x);
+    return vec4f(xy, z, 1.0);
+}
+
+// The step to the neighbor nearer in depth, `a` before and `b` after the center.
+fn ao_side(c: vec3f, a: vec4f, b: vec4f) -> vec3f {
+    if (a.w > 0.0 && b.w > 0.0) {
+        if (abs(c.z - a.z) < abs(b.z - c.z)) {
+            return c - a.xyz;
+        }
+        return b.xyz - c;
+    }
+    if (a.w > 0.0) {
+        return c - a.xyz;
+    }
+    if (b.w > 0.0) {
+        return b.xyz - c;
+    }
+    return vec3f(0.0);
+}
+
+// The unblurred occlusion of a pixel, 1 is open.
+@fragment
+fn fs_ao(in: FullscreenOut) -> @location(0) vec4f {
+    let p = vec2i(in.clip.xy);
+    let center = ao_position(p);
+    if (center.w <= 0.0) {
+        return vec4f(1.0, 0.0, 0.0, 1.0);
+    }
+    let c = center.xyz;
+    let dx = ao_side(c, ao_position(p - vec2i(2, 0)), ao_position(p + vec2i(2, 0)));
+    let dy = ao_side(c, ao_position(p - vec2i(0, 2)), ao_position(p + vec2i(0, 2)));
+    let cr = cross(dy, dx);
+    if (dot(cr, cr) <= 0.0) {
+        return vec4f(1.0, 0.0, 0.0, 1.0);
+    }
+    var n = normalize(cr);
+    if (dot(n, c) > 0.0) {
+        n = -n;
+    }
+    let radius = min(post.ao.y * post.ao.x / c.z, post.ao.w);
+    if (radius < 1.0) {
+        return vec4f(1.0, 0.0, 0.0, 1.0);
+    }
+    let r2 = post.ao.y * post.ao.y;
+    let angle = bayer(p) * 6.2831853;
+    var sum = 0.0;
+    for (var i = 0; i < AO_SAMPLES; i++) {
+        let t = (f32(i) + 0.5) / f32(AO_SAMPLES);
+        let a = angle + f32(i) * 2.399963;
+        let offset = vec2f(cos(a), sin(a)) * (radius * t);
+        let q = ao_position(p + vec2i(round(offset)));
+        if (q.w <= 0.0) {
+            continue;
+        }
+        let v = q.xyz - c;
+        let vv = dot(v, v);
+        if (vv < 1e-12) {
+            continue;
+        }
+        let cosine = dot(v, n) / sqrt(vv);
+        sum += max(cosine - AO_BIAS, 0.0) * max(1.0 - vv / r2, 0.0);
+    }
+    let ao = clamp(1.0 - post.ao.z * 2.5 * sum / f32(AO_SAMPLES), 0.0, 1.0);
+    return vec4f(ao, 0.0, 0.0, 1.0);
+}
+
+// The occlusion blurred over 4x4 pixels of similar depth, as a factor for the frame. The
+// pipeline multiplies the frame by it. Here `tiles` holds the output of `fs_ao`.
+@fragment
+fn fs_ao_apply(in: FullscreenOut) -> @location(0) vec4f {
+    let p = vec2i(in.clip.xy);
+    let size = vec2i(textureDimensions(depth_key));
+    let key = textureLoad(depth_key, p, 0).r;
+    if (key <= 0.0) {
+        return vec4f(1.0);
+    }
+    var sum = 0.0;
+    var count = 0.0;
+    for (var dy = -2; dy < 2; dy++) {
+        for (var dx = -2; dx < 2; dx++) {
+            let q = clamp(p + vec2i(dx, dy), vec2i(0), size - 1);
+            let k = textureLoad(depth_key, q, 0).r;
+            if (abs(k - key) <= 0.1 * key) {
+                sum += textureLoad(tiles, q, 0).r;
+                count += 1.0;
+            }
+        }
+    }
+    let ao = sum / max(count, 1.0);
+    return vec4f(ao, ao, ao, 1.0);
+}
+
 // Adds a weighted moment to the motion blur average. The pipeline blends additively.
 @fragment
 fn fs_accumulate(in: FullscreenOut) -> @location(0) vec4f {
@@ -281,6 +395,39 @@ fn neutral(color_in: vec3f) -> vec3f {
     return max(mix(color, vec3f(new_peak), g), vec3f(0.0));
 }
 
+// AgX as in three.js (`agx` in `render/post.rs`).
+fn agx(color: vec3f) -> vec3f {
+    let srgb_to_2020 = mat3x3f(
+        vec3f(0.6274, 0.0691, 0.0164),
+        vec3f(0.3293, 0.9195, 0.0880),
+        vec3f(0.0433, 0.0113, 0.8956),
+    );
+    let rec2020_to_srgb = mat3x3f(
+        vec3f(1.6605, -0.1246, -0.0182),
+        vec3f(-0.5876, 1.1329, -0.1006),
+        vec3f(-0.0728, -0.0083, 1.1187),
+    );
+    let inset = mat3x3f(
+        vec3f(0.85662715, 0.13731897, 0.11189821),
+        vec3f(0.09512124, 0.76124199, 0.07679942),
+        vec3f(0.04825161, 0.10143904, 0.81130237),
+    );
+    let outset = mat3x3f(
+        vec3f(1.1271006, -0.14132976, -0.14132976),
+        vec3f(-0.11060664, 1.1578237, -0.11060664),
+        vec3f(-0.01649394, -0.01649394, 1.2519364),
+    );
+    let min_ev = -12.47393;
+    let max_ev = 4.026069;
+    let c = max(inset * (srgb_to_2020 * color), vec3f(1e-10));
+    let x = clamp((log2(c) - min_ev) / (max_ev - min_ev), vec3f(0.0), vec3f(1.0));
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    let curve = 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+    let out = pow(max(outset * curve, vec3f(0.0)), vec3f(2.2));
+    return clamp(rec2020_to_srgb * out, vec3f(0.0), vec3f(1.0));
+}
+
 fn to_srgb(c: f32) -> f32 {
     if (c <= 0.0031308) {
         return c * 12.92;
@@ -305,7 +452,12 @@ fn fs_encode(in: FullscreenOut) -> @location(0) vec4f {
     let p = vec2i(in.clip.xy);
     var px = textureLoad(src, p, 0);
     if (post.encode.z > 0.5) {
-        px = vec4f(px.rgb + textureSampleLevel(aux_tex, src_sampler, in.uv, 0.0).rgb * post.bloom.w, px.a);
+        let glow = textureSampleLevel(aux_tex, src_sampler, in.uv, 0.0).rgb;
+        if (post.bloom.x > 0.5) {
+            px = vec4f(mix(px.rgb, glow * post.bloom.y, min(post.bloom.w, 1.0)), px.a);
+        } else {
+            px = vec4f(px.rgb + glow * post.bloom.w, px.a);
+        }
     }
     let rgb = max(px.rgb, vec3f(0.0)) * post.encode.x;
     // Light without coverage (glows, additive surfaces) becomes partly opaque.
@@ -320,6 +472,8 @@ fn fs_encode(in: FullscreenOut) -> @location(0) vec4f {
         mapped = aces(straight);
     } else if (tone == 2) {
         mapped = clamp(neutral(straight), vec3f(0.0), vec3f(1.0));
+    } else if (tone == 3) {
+        mapped = agx(straight);
     }
     let a8 = floor(alpha * 255.0 + 0.5) / 255.0;
     let dither = (bayer(p) - 0.5) / 255.0;

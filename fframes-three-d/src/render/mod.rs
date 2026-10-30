@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use glam::{Vec2, Vec4};
 use rayon::prelude::*;
 
-pub use post::{Bloom, ToneMapping};
+pub use post::{AmbientOcclusion, Bloom, ToneMapping};
+pub(crate) use post::{AO_MAX_RADIUS, bloom_total, bloom_weight};
 
 use crate::{Camera, Scene};
 use prepare::{Viewport, World};
@@ -51,6 +52,16 @@ pub struct Renderer {
     pub tone_mapping: ToneMapping,
     /// The glow around bright pixels, `None` for no glow.
     pub bloom: Option<Bloom>,
+    /// Mix the bloom in instead of adding it, see [`Renderer::soft_bloom`].
+    pub bloom_mix: bool,
+    /// Darkening of creases and corners from the depth of the frame, `None` for none.
+    pub ambient_occlusion: Option<AmbientOcclusion>,
+    /// Snaps vertices to a grid this many pixels wide, as early consoles did: geometry
+    /// jitters as the camera moves. 0 for none. Only on the GPU; the CPU ignores it.
+    pub snap: f32,
+    /// How much textures map affinely (linearly in the screen) instead of in perspective,
+    /// `0..1`: large triangles swim, as on early consoles. Only on the GPU.
+    pub affine: f32,
     /// Render on the GPU when the `wgpu` feature of fframes is on, see [`Renderer::gpu`].
     pub gpu: bool,
 }
@@ -157,6 +168,10 @@ impl Renderer {
             exposure: 1.0,
             tone_mapping: ToneMapping::Aces,
             bloom: None,
+            bloom_mix: false,
+            ambient_occlusion: None,
+            snap: 0.0,
+            affine: 0.0,
             gpu: cfg!(feature = "gpu"),
         }
     }
@@ -186,6 +201,31 @@ impl Renderer {
     /// Adds a glow around bright pixels, see [`Bloom`].
     pub fn bloom(mut self, bloom: Bloom) -> Self {
         self.bloom = Some(bloom);
+        self.bloom_mix = false;
+        self
+    }
+
+    /// A soft energy-preserving glow instead of an added one: the frame becomes
+    /// `1 - strength` of itself plus `strength` of its blurred copy (about 0.03 to 0.1), so
+    /// the glow adds no light, as through a slightly hazy lens. Every pixel glows, not only
+    /// the bright ones.
+    pub fn soft_bloom(mut self, strength: f32, radius: f32) -> Self {
+        self.bloom = Some(Bloom { strength, radius, threshold: 0.0 });
+        self.bloom_mix = true;
+        self
+    }
+
+    /// Darkens creases, corners and contact areas, see [`AmbientOcclusion`].
+    pub fn ambient_occlusion(mut self, ao: AmbientOcclusion) -> Self {
+        self.ambient_occlusion = Some(ao);
+        self
+    }
+
+    /// Snaps vertices to a grid of `pixels` and maps textures affinely by `affine`
+    /// (`0..1`), the wobble of early consoles. Only on the GPU.
+    pub fn low_fi(mut self, pixels: f32, affine: f32) -> Self {
+        self.snap = pixels.max(0.0);
+        self.affine = affine.clamp(0.0, 1.0);
         self
     }
 
@@ -306,7 +346,7 @@ impl Renderer {
         }
         let (width, height) = (self.width as usize, self.height as usize);
         if let Some(bloom) = &self.bloom {
-            post::bloom(&mut hdr, width, height, bloom);
+            post::bloom(&mut hdr, width, height, bloom, self.bloom_mix);
         }
         Pixels {
             width: self.width,
@@ -377,6 +417,12 @@ impl Renderer {
             clip_plane: None,
         };
         let (mut hdr, depth) = render_view(&mut world, &shade, &viewport, camera, self.antialias);
+        if let Some(ao) = &self.ambient_occlusion
+            && !ortho
+        {
+            let focal = height as f32 / (2.0 * (camera.fov.to_radians() * 0.5).tan());
+            post::ambient_occlusion(&mut hdr, &depth, width, height, focal, ao);
+        }
         if let Some(focus) = camera.focus
             && !ortho
             && focus.blur > 0.0

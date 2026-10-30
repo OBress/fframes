@@ -34,6 +34,58 @@ impl Default for Bloom {
     }
 }
 
+/// The weight of each bloom level after the first. `radius` moves weight to the wide levels.
+pub(crate) const BLOOM_FACTORS: [f32; MAX_LEVELS - 1] = [0.8, 0.6, 0.4, 0.2, 0.1];
+
+/// The weight of the upsampled level `level` (1 for the second level) for `radius`, as the
+/// three.js `lerpBloomFactor`.
+pub(crate) fn bloom_weight(level: usize, radius: f32) -> f32 {
+    let f = BLOOM_FACTORS[level - 1];
+    (f + (1.2 - f - f) * radius).max(0.0)
+}
+
+/// What the glow of `levels` levels sums to over an even frame of brightness 1: each level
+/// adds the level below it times its weight. Dividing by it makes the mixed glow keep the
+/// light of the frame.
+pub(crate) fn bloom_total(levels: usize, radius: f32) -> f32 {
+    let mut total = 1.0;
+    for level in (1..levels).rev() {
+        total = 1.0 + bloom_weight(level, radius) * total;
+    }
+    total
+}
+
+/// Ambient occlusion from the depth of the frame (screen space): creases, corners and the
+/// ground under things darken, as the light of the room reaches them less.
+///
+/// Give it to [`Renderer::ambient_occlusion`](super::Renderer::ambient_occlusion). It
+/// darkens the whole light of a pixel, after the lighting and before the depth of field and
+/// the bloom. Orthographic cameras get none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmbientOcclusion {
+    /// How much creases darken: 1 is a typical amount, 2 is heavy.
+    pub strength: f32,
+    /// How far around a point other surfaces occlude it, in meters.
+    pub radius: f32,
+}
+
+impl Default for AmbientOcclusion {
+    fn default() -> Self {
+        Self {
+            strength: 0.8,
+            radius: 0.5,
+        }
+    }
+}
+
+/// The samples of the ambient occlusion of a pixel.
+pub(crate) const AO_SAMPLES: usize = 12;
+/// The largest sample radius in pixels of a 1080 pixel tall frame.
+pub(crate) const AO_MAX_RADIUS: f32 = 90.0;
+/// Samples nearer to the tangent plane than this cosine do not occlude: the normals come
+/// from 16 bit depths on the GPU and tilt a little.
+pub(crate) const AO_BIAS: f32 = 0.25;
+
 /// How HDR colors map to the display, as in three.js.
 ///
 /// Set it with [`Renderer::tone_mapping`](super::Renderer::tone_mapping).
@@ -47,6 +99,11 @@ pub enum ToneMapping {
     Aces,
     /// three.js `NeutralToneMapping` (Khronos PBR Neutral). It keeps base colors accurate.
     Neutral,
+    /// AgX (Blender, three.js `AgXToneMapping`). Bright lights roll off to white smoothly
+    /// and keep their hue longer than with ACES; the picture is flatter and less saturated,
+    /// a good start for a grade. Mid grey comes out darker than with ACES (about a stop),
+    /// so it wants more exposure.
+    Agx,
 }
 
 /// An image of linear premultiplied colors, row major. The bloom and the reflection filter
@@ -136,7 +193,9 @@ impl Image {
 }
 
 /// Adds the glow of `bloom` to `hdr`, a frame of `width` x `height` pixels.
-pub(crate) fn bloom(hdr: &mut [Vec4], width: usize, height: usize, bloom: &Bloom) {
+/// With `mix` the glow replaces `strength` of the frame instead of adding to it, see
+/// [`Renderer::soft_bloom`](super::Renderer::soft_bloom).
+pub(crate) fn bloom(hdr: &mut [Vec4], width: usize, height: usize, bloom: &Bloom, mix: bool) {
     if bloom.strength <= 0.0 {
         return;
     }
@@ -163,31 +222,150 @@ pub(crate) fn bloom(hdr: &mut [Vec4], width: usize, height: usize, bloom: &Bloom
         }
     });
 
-    // Each level glows wider than the level before it. These are the weights of the levels
-    // after the first. `radius` moves weight to the wide levels.
-    const FACTORS: [f32; MAX_LEVELS - 1] = [0.8, 0.6, 0.4, 0.2, 0.1];
+    // Each level glows wider than the level before it.
     let mut levels = Image {
         width: hw,
         height: hh,
         data: bright,
     }
     .mip_chain();
+    let total = bloom_total(levels.len(), bloom.radius);
     let Some(mut glow) = levels.pop() else {
         return;
     };
     while let Some(mut finer) = levels.pop() {
-        // three.js `lerpBloomFactor`
-        let f = FACTORS[levels.len()];
-        finer.add_upsampled(&glow, (f + (1.2 - f - f) * bloom.radius).max(0.0));
+        finer.add_upsampled(&glow, bloom_weight(levels.len() + 1, bloom.radius));
         glow = finer;
     }
+    let strength = bloom.strength;
     hdr.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
         let v = (y as f32 + 0.5) / height as f32;
         for (x, px) in row.iter_mut().enumerate() {
             let u = (x as f32 + 0.5) / width as f32;
-            *px += glow.sample(u, v) * bloom.strength;
+            let g = glow.sample(u, v);
+            if mix {
+                let mixed = px.truncate().lerp(g.truncate() / total, strength.min(1.0));
+                *px = mixed.extend(px.w);
+            } else {
+                *px += g * strength;
+            }
         }
     });
+}
+
+/// Darkens `hdr` by the ambient occlusion of its depth keys (`1 / view depth`, 0 for the
+/// background). `focal` is the focal length in pixels (pixels per meter at 1 m). `fs_ao`
+/// and `fs_ao_apply` in `post.wgsl` are the same.
+pub(crate) fn ambient_occlusion(
+    hdr: &mut [Vec4],
+    depth: &[f32],
+    width: usize,
+    height: usize,
+    focal: f32,
+    ao: &AmbientOcclusion,
+) {
+    if ao.strength <= 0.0 || ao.radius <= 0.0 {
+        return;
+    }
+    let max_radius = AO_MAX_RADIUS * height as f32 / 1080.0;
+    let half = Vec2::new(width as f32, height as f32) * 0.5;
+    // The position of a pixel in view space (x right, y down, z forward).
+    let position = |x: i64, y: i64| -> Option<Vec3> {
+        let x = x.clamp(0, width as i64 - 1) as usize;
+        let y = y.clamp(0, height as i64 - 1) as usize;
+        let key = depth[y * width + x];
+        (key > 0.0).then(|| {
+            let z = 1.0 / key;
+            ((Vec2::new(x as f32, y as f32) + 0.5 - half) * (z / focal)).extend(z)
+        })
+    };
+    let mut occlusion = vec![1.0f32; width * height];
+    occlusion.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+        for (x, out) in row.iter_mut().enumerate() {
+            *out = ao_at(&position, x as i64, y as i64, focal, max_radius, ao);
+        }
+    });
+    // A depth aware 4x4 blur: it spans the 4x4 pattern of the sample rotations.
+    hdr.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+        for (x, px) in row.iter_mut().enumerate() {
+            let key = depth[y * width + x];
+            if key <= 0.0 {
+                continue;
+            }
+            let (mut sum, mut count) = (0.0, 0.0);
+            for dy in -2..2i64 {
+                for dx in -2..2i64 {
+                    let sx = (x as i64 + dx).clamp(0, width as i64 - 1) as usize;
+                    let sy = (y as i64 + dy).clamp(0, height as i64 - 1) as usize;
+                    let k = depth[sy * width + sx];
+                    if (k - key).abs() <= 0.1 * key {
+                        sum += occlusion[sy * width + sx];
+                        count += 1.0;
+                    }
+                }
+            }
+            let a = sum / f32::max(count, 1.0);
+            *px = (px.truncate() * a).extend(px.w);
+        }
+    });
+}
+
+/// The unblurred ambient occlusion of one pixel, `0..1` (1 is open).
+fn ao_at(
+    position: &impl Fn(i64, i64) -> Option<Vec3>,
+    x: i64,
+    y: i64,
+    focal: f32,
+    max_radius: f32,
+    ao: &AmbientOcclusion,
+) -> f32 {
+    let Some(c) = position(x, y) else {
+        return 1.0;
+    };
+    // The normal from the neighbors two pixels away, on each axis the side nearer in depth
+    // (the other may be across an edge).
+    let side = |a: Option<Vec3>, b: Option<Vec3>| match (a, b) {
+        (Some(a), Some(b)) => {
+            if (c.z - a.z).abs() < (b.z - c.z).abs() {
+                c - a
+            } else {
+                b - c
+            }
+        }
+        (Some(a), None) => c - a,
+        (None, Some(b)) => b - c,
+        (None, None) => Vec3::ZERO,
+    };
+    let dx = side(position(x - 2, y), position(x + 2, y));
+    let dy = side(position(x, y - 2), position(x, y + 2));
+    let mut n = dy.cross(dx).normalize_or_zero();
+    if n.dot(c) > 0.0 {
+        n = -n;
+    }
+    let radius = (ao.radius * focal / c.z).min(max_radius);
+    if radius < 1.0 || n == Vec3::ZERO {
+        return 1.0;
+    }
+    let r2 = ao.radius * ao.radius;
+    let angle = bayer(x as usize, y as usize) * std::f32::consts::TAU;
+    let mut sum = 0.0;
+    for i in 0..AO_SAMPLES {
+        let t = (i as f32 + 0.5) / AO_SAMPLES as f32;
+        let a = angle + i as f32 * 2.399_963;
+        let offset = Vec2::new(a.cos(), a.sin()) * (radius * t);
+        let Some(q) = position(x + offset.x.round() as i64, y + offset.y.round() as i64) else {
+            continue;
+        };
+        let v = q - c;
+        let vv = v.length_squared();
+        if vv < 1e-12 {
+            continue;
+        }
+        // A surface above the tangent plane occludes, less the farther it is.
+        let cos = v.dot(n) / vv.sqrt();
+        sum += (cos - AO_BIAS).max(0.0) * (1.0 - vv / r2).max(0.0);
+    }
+    (1.0 - ao.strength * 2.5 * sum / AO_SAMPLES as f32).clamp(0.0, 1.0)
 }
 
 fn aces(color: Vec3) -> Vec3 {
@@ -222,6 +400,44 @@ fn neutral(mut color: Vec3) -> Vec3 {
     color *= new_peak / peak;
     let g = 1.0 - 1.0 / (DESATURATION * (peak - new_peak) + 1.0);
     color.lerp(Vec3::splat(new_peak), g).max(Vec3::ZERO)
+}
+
+/// AgX as in three.js (after Filament and Blender): into a log encoding of the Rec. 2020
+/// primaries pulled in toward white, a sigmoid, back out.
+fn agx(color: Vec3) -> Vec3 {
+    const SRGB_TO_2020: Mat3 = Mat3::from_cols(
+        Vec3::new(0.6274, 0.0691, 0.0164),
+        Vec3::new(0.3293, 0.9195, 0.0880),
+        Vec3::new(0.0433, 0.0113, 0.8956),
+    );
+    const REC2020_TO_SRGB: Mat3 = Mat3::from_cols(
+        Vec3::new(1.6605, -0.1246, -0.0182),
+        Vec3::new(-0.5876, 1.1329, -0.1006),
+        Vec3::new(-0.0728, -0.0083, 1.1187),
+    );
+    const INSET: Mat3 = Mat3::from_cols(
+        Vec3::new(0.856_627_15, 0.137_318_97, 0.111_898_21),
+        Vec3::new(0.095_121_24, 0.761_241_99, 0.076_799_42),
+        Vec3::new(0.048_251_61, 0.101_439_04, 0.811_302_37),
+    );
+    const OUTSET: Mat3 = Mat3::from_cols(
+        Vec3::new(1.127_100_6, -0.141_329_76, -0.141_329_76),
+        Vec3::new(-0.110_606_64, 1.157_823_7, -0.110_606_64),
+        Vec3::new(-0.016_493_94, -0.016_493_94, 1.251_936_4),
+    );
+    const MIN_EV: f32 = -12.473_93;
+    const MAX_EV: f32 = 4.026_069;
+    let c = (INSET * (SRGB_TO_2020 * color)).max(Vec3::splat(1e-10));
+    let x = ((Vec3::new(c.x.log2(), c.y.log2(), c.z.log2()) - MIN_EV) / (MAX_EV - MIN_EV))
+        .clamp(Vec3::ZERO, Vec3::ONE);
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    let curve = 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2
+        + 0.1191 * x
+        - 0.00232;
+    let out = (OUTSET * curve).max(Vec3::ZERO);
+    let out = Vec3::new(out.x.powf(2.2), out.y.powf(2.2), out.z.powf(2.2));
+    (REC2020_TO_SRGB * out).clamp(Vec3::ZERO, Vec3::ONE)
 }
 
 const LUT_SIZE: usize = 16384;
@@ -264,6 +480,7 @@ pub(crate) fn encode(
                     ToneMapping::Linear => straight.clamp(Vec3::ZERO, Vec3::ONE),
                     ToneMapping::Aces => aces(straight),
                     ToneMapping::Neutral => neutral(straight).clamp(Vec3::ZERO, Vec3::ONE),
+                    ToneMapping::Agx => agx(straight),
                 };
                 let a8 = (alpha * 255.0 + 0.5) as u8;
                 let alpha = f32::from(a8) / 255.0;
