@@ -121,7 +121,14 @@ impl SkiaVulkanCtx {
                     FFramesRendererError::Skia(format!("Failed to enumerate physical devices: {e}"))
                 })?;
 
-                physical_devices.iter().copied().next().ok_or_else(|| {
+                // A discrete GPU over an integrated one: on a laptop the integrated GPU is
+                // often listed first, and rendering there is several times slower.
+                let rank = |d: &vk::PhysicalDevice| match instance.get_physical_device_properties(*d).device_type {
+                    vk::PhysicalDeviceType::DISCRETE_GPU => 0,
+                    vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
+                    _ => 2,
+                };
+                physical_devices.iter().copied().min_by_key(rank).ok_or_else(|| {
                     FFramesRendererError::Skia("No Vulkan physical devices found".to_string())
                 })?
             };
