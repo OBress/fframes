@@ -50,8 +50,8 @@ fn reflector(cos: f32, cos_outer: f32) -> f32 {
     // the angle off the axis as a share of the cone's
     let x = cos.clamp(-1.0, 1.0).acos() / cos_outer.clamp(-1.0, 1.0).acos().max(1e-4);
     let core = (-(x / 0.28).powi(2)).exp();
-    let ring = 0.12 * (-((x - 0.42) / 0.06).powi(2)).exp();
-    let spill = 0.3 * smoothstep(1.0, 0.45, x);
+    let ring = 0.06 * (-((x - 0.42) / 0.1).powi(2)).exp();
+    let spill = 0.3 * smoothstep(1.0, 0.15, x);
     (core + ring + spill) / 1.3
 }
 
