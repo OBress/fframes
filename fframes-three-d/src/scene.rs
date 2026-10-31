@@ -374,6 +374,62 @@ pub enum Background {
     Environment { blur: f32 },
 }
 
+/// Light scattered toward the camera by the air (haze, dust) or by murky water: a
+/// flashlight's beam, a lamp's glow in the dust. Along each view ray, up to the surface or
+/// `distance`, the renderer adds what point and spot lights scatter at `steps` points: their
+/// light there (falloff, cone, shadow) times `density`, the phase function and the
+/// transmittance back to the camera. Each light's [`SpotLight::scatter`](crate::SpotLight)
+/// or [`PointLight::scatter`](crate::PointLight) weighs its share. Directional and ambient
+/// lights don't scatter here; [`Fog`] stands for them.
+///
+/// Surfaces and the background take it, a blended surface in proportion to its opacity;
+/// additive ones show what is behind them. Each pixel starts its steps at a different offset, so the beam is smooth
+/// with few steps and a little grainy up close.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scatter {
+    /// The light scattered per meter, `0..` (0.02 a light haze, 0.08 dust, 0.25 murky water).
+    pub density: f32,
+    /// The tint of the scattered light: white for dust, the water's color in water.
+    pub color: Rgb,
+    /// Henyey-Greenstein `g`, `-1..1`: above 0 the medium scatters forward, so a beam
+    /// shines brightest looking along it toward the lamp. Default 0.4.
+    pub anisotropy: f32,
+    /// The light the medium takes away per meter on the way to the camera, besides what it
+    /// scatters (absorption). Default 0.
+    pub absorption: f32,
+    /// How far along each view ray the light scatters, in meters. Default 20.
+    pub distance: f32,
+    /// The points per view ray, `1..=64`. Default 24.
+    pub steps: u32,
+}
+
+impl Scatter {
+    /// White haze of `density`, see [`Scatter::density`].
+    pub fn new(density: f32) -> Self {
+        Self {
+            density,
+            color: Rgb::WHITE,
+            anisotropy: 0.4,
+            absorption: 0.0,
+            distance: 20.0,
+            steps: 24,
+        }
+    }
+
+    /// The Henyey-Greenstein phase function at the cosine of the angle between the light's
+    /// and the view's directions of travel.
+    pub(crate) fn phase(&self, cos: f32) -> f32 {
+        henyey_greenstein(self.anisotropy, cos)
+    }
+}
+
+/// The Henyey-Greenstein phase function. `henyey_greenstein` in `scene.wgsl` is the same.
+pub(crate) fn henyey_greenstein(g: f32, cos: f32) -> f32 {
+    let g = g.clamp(-0.95, 0.95);
+    let d = (1.0 + g * g - 2.0 * g * cos).max(1e-4);
+    (1.0 - g * g) / (4.0 * std::f32::consts::PI * d * d.sqrt())
+}
+
 /// Distance fog, three.js `Fog` and `FogExp2`, and height fog.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Fog {
@@ -455,6 +511,9 @@ pub struct Scene {
     pub environment: Environment,
     /// Default `None`.
     pub fog: Option<Fog>,
+    /// Light scattered toward the camera by haze, dust or murky water: the beams of spot
+    /// and point lights show in the air. Default `None`.
+    pub scatter: Option<Scatter>,
     /// The plane that materials with [`Material::reflection`] mirror. Default `None`.
     pub reflector: Option<Reflector>,
 }
@@ -549,6 +608,12 @@ impl Scene {
     /// Sets the fog.
     pub fn fog(mut self, fog: Fog) -> Self {
         self.fog = Some(fog);
+        self
+    }
+
+    /// Sets the light the air scatters, see [`Scatter`].
+    pub fn scatter(mut self, scatter: Scatter) -> Self {
+        self.scatter = Some(scatter);
         self
     }
 

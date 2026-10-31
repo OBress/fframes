@@ -1,5 +1,6 @@
 //! The look settings of the renderer: ambient occlusion, AgX, the soft bloom, height fog,
-//! and the low-fi vertex snapping and affine textures, on the CPU and the GPU.
+//! the low-fi vertex snapping and affine textures, and light scattered in the air (a
+//! flashlight's beam, its hot core), on the CPU and the GPU.
 
 use std::sync::Arc;
 
@@ -217,4 +218,65 @@ fn low_fi_snaps_vertices_and_maps_textures_affinely() {
     let cpu = Renderer::new(160, 120).cpu();
     let d = mean_diff(&cpu.clone().render_pixels(&scene, &camera), &cpu.low_fi(8.0, 1.0).render_pixels(&scene, &camera));
     assert!(d < 0.01);
+}
+
+/// A dark room 6 m deep and a narrow spot light across the view, 3 m in, its beam passing
+/// in front of the back wall; with `block`, a box at x 0 in the beam's way.
+fn beam_room(scatter: Option<Scatter>, block: bool) -> (Scene, Camera) {
+    let mut scene = Scene::new().background(Background::Color(Rgb::BLACK));
+    scene.scatter = scatter;
+    scene.add(Node::mesh(Geometry::plane(10.0, 5.0), Material::standard(0x202020).roughness(1.0)).at(0.0, 2.0, -6.0));
+    if block {
+        scene.add(Node::mesh(Geometry::cuboid(0.6, 0.6, 0.6), Material::standard(0x202020)).at(0.0, 1.5, -3.0));
+    }
+    let lamp = Light::spot(Rgb::WHITE, 600.0, deg(6.0), 0.3).pointing(vec3(1.0, 0.0, 0.0)).with_shadow(Shadow::default());
+    scene.add(Node::light(lamp).at(-3.0, 1.5, -3.0));
+    let camera = Camera::perspective(60.0).at(0.0, 1.5, 1.5).look_at(vec3(0.0, 1.5, -6.0));
+    (scene, camera)
+}
+
+#[test]
+fn scattering_air_shows_a_beam_and_its_shadow() {
+    let mut images = Vec::new();
+    for base in renderers(160, 90) {
+        let (clear, camera) = beam_room(None, false);
+        let a = base.render_pixels(&clear, &camera);
+        let b = base.render_pixels(&beam_room(Some(Scatter::new(0.15)), false).0, &camera);
+        let c = base.render_pixels(&beam_room(Some(Scatter::new(0.15)), true).0, &camera);
+        common::save(&format!("scatter_{}", name(&base)), &b);
+        common::save(&format!("scatter_shadow_{}", name(&base)), &c);
+        // On the beam's axis 1.5 m from the lamp (x -1.5), past the box (x 1.5), and well
+        // above the beam.
+        let (y, above) = (45, 15);
+        let (lit, past, shaded) = (lum(&b, 54, y), lum(&b, 106, y), lum(&c, 106, y));
+        eprintln!("{}: beam {lit:.3}, further {past:.3}, behind the box {shaded:.3}, above {:.3}, without haze {:.3}", name(&base), lum(&b, 54, above), lum(&a, 54, y));
+        assert!(lit > lum(&a, 54, y) + 0.05, "the beam shows in the haze");
+        assert!(lit > lum(&b, 54, above) + 0.05, "only inside the cone");
+        assert!(past > shaded + 0.03, "the box shadows the beam");
+        images.push(b);
+    }
+    if let [cpu, gpu] = &images[..] {
+        let d = mean_diff(cpu, gpu);
+        eprintln!("scatter cpu vs gpu: {d:.2} / 255");
+        assert!(d < 2.5);
+    }
+}
+
+#[test]
+fn a_hot_spot_brightens_the_cone_toward_its_axis() {
+    for base in renderers(120, 120) {
+        let shot = |hotspot: f32| {
+            let mut scene = Scene::new().background(Background::Color(Rgb::BLACK));
+            scene.add(Node::mesh(Geometry::plane(8.0, 8.0), Material::standard(0x808080).roughness(1.0)).at(0.0, 0.0, -4.0));
+            scene.add(Node::light(Light::spot(Rgb::WHITE, 30.0, deg(25.0), 0.9).hotspot(hotspot).pointing(Vec3::NEG_Z)).at(0.0, 0.0, 0.0));
+            base.render_pixels(&scene, &Camera::perspective(60.0).at(0.0, 0.0, 0.0).look_at(vec3(0.0, 0.0, -4.0)))
+        };
+        let (even, hot) = (shot(0.0), shot(0.8));
+        // The center keeps its light, the cone's outer part loses most of it.
+        let (c0, c1) = (lum(&even, 60, 60), lum(&hot, 60, 60));
+        let (e0, e1) = (lum(&even, 88, 60), lum(&hot, 88, 60));
+        eprintln!("{}: center {c0:.3} -> {c1:.3}, off axis {e0:.3} -> {e1:.3}", name(&base));
+        assert!((c0 - c1).abs() < 0.03);
+        assert!(e1 < e0 * 0.75);
+    }
 }

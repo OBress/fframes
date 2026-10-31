@@ -32,6 +32,21 @@ pub fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// The light of a spot light at the cosine `cos` of the angle off its axis: the cone's soft
+/// edge, and its hot core (see [`SpotLight::hotspot`](crate::SpotLight)). `spot_cone` in
+/// `scene.wgsl` is the same.
+pub(crate) fn spot_cone(cos: f32, cos_outer: f32, cos_inner: f32, hotspot: f32) -> f32 {
+    let edge = smoothstep(cos_outer, cos_inner, cos);
+    if hotspot <= 0.0 {
+        return edge;
+    }
+    // From 0 at the cone's edge to 1 on the axis, raised so the core is about a third as
+    // wide as the cone.
+    let x = ((cos - cos_outer) / (1.0 - cos_outer).max(1e-6)).clamp(0.0, 1.0);
+    let core = (x * x) * (x * x);
+    edge * (1.0 - hotspot + hotspot * core * core)
+}
+
 /// An axis-aligned bounding box. The default value is [`Aabb::EMPTY`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aabb {

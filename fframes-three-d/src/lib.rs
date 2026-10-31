@@ -78,6 +78,7 @@
 //! | `scene.environment = pmrem(RoomEnvironment)` | [`Environment::studio`] |
 //! | `RGBELoader` panorama | [`Environment::map`] with [`EnvironmentMap::decode`] |
 //! | `scene.fog = new Fog(color, near, far)` | [`Scene::fog`] with [`Fog::Linear`] |
+//! | a volumetric light shader (light shafts, a flashlight beam in haze) | [`Scene::scatter`] with [`Scatter`]; a spot light's hot core: [`Light::hotspot`] |
 //! | `Reflector` | [`Scene::reflector`] with [`Material::reflection`] |
 //! | `camera.position.set(..); camera.lookAt(..)` | `Camera::perspective(fov).at(..).look_at(..)` |
 //! | `vector.project(camera)` | [`Camera::project`] |
@@ -127,7 +128,7 @@ pub use material::{Blending, Material, Shading, Side};
 pub use math::{Aabb, Mat3, Mat4, Quat, Vec2, Vec3, Vec4, deg, euler, euler_deg, vec2, vec3, vec4};
 pub use render::{AmbientOcclusion, Bloom, Pixels, Renderer, ToneMapping};
 pub use scene::{
-    Background, Fog, Instances, Mesh, Node, NodeId, Object, Particle, Particles, Reflector, Scene,
+    Background, Fog, Instances, Mesh, Node, NodeId, Object, Particle, Particles, Reflector, Scatter, Scene,
     Skin,
 };
 pub use texture::Texture;

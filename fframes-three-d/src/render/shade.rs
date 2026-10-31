@@ -8,8 +8,8 @@ use super::prepare::{Draw, LightKind, Lights};
 use super::reflection::ReflectionMap;
 use super::shadow::ShadowMap;
 use crate::material::Shading;
-use crate::math::smoothstep;
-use crate::scene::{Background, Fog};
+use crate::math::spot_cone;
+use crate::scene::{Background, Fog, Scatter};
 use crate::{Blending, Environment};
 
 /// What the shading of one view needs: the lights, the environment and the camera.
@@ -22,6 +22,8 @@ pub(crate) struct ShadeContext<'a> {
     /// The radiance of the studio as a panorama, see [`crate::Environment::baked`].
     pub baked: Option<&'a crate::EnvironmentMap>,
     pub fog: Option<Fog>,
+    /// The light the air scatters, see [`Scatter`].
+    pub scatter: Option<Scatter>,
     pub background: &'a Background,
     pub camera_position: Vec3,
     /// The view direction of an orthographic camera.
@@ -52,6 +54,52 @@ impl ShadeContext<'_> {
             _ => shadow.map,
         };
         self.shadow(Some(map)).map_or(1.0, |m| m.visibility(position, face, n_dot_l))
+    }
+
+    /// The light the air scatters toward the camera along the view ray in the direction
+    /// `dir`, over `length` meters (`in_scatter` in `scene.wgsl`). `screen` offsets the
+    /// steps per pixel.
+    pub(crate) fn in_scatter(&self, dir: Vec3, length: f32, screen: Vec2) -> Vec3 {
+        let Some(sc) = self.scatter else { return Vec3::ZERO };
+        let length = length.min(sc.distance);
+        if sc.density <= 0.0 || length <= 0.0 {
+            return Vec3::ZERO;
+        }
+        let steps = sc.steps.clamp(1, 64);
+        let dt = length / steps as f32;
+        let jitter = interleaved_noise(screen);
+        let extinction = sc.density + sc.absorption.max(0.0);
+        let mut sum = Vec3::ZERO;
+        for k in 0..steps {
+            let t = (k as f32 + jitter) * dt;
+            let p = self.camera_position + dir * t;
+            let mut lit = Vec3::ZERO;
+            for light in &self.lights.direct {
+                let (position, cutoff, decay, cone, weight) = match &light.kind {
+                    LightKind::Directional { .. } => continue,
+                    LightKind::Point { position, distance, decay, scatter, .. } => (*position, *distance, *decay, None, *scatter),
+                    LightKind::Spot { position, direction, distance, decay, cos_outer, cos_inner, hotspot, scatter, .. } => {
+                        (*position, *distance, *decay, Some((*direction, *cos_outer, *cos_inner, *hotspot)), *scatter)
+                    }
+                };
+                if weight <= 0.0 {
+                    continue;
+                }
+                let d = position - p;
+                let dist = d.length();
+                let l = d / dist.max(1e-6);
+                let mut radiance = light.color * attenuation(dist.max(VOLUME_NEAR), cutoff, decay) * weight;
+                if let Some((axis, cos_outer, cos_inner, hotspot)) = cone {
+                    radiance *= spot_cone((-l).dot(axis), cos_outer, cos_inner, hotspot);
+                }
+                if radiance.max_element() <= 0.0 {
+                    continue;
+                }
+                lit += radiance * (self.light_visibility(&light.kind, p, l, l) * sc.phase(l.dot(dir)));
+            }
+            sum += lit * (-extinction * t).exp();
+        }
+        sum * sc.color.0 * (sc.density * dt)
     }
 
     /// The light that arrives from `dir`, blurred for `roughness`.
@@ -163,6 +211,11 @@ pub(crate) fn shade(ctx: &ShadeContext, draw: &Draw, s: &Surface) -> Vec4 {
             Blending::Normal => rgb.lerp(fog.color().0, f),
         };
     }
+    // The air in front of the surface. A blended one passes on its share of the air behind it
+    // (already in what it covers); additive light has none of its own.
+    if m.fog && m.blending == Blending::Normal && ctx.scatter.is_some() && ctx.ortho_forward.is_none() {
+        rgb += ctx.in_scatter(-to_camera / distance.max(1e-6), distance, s.screen);
+    }
 
     // As on the GPU, whose 16 bit float target would overflow to infinity.
     let rgb = rgb.clamp(Vec3::ZERO, Vec3::splat(30000.0));
@@ -261,12 +314,13 @@ fn standard(
                 decay,
                 cos_outer,
                 cos_inner,
+                hotspot,
                 ..
             } => {
                 let d = *position - s.position;
                 let dist = d.length();
                 let l = d / dist.max(1e-6);
-                let cone = smoothstep(*cos_outer, *cos_inner, (-l).dot(*direction));
+                let cone = spot_cone((-l).dot(*direction), *cos_outer, *cos_inner, *hotspot);
                 (l, light.color * attenuation(dist, *distance, *decay) * cone)
             }
         };
@@ -348,6 +402,16 @@ fn standard(
     }
 
     direct + indirect * occlusion
+}
+
+/// How close to a light the scattered light stops growing, in meters: the inverse square
+/// would make a point of glare at the lamp.
+const VOLUME_NEAR: f32 = 0.8;
+
+/// Interleaved gradient noise (Jimenez 2014): a different offset in `0..1` for each pixel,
+/// `interleaved_noise` in `scene.wgsl`.
+pub(crate) fn interleaved_noise(screen: Vec2) -> f32 {
+    (52.982_918 * (0.067_110_56 * screen.x + 0.005_837_15 * screen.y).fract()).fract()
 }
 
 /// three.js `getDistanceAttenuation`.

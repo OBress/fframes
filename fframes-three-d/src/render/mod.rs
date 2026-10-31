@@ -374,6 +374,7 @@ impl Renderer {
             environment: &scene.environment,
             baked: baked.as_deref(),
             fog: scene.fog,
+            scatter: scene.scatter,
             background: &scene.background,
             camera_position: camera.position,
             ortho_forward: ortho.then(|| camera.forward()),
@@ -390,6 +391,7 @@ impl Renderer {
                 let mirror = reflector.matrix();
                 let shade = ShadeContext {
                     camera_position: mirror.transform_point3(camera.position),
+                    scatter: None,
                     ortho_forward: frame.ortho_forward.map(|f| mirror.transform_vector3(f)),
                     viewport: size,
                     ..frame

@@ -96,6 +96,8 @@ struct GpuLight {
     position: [f32; 4],
     direction: [f32; 4],
     params: [f32; 4],
+    /// The hot core of a spot light, the share of scattered light, 0, 0.
+    extra: [f32; 4],
 }
 
 /// `SoftBox` in `scene.wgsl`.
@@ -149,6 +151,10 @@ struct FrameUniform {
     background_color: [f32; 4],
     counts: [f32; 4],
     clip_plane: [f32; 4],
+    /// The scattering air: density (0 none), anisotropy, steps, distance.
+    scatter: [f32; 4],
+    /// Its tint and absorption.
+    scatter_color: [f32; 4],
     lights: [GpuLight; MAX_LIGHTS],
     softboxes: [GpuSoftBox; MAX_SOFTBOXES],
     shadows: [GpuShadow; MAX_SHADOWS],
@@ -310,7 +316,7 @@ impl Variant {
                     || m.emissive_map.is_some()
                     || m.metal_rough_map.is_some()
                     || m.ao_map.is_some()),
-            fog: m.fog && scene.fog.is_some(),
+            fog: m.fog && (scene.fog.is_some() || scene.scatter.is_some()),
             reflection: m.reflection > 0.0 && scene.reflector.is_some(),
             normal_map: has_uv && m.normal_map.is_some(),
             cutout: if m.alpha_test <= 0.0 {
@@ -1796,6 +1802,9 @@ impl Gpu {
             _ => wgpu::Color::TRANSPARENT,
         };
         let has_background = matches!(scene.background, Background::Environment { .. });
+        // A solid background is the clear color, unless the air scatters light in front of it.
+        let scatter_background = has_background
+            || (scene.scatter.is_some_and(|sc| sc.density > 0.0) && matches!(scene.background, Background::Color(_)));
 
         // The reflection pass: the scene without the reflectors, seen in the mirror.
         if let Some(targets) = reflection {
@@ -1863,7 +1872,7 @@ impl Gpu {
                 ..Default::default()
             });
             pass.set_bind_group(0, &group, &[]);
-            if has_background {
+            if scatter_background {
                 pass.set_pipeline(&self.background_pipeline);
                 pass.draw(0..3, 0..1);
             }
@@ -1957,6 +1966,10 @@ impl Gpu {
                 frame.fog_params = [height, falloff, density, ground];
             }
             None => {}
+        }
+        if let Some(sc) = scene.scatter.filter(|sc| sc.density > 0.0) {
+            frame.scatter = [sc.density, sc.anisotropy.clamp(-0.95, 0.95), sc.steps.clamp(1, 64) as f32, sc.distance.max(0.0)];
+            frame.scatter_color = sc.color.0.extend(sc.absorption.max(0.0)).to_array();
         }
         match &scene.background {
             Background::Transparent => {}
@@ -2526,17 +2539,20 @@ fn gpu_light(light: &LightInfo, shadows: &[Option<GpuShadow>]) -> GpuLight {
             position: [0.0; 4],
             direction: direction.extend(0.0).to_array(),
             params: [0.0, 0.0, map, slot],
+            extra: [0.0; 4],
         },
         LightKind::Point {
             position,
             distance,
             decay,
+            scatter,
             ..
         } => GpuLight {
             color: light.color.extend(1.0).to_array(),
             position: position.extend(distance).to_array(),
             direction: [0.0, 0.0, 0.0, decay],
             params: [0.0, 0.0, map, slot],
+            extra: [0.0, scatter, 0.0, 0.0],
         },
         LightKind::Spot {
             position,
@@ -2545,12 +2561,15 @@ fn gpu_light(light: &LightInfo, shadows: &[Option<GpuShadow>]) -> GpuLight {
             decay,
             cos_outer,
             cos_inner,
+            hotspot,
+            scatter,
             ..
         } => GpuLight {
             color: light.color.extend(2.0).to_array(),
             position: position.extend(distance).to_array(),
             direction: direction.extend(decay).to_array(),
             params: [cos_outer, cos_inner, map, slot],
+            extra: [hotspot, scatter, 0.0, 0.0],
         },
     }
 }

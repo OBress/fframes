@@ -66,6 +66,8 @@ pub(crate) enum LightKind {
         distance: f32,
         decay: f32,
         shadow: Option<ShadowRef>,
+        /// Its share of the scattered light, see [`crate::Scatter`].
+        scatter: f32,
     },
     Spot {
         position: Vec3,
@@ -76,7 +78,11 @@ pub(crate) enum LightKind {
         cos_outer: f32,
         /// The cosine of the angle at which the soft edge of the cone starts.
         cos_inner: f32,
+        /// See [`crate::SpotLight::hotspot`].
+        hotspot: f32,
         shadow: Option<ShadowRef>,
+        /// Its share of the scattered light, see [`crate::Scatter`].
+        scatter: f32,
     },
 }
 
@@ -288,6 +294,7 @@ pub(crate) fn push_light(lights: &mut Lights, light: &Light, m: &Mat4) {
                     distance: l.distance,
                     decay: l.decay,
                     shadow,
+                    scatter: l.scatter,
                 },
             });
         }
@@ -309,7 +316,9 @@ pub(crate) fn push_light(lights: &mut Lights, light: &Light, m: &Mat4) {
                     decay: l.decay,
                     cos_outer: l.angle.cos(),
                     cos_inner: (l.angle * (1.0 - l.penumbra)).cos(),
+                    hotspot: l.hotspot,
                     shadow,
+                    scatter: l.scatter,
                 },
             });
         }

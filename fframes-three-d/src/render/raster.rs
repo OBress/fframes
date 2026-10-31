@@ -413,13 +413,21 @@ fn shade_tri(frame: &Frame, t: &ScreenTri, at: Vec2) -> Vec4 {
 
 /// The background of the pixel `x`, `y`.
 fn background(frame: &Frame, x: usize, y: usize) -> Vec4 {
-    match frame.shade.background {
-        Background::Transparent => Vec4::ZERO,
+    let color = match frame.shade.background {
+        Background::Transparent => return Vec4::ZERO,
         Background::Color(c) => c.0.extend(1.0),
         Background::Environment { blur } => {
             let dir = ray(frame, x as f32 + 0.5, y as f32 + 0.5);
             frame.shade.env_radiance(dir, *blur).extend(1.0)
         }
+    };
+    // The air in front of the background, out to the scatter's distance.
+    match frame.shade.scatter {
+        Some(sc) if frame.shade.ortho_forward.is_none() => {
+            let screen = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            color + frame.shade.in_scatter(ray(frame, screen.x, screen.y), sc.distance, screen).extend(0.0)
+        }
+        _ => color,
     }
 }
 

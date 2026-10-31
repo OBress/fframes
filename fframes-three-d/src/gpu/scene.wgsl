@@ -13,6 +13,8 @@ struct Light {
     // cos outer, cos inner, first shadow map (-1 for none; a point light has six), shadow
     // slot (-1 for none)
     params: vec4f,
+    // hot core of a spot light, share of the scattered light, 0, 0
+    extra: vec4f,
 }
 
 struct SoftBox {
@@ -64,6 +66,10 @@ struct Frame {
     counts: vec4f,
     // the plane of the reflector: xyz normal, w offset
     clip_plane: vec4f,
+    // the scattering air: density (0 none), anisotropy, steps, distance
+    scatter: vec4f,
+    // rgb tint, absorption
+    scatter_color: vec4f,
     lights: array<Light, 32>,
     softboxes: array<SoftBox, 8>,
     shadows: array<Shadow, 8>,
@@ -254,6 +260,106 @@ fn attenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
         att = att * x * x;
     }
     return att;
+}
+
+// The light of a spot light off its axis: the soft edge and the hot core (`spot_cone` in
+// `math.rs`).
+fn spot_cone(cos_angle: f32, cos_outer: f32, cos_inner: f32, hotspot: f32) -> f32 {
+    let edge = smooth_step(cos_outer, cos_inner, cos_angle);
+    if (hotspot <= 0.0) {
+        return edge;
+    }
+    let x = clamp((cos_angle - cos_outer) / max(1.0 - cos_outer, 1e-6), 0.0, 1.0);
+    let core = (x * x) * (x * x);
+    return edge * (1.0 - hotspot + hotspot * core * core);
+}
+
+// The scattering air (`Scatter`, `ShadeContext::in_scatter` in `shade.rs`).
+
+// How close to a light the scattered light stops growing (`VOLUME_NEAR`).
+const VOLUME_NEAR: f32 = 0.8;
+
+fn henyey_greenstein(g: f32, cos_angle: f32) -> f32 {
+    let d = max(1.0 + g * g - 2.0 * g * cos_angle, 1e-4);
+    return (1.0 - g * g) / (4.0 * PI * d * sqrt(d));
+}
+
+// A different offset in 0..1 for each pixel (Jimenez 2014).
+fn interleaved_noise(screen: vec2f) -> f32 {
+    return fract(52.982918 * fract(0.06711056 * screen.x + 0.00583715 * screen.y));
+}
+
+// How much of light `i` reaches a point in the air: one comparison in its shadow map, the
+// per pixel offsets of the steps blur it.
+fn volume_visibility(i: i32, position: vec3f) -> f32 {
+    let light = &frame.lights[i];
+    let map = i32(light.params.z);
+    if (map < 0) {
+        return 1.0;
+    }
+    var index = map;
+    if (i32(light.color.w) == 1) {
+        index = map + cube_face(position - light.position.xyz);
+    }
+    let s = &frame.shadows[index];
+    let clip = s.view_proj * vec4f(position, 1.0);
+    if (clip.w <= 0.0) {
+        return 1.0;
+    }
+    let p = clip.xyz / clip.w;
+    let uv = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+    if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 || p.z > 1.0) {
+        return 1.0;
+    }
+    var z = p.z - s.params2.x * s.params.y;
+    if (s.light.w > 0.0) {
+        let to_light = length(position - s.light.xyz);
+        z = (to_light - s.params2.x * s.params.x * to_light) / s.light.w;
+    }
+    let lit = textureSampleCompareLevel(shadow_maps, shadow_sampler, uv, index, z);
+    return 1.0 - s.params.w * (1.0 - lit);
+}
+
+// The light the air scatters toward the camera along the view ray `dir` over `length`
+// meters.
+fn in_scatter(dir: vec3f, length_in: f32, screen: vec2f) -> vec3f {
+    let density = frame.scatter.x;
+    let span = min(length_in, frame.scatter.w);
+    if (density <= 0.0 || span <= 0.0) {
+        return vec3f(0.0);
+    }
+    let steps = i32(frame.scatter.z);
+    let dt = span / f32(steps);
+    let jitter = interleaved_noise(screen);
+    let extinction = density + frame.scatter_color.w;
+    let g = frame.scatter.y;
+    var sum = vec3f(0.0);
+    for (var k = 0; k < steps; k++) {
+        let t = (f32(k) + jitter) * dt;
+        let p = frame.camera.xyz + dir * t;
+        var lit = vec3f(0.0);
+        for (var i = 0; i < i32(frame.counts.x); i++) {
+            let light = &frame.lights[i];
+            let kind = i32(light.color.w);
+            let weight = light.extra.y;
+            if (kind == 0 || weight <= 0.0) {
+                continue;
+            }
+            let d = light.position.xyz - p;
+            let dist = length(d);
+            let l = d / max(dist, 1e-6);
+            var radiance = light.color.rgb * attenuation(max(dist, VOLUME_NEAR), light.position.w, light.direction.w) * weight;
+            if (kind == 2) {
+                radiance *= spot_cone(dot(-l, light.direction.xyz), light.params.x, light.params.y, light.extra.x);
+            }
+            if (max(radiance.r, max(radiance.g, radiance.b)) <= 0.0) {
+                continue;
+            }
+            lit += radiance * (volume_visibility(i, p) * henyey_greenstein(g, dot(l, dir)));
+        }
+        sum += lit * exp(-extinction * t);
+    }
+    return sum * frame.scatter_color.rgb * (density * dt);
 }
 
 fn ggx(n_dot_h: f32, alpha: f32) -> f32 {
@@ -547,6 +653,11 @@ fn fs_main(in: VertexOut) -> FragmentOut {
             rgb = mix(rgb, frame.fog.rgb, f);
         }
     }
+    // The air in front of the surface. A blended one passes on its share of the air behind it
+    // (already in what it covers); additive light has none of its own.
+    if (FOG && !REFLECTION_PASS && frame.scatter.x > 0.0 && draw.flags.z > 0.5 && draw.flags.y < 0.5) {
+        rgb += in_scatter(-to_camera / max(distance, 1e-6), distance, in.clip.xy);
+    }
     // The HDR target is a 16 bit float. A sharp sun glint can overflow to infinity.
     rgb = clamp(rgb, vec3f(0.0), vec3f(30000.0));
     // An opaque surface covers its pixels whatever the alpha of its texture; a blended one
@@ -725,7 +836,7 @@ fn standard(rel: vec3f, screen: vec2f, base: vec3f, n: vec3f, face: vec3f, v: ve
             radiance *= attenuation(dist, lp.w, ld.w);
             if (kind == 2) {
                 let cone = light.params;
-                radiance *= smooth_step(cone.x, cone.y, dot(-l, ld.xyz));
+                radiance *= spot_cone(dot(-l, ld.xyz), cone.x, cone.y, light.extra.x);
             }
         }
         let n_dot_l = dot(n, l);
@@ -769,13 +880,17 @@ fn fs_background(in: FullscreenOut) -> FragmentOut {
     var out: FragmentOut;
     out.key = vec4f(0.0);
     let kind = i32(frame.background.x);
+    let near = frame.inv_view_proj * vec4f(in.ndc, 1.0, 1.0);
+    let far = frame.inv_view_proj * vec4f(in.ndc, 0.0, 1.0);
+    let dir = normalize_or(far.xyz / far.w - near.xyz / near.w, vec3f(0.0, 0.0, -1.0));
     if (kind == 1) {
         out.color = vec4f(frame.background_color.rgb, 1.0);
     } else {
-        let near = frame.inv_view_proj * vec4f(in.ndc, 1.0, 1.0);
-        let far = frame.inv_view_proj * vec4f(in.ndc, 0.0, 1.0);
-        let dir = normalize_or(far.xyz / far.w - near.xyz / near.w, vec3f(0.0, 0.0, -1.0));
         out.color = vec4f(env_radiance(dir, frame.background.y), 1.0);
+    }
+    // The air in front of the background, out to the scatter's distance.
+    if (frame.scatter.x > 0.0 && frame.camera.w < 0.5) {
+        out.color = vec4f(out.color.rgb + in_scatter(dir, frame.scatter.w, in.clip.xy), 1.0);
     }
     return out;
 }

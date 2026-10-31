@@ -87,6 +87,9 @@ pub struct PointLight {
     pub decay: f32,
     /// The shadow settings, see [`Light::with_shadow`]. `None` casts no shadows.
     pub shadow: Option<Shadow>,
+    /// How much of the light the air shows, see [`Scene::scatter`](crate::Scene::scatter).
+    /// Default 1; 0 for a light that stands in for bounce or fill and has no source.
+    pub scatter: f32,
 }
 
 /// A cone of light, three.js `SpotLight`.
@@ -102,10 +105,17 @@ pub struct SpotLight {
     pub angle: f32,
     /// The part of the cone that fades out, `0..1`.
     pub penumbra: f32,
+    /// The share of the light in a hot core around the axis, `0..1`, as a flashlight's
+    /// reflector focuses it: the cone keeps `1 - hotspot` of the intensity at its edge and
+    /// all of it on the axis. 0, the default, is three.js's even cone.
+    pub hotspot: f32,
     /// The unit direction of the cone axis, in the space of the node.
     pub direction: Vec3,
     /// The shadow settings, see [`Light::with_shadow`]. `None` casts no shadows.
     pub shadow: Option<Shadow>,
+    /// How much of the light the air shows, see [`Scene::scatter`](crate::Scene::scatter).
+    /// Default 1.
+    pub scatter: f32,
 }
 
 /// The most point, spot and directional lights a scene shades. Lights past it, in scene
@@ -162,6 +172,7 @@ impl Light {
             distance,
             decay: 2.0,
             shadow: None,
+            scatter: 1.0,
         })
     }
 
@@ -177,8 +188,10 @@ impl Light {
             decay: 2.0,
             angle,
             penumbra,
+            hotspot: 0.0,
             direction: Vec3::NEG_Y,
             shadow: None,
+            scatter: 1.0,
         })
     }
 
@@ -210,6 +223,23 @@ impl Light {
         | Light::Spot(SpotLight { direction: d, .. }) = &mut self
         {
             *d = direction.normalize_or(Vec3::NEG_Y);
+        }
+        self
+    }
+
+    /// Sets the hot core of a spot light, see [`SpotLight::hotspot`]. Other lights ignore it.
+    pub fn hotspot(mut self, hotspot: f32) -> Self {
+        if let Light::Spot(SpotLight { hotspot: h, .. }) = &mut self {
+            *h = hotspot.clamp(0.0, 1.0);
+        }
+        self
+    }
+
+    /// Sets how much of a point or spot light the air shows, see [`Scene::scatter`](crate::Scene::scatter).
+    /// Other lights ignore it.
+    pub fn scatter(mut self, scatter: f32) -> Self {
+        if let Light::Point(PointLight { scatter: s, .. }) | Light::Spot(SpotLight { scatter: s, .. }) = &mut self {
+            *s = scatter.max(0.0);
         }
         self
     }
