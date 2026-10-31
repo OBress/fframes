@@ -59,6 +59,8 @@ pub(crate) enum LightKind {
         /// The direction in which the light travels.
         direction: Vec3,
         shadow: Option<ShadowRef>,
+        /// Its share of the scattered light, see [`crate::Scatter`].
+        scatter: f32,
     },
     Point {
         position: Vec3,
@@ -277,7 +279,7 @@ pub(crate) fn push_light(lights: &mut Lights, light: &Light, m: &Mat4) {
                 .and_then(|s| take_shadow(lights, &[ShadowView::Ortho { direction }], s));
             lights.direct.push(LightInfo {
                 color: l.color.0 * l.intensity,
-                kind: LightKind::Directional { direction, shadow },
+                kind: LightKind::Directional { direction, shadow, scatter: l.scatter },
             });
         }
         Light::Point(l) => {

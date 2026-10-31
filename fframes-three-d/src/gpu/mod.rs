@@ -2534,12 +2534,12 @@ fn gpu_light(light: &LightInfo, shadows: &[Option<GpuShadow>]) -> GpuLight {
         .filter(|s| shadows.get(s.map).is_some_and(Option::is_some))
         .map_or((-1.0, -1.0), |s| (s.map as f32, s.slot as f32));
     match light.kind {
-        LightKind::Directional { direction, .. } => GpuLight {
+        LightKind::Directional { direction, scatter, .. } => GpuLight {
             color: light.color.extend(0.0).to_array(),
             position: [0.0; 4],
             direction: direction.extend(0.0).to_array(),
             params: [0.0, 0.0, map, slot],
-            extra: [0.0; 4],
+            extra: [0.0, scatter, 0.0, 0.0],
         },
         LightKind::Point {
             position,

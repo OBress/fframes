@@ -38,6 +38,9 @@ pub struct DirectionalLight {
     pub direction: Vec3,
     /// The shadow settings. `None` casts no shadows.
     pub shadow: Option<Shadow>,
+    /// How much of the light the air shows, see [`Scene::scatter`](crate::Scene::scatter):
+    /// moonlight through trees, daylight through a window. Default 1.
+    pub scatter: f32,
 }
 
 /// The shadow map settings of a light, three.js `light.shadow`.
@@ -156,6 +159,7 @@ impl Light {
             intensity,
             direction: (-from).normalize_or(Vec3::NEG_Y),
             shadow: None,
+            scatter: 1.0,
         })
     }
 
@@ -235,10 +239,13 @@ impl Light {
         self
     }
 
-    /// Sets how much of a point or spot light the air shows, see [`Scene::scatter`](crate::Scene::scatter).
-    /// Other lights ignore it.
+    /// Sets how much of a directional, point or spot light the air shows, see
+    /// [`Scene::scatter`](crate::Scene::scatter). Other lights ignore it.
     pub fn scatter(mut self, scatter: f32) -> Self {
-        if let Light::Point(PointLight { scatter: s, .. }) | Light::Spot(SpotLight { scatter: s, .. }) = &mut self {
+        if let Light::Directional(DirectionalLight { scatter: s, .. })
+        | Light::Point(PointLight { scatter: s, .. })
+        | Light::Spot(SpotLight { scatter: s, .. }) = &mut self
+        {
             *s = scatter.max(0.0);
         }
         self

@@ -342,7 +342,13 @@ fn in_scatter(dir: vec3f, length_in: f32, screen: vec2f) -> vec3f {
             let light = &frame.lights[i];
             let kind = i32(light.color.w);
             let weight = light.extra.y;
-            if (kind == 0 || weight <= 0.0) {
+            if (weight <= 0.0) {
+                continue;
+            }
+            if (kind == 0) {
+                // parallel light: no falloff, only its shadow
+                let ld = -light.direction.xyz;
+                lit += light.color.rgb * (weight * volume_visibility(i, p) * henyey_greenstein(g, dot(ld, dir)));
                 continue;
             }
             let d = light.position.xyz - p;

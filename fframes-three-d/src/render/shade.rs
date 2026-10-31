@@ -76,7 +76,14 @@ impl ShadeContext<'_> {
             let mut lit = Vec3::ZERO;
             for light in &self.lights.direct {
                 let (position, cutoff, decay, cone, weight) = match &light.kind {
-                    LightKind::Directional { .. } => continue,
+                    LightKind::Directional { direction, scatter, .. } => {
+                        // parallel light: no falloff, only its shadow
+                        if *scatter > 0.0 {
+                            let l = -*direction;
+                            lit += light.color * (*scatter * self.light_visibility(&light.kind, p, l, l) * sc.phase(l.dot(dir)));
+                        }
+                        continue;
+                    }
                     LightKind::Point { position, distance, decay, scatter, .. } => (*position, *distance, *decay, None, *scatter),
                     LightKind::Spot { position, direction, distance, decay, cos_outer, cos_inner, hotspot, scatter, .. } => {
                         (*position, *distance, *decay, Some((*direction, *cos_outer, *cos_inner, *hotspot)), *scatter)

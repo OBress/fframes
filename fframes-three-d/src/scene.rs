@@ -378,9 +378,11 @@ pub enum Background {
 /// flashlight's beam, a lamp's glow in the dust. Along each view ray, up to the surface or
 /// `distance`, the renderer adds what point and spot lights scatter at `steps` points: their
 /// light there (falloff, cone, shadow) times `density`, the phase function and the
-/// transmittance back to the camera. Each light's [`SpotLight::scatter`](crate::SpotLight)
-/// or [`PointLight::scatter`](crate::PointLight) weighs its share. Directional and ambient
-/// lights don't scatter here; [`Fog`] stands for them.
+/// transmittance back to the camera. Directional lights scatter too, with their shadow, so
+/// moonlight through trees or daylight through a window shows as shafts. Each light's
+/// `scatter` ([`SpotLight`](crate::SpotLight), [`PointLight`](crate::PointLight),
+/// [`DirectionalLight`](crate::DirectionalLight)) weighs its share. Ambient light doesn't
+/// scatter here; [`Fog`] stands for it.
 ///
 /// Surfaces and the background take it, a blended surface in proportion to its opacity;
 /// additive ones show what is behind them. Each pixel starts its steps at a different offset, so the beam is smooth
