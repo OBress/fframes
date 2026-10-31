@@ -401,6 +401,10 @@ pub struct Scatter {
     pub absorption: f32,
     /// How far along each view ray the light scatters, in meters. Default 20.
     pub distance: f32,
+    /// Over how many meters from the camera the scattering fades in, 0 (the default) for
+    /// none. A lamp held by the camera otherwise lights the air right in front of the lens
+    /// and the picture reads as a glowing ball of fog instead of light on things.
+    pub near: f32,
     /// The points per view ray, `1..=64`. Default 24.
     pub steps: u32,
 }
@@ -414,6 +418,7 @@ impl Scatter {
             anisotropy: 0.4,
             absorption: 0.0,
             distance: 20.0,
+            near: 0.0,
             steps: 24,
         }
     }

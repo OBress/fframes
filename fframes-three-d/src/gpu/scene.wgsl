@@ -70,6 +70,8 @@ struct Frame {
     scatter: vec4f,
     // rgb tint, absorption
     scatter_color: vec4f,
+    // the distance it fades in over from the camera, 0, 0, 0
+    scatter_near: vec4f,
     lights: array<Light, 32>,
     softboxes: array<SoftBox, 8>,
     shadows: array<Shadow, 8>,
@@ -337,6 +339,10 @@ fn in_scatter(dir: vec3f, length_in: f32, screen: vec2f) -> vec3f {
     for (var k = 0; k < steps; k++) {
         let t = (f32(k) + jitter) * dt;
         let p = frame.camera.xyz + dir * t;
+        var fade = 1.0;
+        if (frame.scatter_near.x > 0.0) {
+            fade = pow(min(t / frame.scatter_near.x, 1.0), 2.0);
+        }
         var lit = vec3f(0.0);
         for (var i = 0; i < i32(frame.counts.x); i++) {
             let light = &frame.lights[i];
@@ -363,7 +369,7 @@ fn in_scatter(dir: vec3f, length_in: f32, screen: vec2f) -> vec3f {
             }
             lit += radiance * (volume_visibility(i, p) * henyey_greenstein(g, dot(l, dir)));
         }
-        sum += lit * exp(-extinction * t);
+        sum += lit * (fade * exp(-extinction * t));
     }
     return sum * frame.scatter_color.rgb * (density * dt);
 }

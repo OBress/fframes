@@ -73,6 +73,7 @@ impl ShadeContext<'_> {
         for k in 0..steps {
             let t = (k as f32 + jitter) * dt;
             let p = self.camera_position + dir * t;
+            let fade = if sc.near > 0.0 { (t / sc.near).min(1.0).powi(2) } else { 1.0 };
             let mut lit = Vec3::ZERO;
             for light in &self.lights.direct {
                 let (position, cutoff, decay, cone, weight) = match &light.kind {
@@ -104,7 +105,7 @@ impl ShadeContext<'_> {
                 }
                 lit += radiance * (self.light_visibility(&light.kind, p, l, l) * sc.phase(l.dot(dir)));
             }
-            sum += lit * (-extinction * t).exp();
+            sum += lit * (fade * (-extinction * t).exp());
         }
         sum * sc.color.0 * (sc.density * dt)
     }

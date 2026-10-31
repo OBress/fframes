@@ -155,6 +155,8 @@ struct FrameUniform {
     scatter: [f32; 4],
     /// Its tint and absorption.
     scatter_color: [f32; 4],
+    /// The distance it fades in over from the camera, 0, 0, 0.
+    scatter_near: [f32; 4],
     lights: [GpuLight; MAX_LIGHTS],
     softboxes: [GpuSoftBox; MAX_SOFTBOXES],
     shadows: [GpuShadow; MAX_SHADOWS],
@@ -1970,6 +1972,7 @@ impl Gpu {
         if let Some(sc) = scene.scatter.filter(|sc| sc.density > 0.0) {
             frame.scatter = [sc.density, sc.anisotropy.clamp(-0.95, 0.95), sc.steps.clamp(1, 64) as f32, sc.distance.max(0.0)];
             frame.scatter_color = sc.color.0.extend(sc.absorption.max(0.0)).to_array();
+            frame.scatter_near = [sc.near.max(0.0), 0.0, 0.0, 0.0];
         }
         match &scene.background {
             Background::Transparent => {}
