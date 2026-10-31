@@ -108,9 +108,10 @@ pub struct SpotLight {
     pub angle: f32,
     /// The part of the cone that fades out, `0..1`.
     pub penumbra: f32,
-    /// The share of the light in a hot core around the axis, `0..1`, as a flashlight's
-    /// reflector focuses it: the cone keeps `1 - hotspot` of the intensity at its edge and
-    /// all of it on the axis. 0, the default, is three.js's even cone.
+    /// The share of the light a flashlight's reflector shapes, `0..1`: a hot core around the
+    /// axis, a faint ring at the reflector's rim and a wide dim spill that fades out softly
+    /// toward the cone's edge; the rest is the even cone. 0, the default, is three.js's even
+    /// cone.
     pub hotspot: f32,
     /// The unit direction of the cone axis, in the space of the node.
     pub direction: Vec3,

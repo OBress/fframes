@@ -271,9 +271,17 @@ fn spot_cone(cos_angle: f32, cos_outer: f32, cos_inner: f32, hotspot: f32) -> f3
     if (hotspot <= 0.0) {
         return edge;
     }
-    let x = clamp((cos_angle - cos_outer) / max(1.0 - cos_outer, 1e-6), 0.0, 1.0);
-    let core = (x * x) * (x * x);
-    return edge * (1.0 - hotspot + hotspot * core * core);
+    return edge * (1.0 - hotspot) + reflector(cos_angle, cos_outer) * hotspot;
+}
+
+// A flashlight reflector's pattern: a hot core, a faint ring, a wide soft spill (`reflector`
+// in `math.rs`).
+fn reflector(cos_angle: f32, cos_outer: f32) -> f32 {
+    let x = acos(clamp(cos_angle, -1.0, 1.0)) / max(acos(clamp(cos_outer, -1.0, 1.0)), 1e-4);
+    let core = exp(-pow(x / 0.28, 2.0));
+    let ring = 0.12 * exp(-pow((x - 0.42) / 0.06, 2.0));
+    let spill = 0.3 * smooth_step(1.0, 0.45, x);
+    return (core + ring + spill) / 1.3;
 }
 
 // The scattering air (`Scatter`, `ShadeContext::in_scatter` in `shade.rs`).

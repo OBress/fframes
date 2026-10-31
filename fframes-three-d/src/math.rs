@@ -40,11 +40,19 @@ pub(crate) fn spot_cone(cos: f32, cos_outer: f32, cos_inner: f32, hotspot: f32) 
     if hotspot <= 0.0 {
         return edge;
     }
-    // From 0 at the cone's edge to 1 on the axis, raised so the core is about a third as
-    // wide as the cone.
-    let x = ((cos - cos_outer) / (1.0 - cos_outer).max(1e-6)).clamp(0.0, 1.0);
-    let core = (x * x) * (x * x);
-    edge * (1.0 - hotspot + hotspot * core * core)
+    edge * (1.0 - hotspot) + reflector(cos, cos_outer) * hotspot
+}
+
+/// A flashlight reflector's pattern at the cosine `cos` off its axis, 1 on the axis: a hot
+/// core, a faint bright ring at the reflector's rim, and a wide dim spill that fades out
+/// softly by the cone's edge (no hard circle). `reflector` in `scene.wgsl` is the same.
+fn reflector(cos: f32, cos_outer: f32) -> f32 {
+    // the angle off the axis as a share of the cone's
+    let x = cos.clamp(-1.0, 1.0).acos() / cos_outer.clamp(-1.0, 1.0).acos().max(1e-4);
+    let core = (-(x / 0.28).powi(2)).exp();
+    let ring = 0.12 * (-((x - 0.42) / 0.06).powi(2)).exp();
+    let spill = 0.3 * smoothstep(1.0, 0.45, x);
+    (core + ring + spill) / 1.3
 }
 
 /// An axis-aligned bounding box. The default value is [`Aabb::EMPTY`].
