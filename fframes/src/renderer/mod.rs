@@ -38,6 +38,8 @@ pub use scheduler::*;
 
 mod segment_writer;
 pub use segment_writer::*;
+pub mod scratch;
+pub use scratch::ScratchDir;
 mod frame_guard;
 pub use frame_guard::*;
 

@@ -151,11 +151,9 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
         .ok_or(FFramesRendererError::InvalidOutput)?
         .to_string_lossy()
         .into_owned();
-    let tmp_path = std::env::temp_dir().join(format!("fframes-skia-{}", uuid::Uuid::new_v4()));
-    let directory = render_options.tmp_files_directory.unwrap_or(&tmp_path);
-    if !directory.exists() {
-        std::fs::create_dir(directory)?;
-    }
+    // Removed when the render ends, whether it succeeds or fails.
+    let scratch = fframes::ScratchDir::new("fframes-skia-", render_options.tmp_files_directory)?;
+    let directory = scratch.path();
 
     let writer = SegmentWriter::new(
         directory,
@@ -345,7 +343,7 @@ pub(crate) fn render<'p, 'a, 'media: 'a, TVideo: Video + Sync + Send, TBackend: 
         .map_err(FFramesRendererError::ConcatChunkError)?;
     }
 
-    logger.success(output, Some(directory));
+    logger.success(output, scratch.kept());
     Ok(())
 }
 
