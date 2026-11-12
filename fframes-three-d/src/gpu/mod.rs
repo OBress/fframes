@@ -376,6 +376,23 @@ struct ContextPool {
     created: usize,
 }
 
+/// A frame context taken from the pool. A thread that panics while it holds one (a GPU out
+/// of memory, say) never gives it back, so the lease frees its place in the pool instead:
+/// otherwise once every context was lost like this, every other thread would wait for one
+/// forever.
+struct Lease<'a>(&'a Gpu);
+
+impl Drop for Lease<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let mut pool = lock(&self.0.contexts);
+            pool.created = pool.created.saturating_sub(1);
+            drop(pool);
+            self.0.available.notify_all();
+        }
+    }
+}
+
 pub(crate) struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -1443,7 +1460,7 @@ impl Gpu {
 
     /// Renders the moments (one, or more for motion blur) and returns the pixels.
     pub(crate) fn render(&self, renderer: &Renderer, moments: &[(&Scene, &Camera)]) -> Pixels {
-        let context = self.render_moments(renderer, moments);
+        let (context, _lease) = self.render_moments(renderer, moments);
         let pixels = self.finish(&context, renderer);
         self.give_back(context);
         pixels
@@ -1457,7 +1474,7 @@ impl Gpu {
         moments: &[(&Scene, &Camera)],
         shared: &SharedGpu,
     ) -> fframes_media::ImageData<'static> {
-        let context = self.render_moments(renderer, moments);
+        let (context, _lease) = self.render_moments(renderer, moments);
         let (slot, texture, view) = self.take_layer(context.width, context.height);
         let mut encoder = self
             .device
@@ -1506,8 +1523,9 @@ impl Gpu {
         (layers.len() - 1, texture, view)
     }
 
-    /// Renders the moments into a frame context from the pool and averages them.
-    fn render_moments(&self, renderer: &Renderer, moments: &[(&Scene, &Camera)]) -> FrameContext {
+    /// Renders the moments into a frame context from the pool and averages them. Keep the
+    /// [`Lease`] until the context is given back.
+    fn render_moments(&self, renderer: &Renderer, moments: &[(&Scene, &Camera)]) -> (FrameContext, Lease<'_>) {
         // The size of the maps, and how many a moment can use: one per directional or spot
         // light, six per point light, up to the limit.
         fn shadow_lights(scene: &Scene) -> impl Iterator<Item = (&crate::Light, &crate::Shadow)> {
@@ -1534,11 +1552,12 @@ impl Gpu {
             .unwrap_or(0)
             .max(1) as u32;
         let mut context = self.take_context(renderer.width, renderer.height, shadow_size, layers);
+        let lease = Lease(self);
         let weight = 1.0 / moments.len().max(1) as f32;
         for (i, (scene, camera)) in moments.iter().enumerate() {
             self.render_moment(&mut context, renderer, scene, camera, weight, i, moments.len() == 1);
         }
-        context
+        (context, lease)
     }
 
     /// Renders the moment with index `moment` and adds it with `weight` to the average of
