@@ -213,6 +213,19 @@ impl Texture {
         &self.levels
     }
 
+    /// Identifies the levels on the GPU: textures with the same key share one upload.
+    pub fn gpu_key(&self) -> usize {
+        Arc::as_ptr(&self.levels) as usize
+    }
+
+    /// The bytes the GPU renderer keeps for this texture under a [`set_gpu_texture_limit`] of
+    /// `limit`: its levels no wider or taller than it (always the smallest), four bytes a texel.
+    pub fn gpu_bytes(&self, limit: u32) -> u64 {
+        gpu_level_sizes(self.width, self.height, limit)
+            .map(|(w, h)| u64::from(w) * u64::from(h) * 4)
+            .sum()
+    }
+
     /// The mipmap levels as width, height and RGBA8 texels, largest first.
     #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     pub(crate) fn levels(&self) -> impl Iterator<Item = (u32, u32, &[[u8; 4]])> {
@@ -477,4 +490,31 @@ fn downsample(level: &Level, srgb: bool) -> Level {
 fn srgb_lut() -> &'static [f32; 256] {
     static LUT: OnceLock<[f32; 256]> = OnceLock::new();
     LUT.get_or_init(|| std::array::from_fn(|i| srgb_to_linear(i as f32 / 255.0)))
+}
+
+/// The largest width or height of a material texture on the GPU, see [`set_gpu_texture_limit`].
+static GPU_TEXTURE_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Caps the width and the height of the material textures that the GPU renderer uploads: it
+/// leaves out the mipmap levels above `side` (never the smallest level). Each halving keeps a
+/// quarter of the bytes. A renderer that would not fit its scenes in the GPU's memory lowers it
+/// before it draws; textures already uploaded keep their levels. `u32::MAX` (the default) keeps
+/// every level.
+pub fn set_gpu_texture_limit(side: u32) {
+    GPU_TEXTURE_LIMIT.store(side.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The cap of [`set_gpu_texture_limit`].
+pub fn gpu_texture_limit() -> u32 {
+    GPU_TEXTURE_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The sizes of the mipmap levels of a `width` by `height` texture that the GPU keeps under a
+/// `limit`, largest first: the levels halve down to 1 by 1, and those wider or taller than the
+/// limit are left out (but the last).
+pub(crate) fn gpu_level_sizes(width: u32, height: u32, limit: u32) -> impl Iterator<Item = (u32, u32)> {
+    let count = width.max(height).max(1).ilog2() + 1;
+    let size = move |level: u32| ((width >> level).max(1), (height >> level).max(1));
+    let skip = (0..count).take_while(|&l| l + 1 < count && size(l).0.max(size(l).1) > limit).count() as u32;
+    (skip..count).map(size)
 }

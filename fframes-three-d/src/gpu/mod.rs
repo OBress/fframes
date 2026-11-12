@@ -1193,17 +1193,26 @@ impl Gpu {
         } else {
             wgpu::TextureFormat::Rgba8Unorm
         };
+        // the levels under the texture limit (all of them by default)
+        let limit = crate::texture::gpu_texture_limit();
+        let count = texture.levels().count();
+        let skip = texture
+            .levels()
+            .take_while(|&(w, h, _)| w.max(h) > limit)
+            .count()
+            .min(count.saturating_sub(1));
+        let (width, height, _) = texture.levels().nth(skip).unwrap_or((texture.width, texture.height, &[]));
         let gpu_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            mip_level_count: texture.levels().count() as u32,
+            mip_level_count: (count - skip).max(1) as u32,
             ..texture_desc(
                 "material texture",
-                texture.width,
-                texture.height,
+                width,
+                height,
                 format,
                 wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             )
         });
-        for (level, (width, height, texels)) in texture.levels().enumerate() {
+        for (level, (width, height, texels)) in texture.levels().skip(skip).enumerate() {
             self.write_level(
                 &gpu_texture,
                 level as u32,

@@ -131,4 +131,4 @@ pub use scene::{
     Background, Fog, Instances, Mesh, Node, NodeId, Object, Particle, Particles, Reflector, Scatter, Scene,
     Skin,
 };
-pub use texture::Texture;
+pub use texture::{Texture, gpu_texture_limit, set_gpu_texture_limit};
