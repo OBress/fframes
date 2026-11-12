@@ -59,6 +59,8 @@ const DOF_TILE: u32 = 16;
 const BLOOM_LEVELS: usize = 6;
 /// The maximum number of frame contexts (render targets) in use at the same time.
 const CONTEXTS: usize = 3;
+/// The most texture bytes written before the queue takes them, see [`Gpu::write_level`].
+const MAX_STAGED: u64 = 256 << 20;
 /// Rigid meshes with this many indices or fewer that share a material become one batch.
 /// A draw costs the same with six triangles or six thousand.
 const BATCH_MAX_INDICES: u32 = 4096;
@@ -398,6 +400,8 @@ pub(crate) struct Gpu {
     queue: wgpu::Queue,
     /// The queue lock of the backend, when the backend shares the device.
     queue_lock: Option<Arc<Mutex<()>>>,
+    /// The bytes written to textures since the queue last took them, see [`Gpu::write_level`].
+    staged: std::sync::atomic::AtomicU64,
     /// The [`SharedGpu::id`] of the device, when the backend shares it.
     shared_id: Option<u64>,
     scene_module: wgpu::ShaderModule,
@@ -1028,6 +1032,7 @@ impl Gpu {
             device,
             queue,
             queue_lock,
+            staged: std::sync::atomic::AtomicU64::new(0),
             shared_id,
             scene_module,
             frame_layout,
@@ -1293,6 +1298,11 @@ impl Gpu {
     }
 
     /// Uploads one mipmap level. `data` holds the rows without padding.
+    ///
+    /// The queue keeps a staging copy of every write until it next submits, so a frame that
+    /// first sees thousands of textures would need twice their memory at once (batch14's
+    /// cornfield: 2.8 GB of new bark took a 4.3 GB render to a 7.1 GB peak). Past [`MAX_STAGED`] bytes this submits
+    /// and waits, which frees the copies.
     fn write_level(
         &self,
         texture: &wgpu::Texture,
@@ -1301,6 +1311,16 @@ impl Gpu {
         height: u32,
         data: &[u8],
     ) {
+        use std::sync::atomic::Ordering;
+        if self.staged.fetch_add(data.len() as u64, Ordering::Relaxed) + data.len() as u64 > MAX_STAGED {
+            self.staged.store(0, Ordering::Relaxed);
+            let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            let submission = self.submit(encoder.finish());
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            });
+        }
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 mip_level: level,
