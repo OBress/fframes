@@ -186,6 +186,11 @@ pub struct EncoderOptions<'a> {
     /// let video_tag = MKTAG!('h', 'v', 'c', '1');
     /// ```
     pub tag: Option<isize>,
+    /// Frames (timeline indexes, ascending) that must each be a keyframe: the encoder is asked
+    /// for an intra picture there, on top of its GOP. With libx264's or NVENC's `forced-idr`
+    /// it is an IDR, so the stretch it starts can be swapped for one encoded apart (a shot of
+    /// a video re-rendered and spliced in) without touching the frames before it.
+    pub key_frames: Option<&'a [usize]>,
 }
 
 impl EncoderOptions<'_> {
@@ -250,6 +255,7 @@ impl Default for EncoderOptions<'_> {
             sample_format: AVSampleFormat::AV_SAMPLE_FMT_FLTP,
             sample_rate: 44100,
             tag: None,
+            key_frames: None,
         }
     }
 }
@@ -258,6 +264,8 @@ pub struct Encoder {
     pub video_stream: stream::Stream,
     pub audio_stream: Option<stream::Stream>,
     pub(crate) oc: *mut AVFormatContext,
+    /// See [`EncoderOptions::key_frames`].
+    pub(crate) key_frames: Vec<usize>,
 }
 
 impl Drop for Encoder {
@@ -383,6 +391,7 @@ impl Encoder {
                 video_stream,
                 audio_stream,
                 oc,
+                key_frames: render_options.video_encoder_options.key_frames.map(<[usize]>::to_vec).unwrap_or_default(),
             })
         }
     }
@@ -505,6 +514,12 @@ impl Encoder {
             let stream = &self.video_stream;
             let oc = self.oc;
             (*frame.as_ptr()).pts = pts;
+            // (a frame object is reused from frame to frame: set its type every time)
+            (*frame.as_ptr()).pict_type = if self.key_frames.binary_search(&(pts as usize)).is_ok() {
+                AVPictureType::AV_PICTURE_TYPE_I
+            } else {
+                AVPictureType::AV_PICTURE_TYPE_NONE
+            };
 
             Self::send_raw_frame(stream, frame.as_ptr(), packet, |packet| {
                 // VideoToolbox can return packets without a duration. Our video time

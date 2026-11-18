@@ -196,6 +196,7 @@ unsafe fn create_encoder_copy_from_file(
             },
             audio_stream: Some(audio_stream),
             oc: output_format_ctx,
+            key_frames: Vec::new(),
         })
     }
 }
